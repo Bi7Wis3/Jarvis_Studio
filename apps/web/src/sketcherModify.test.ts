@@ -3,7 +3,7 @@ import type { SketchCurve, SketchGeometry } from '@jarvis/core';
 import { curveOf, loadSolver, pointOf } from './solver';
 import { addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import {
-    DEFAULT_EDIT_OPTIONS, finishEditTool, setEditOptions, setTool, startEditTool, sketchClick, sketchDown, sketchMove, sketchUp, undoSketch, useSketcher,
+    DEFAULT_EDIT_OPTIONS, finishEditTool, setEditOptions, setTool, startEditTool, stretchSelected, transformSelected, sketchClick, sketchDown, sketchMove, sketchUp, undoSketch, useSketcher,
 } from './sketcher';
 
 vi.mock('@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url', () => ({ default: '' }));
@@ -97,6 +97,61 @@ describe('fillet, chamfer and mirror forms', () => {
         const g = state().geometry;
         expect(g.curves).toHaveLength(1);
         expect(Math.max(...g.points.map((p) => p.u))).toBeLessThan(0);
+    });
+});
+
+describe('move with Keep relations, copies, stretch', () => {
+    /** Two lines sharing a corner at (10, 0): (0, 0)-(10, 0) and (10, 0)-(10, 10). */
+    function corner() {
+        const a = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [10, 0] });
+        const b = addLine(a.g, { at: [10, 0], point: a.b }, { at: [10, 10] });
+        return { g: b.g, first: a.id, second: b.id, shared: a.b };
+    }
+
+    it('moves a line keeping its relations: the attached line stretches along instead of splitting', () => {
+        const s = corner();
+        start(s.g);
+        useSketcher.setState({ selection: [{ type: 'curve', id: s.second }] });
+        expect(transformSelected({ kind: 'move', by: [5, 0] }, false, { keepRelations: true })).toBeNull();
+        const g = state().geometry;
+        expect(g.points).toHaveLength(s.g.points.length);
+        expect(pointOf(g, s.shared)!.u).toBeCloseTo(15, 5);
+        expect(state().undo).toHaveLength(1);
+        // Without it, the shared corner is split off.
+        start(s.g);
+        useSketcher.setState({ selection: [{ type: 'curve', id: s.second }] });
+        transformSelected({ kind: 'move', by: [5, 0] }, false);
+        expect(state().geometry.points.length).toBe(s.g.points.length + 1);
+    });
+
+    it('says so when the relations do not let it move', () => {
+        const s = corner();
+        const locked = { ...s.g, constraints: [...s.g.constraints, { id: 'lock', kind: 'fix' as const, point: s.shared }] };
+        start(locked);
+        useSketcher.setState({ selection: [{ type: 'curve', id: s.second }] });
+        expect(transformSelected({ kind: 'move', by: [5, 0] }, false, { keepRelations: true })).toMatch(/Keep relations/);
+        expect(state().undo).toHaveLength(0);
+    });
+
+    it('makes a number of copies, each a step further, in one undo step', () => {
+        const s = corner();
+        start(s.g);
+        useSketcher.setState({ selection: [{ type: 'curve', id: s.first }] });
+        expect(transformSelected({ kind: 'move', by: [0, 20] }, true, { copies: 3 })).toBeNull();
+        const vs = new Set(state().geometry.points.map((p) => Math.round(p.v)));
+        expect([20, 40, 60].every((v) => vs.has(v))).toBe(true);
+        expect(state().undo).toHaveLength(1);
+    });
+
+    it('stretches: the selected point moves, attached lines stretch and the rest stays', () => {
+        const s = corner();
+        start(s.g);
+        useSketcher.setState({ selection: [{ type: 'point', id: s.shared }] });
+        expect(stretchSelected([3, 4])).toBeNull();
+        const g = state().geometry;
+        expect(pointOf(g, s.shared)).toMatchObject({ u: 13, v: 4 });
+        const far = (curveOf(g, s.second) as Extract<SketchCurve, { kind: 'line' }>).b;
+        expect(pointOf(g, far)).toMatchObject({ u: 10, v: 10 });
     });
 });
 

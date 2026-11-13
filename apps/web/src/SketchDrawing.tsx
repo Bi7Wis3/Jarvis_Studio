@@ -519,7 +519,7 @@ export function Drawing() {
     const hovered = picking && hover ? hover.id : null;
     // Lit from the relations or repair list.
     const lit = new Set(highlight);
-    const xformFrom = tool === 'xform' && xform?.picks.length === 1 && (xform.kind === 'move' || xform.kind === 'copy') ? xform.picks[0] : null;
+    const xformFrom = tool === 'xform' && xform?.picks.length === 1 && (xform.kind === 'move' || xform.kind === 'copy' || xform.kind === 'stretch') ? xform.picks[0] : null;
     const conflictRefs = new Set(g.constraints.filter((c) => conflicting.includes(c.id)).flatMap((c) => Object.values(c).filter((v) => typeof v === 'string')));
     const at = draft.map((d) => d.at);
     const preview = cursor && draft.length && !['select', 'dimension'].includes(tool) && !tool.startsWith('c:') && !isEditTool(tool)

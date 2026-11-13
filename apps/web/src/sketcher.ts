@@ -40,7 +40,7 @@ export type EditTool = 'trim' | 'extend' | 'fillet' | 'chamfer' | 'offset' | 'mi
 /** xform: picking points for Move, Copy, Rotate or Scale while their form is open. */
 export type SketchTool = 'select' | DrawTool | EditTool | 'dimension' | 'xform' | `c:${ConstraintTool}`;
 
-export type TransformKind = 'move' | 'copy' | 'rotate' | 'scale';
+export type TransformKind = 'move' | 'copy' | 'rotate' | 'scale' | 'stretch';
 
 const EDIT_TOOLS: readonly string[] = ['trim', 'extend', 'fillet', 'chamfer', 'offset', 'mirror'];
 export const isEditTool = (tool: SketchTool): tool is EditTool => EDIT_TOOLS.includes(tool);
@@ -1678,7 +1678,7 @@ function xformClick(raw: Pt, tolerance: number, additive: boolean): void {
 /** Moving or copying by two points: the selection drawn at the cursor once the first point is picked. */
 function xformPreview(s: SketcherState, cursor: Pt): NewEntity[] {
     const from = s.xform?.picks[0];
-    if (!from || (s.xform?.kind !== 'move' && s.xform?.kind !== 'copy')) {
+    if (!from || (s.xform?.kind !== 'move' && s.xform?.kind !== 'copy' && s.xform?.kind !== 'stretch')) {
         return [];
     }
     const t: Transform = { kind: 'move', by: [cursor[0] - from[0], cursor[1] - from[1]] };
@@ -1702,8 +1702,15 @@ function xformPreview(s: SketcherState, cursor: Pt): NewEntity[] {
  * Moves, turns or scales the selected curves and points, or copies them. Returns an error to show, or null; the
  * status line says what was done and how many relations to the rest of the sketch a move removed.
  */
-export function transformSelected(t: Transform, copy: boolean): string | null {
+export function transformSelected(t: Transform, copy: boolean, o: { keepRelations?: boolean; copies?: number } = {}): string | null {
     const s = get();
+    if (!copy && o.keepRelations) {
+        return moveKeeping(t, false);
+    }
+    const copies = copy ? Math.max(1, Math.round(o.copies ?? 1)) : 1;
+    if (copies > 1) {
+        return copyMany(t, copies);
+    }
     const r = transformEntities(s.geometry, selectedGeometry(), t, copy);
     if ('error' in r) {
         return r.error;
@@ -1722,6 +1729,80 @@ export function transformSelected(t: Transform, copy: boolean): string | null {
     const what = `${count} item${count === 1 ? '' : 's'}`;
     set({ message: r.dropped ? `${verb} ${what}; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} to the rest of the sketch.` : `${verb} ${what}.` });
     return null;
+}
+
+/** The transform applied k times: k steps of a move or turn, the factor to the power k for a scale. */
+function stepped(t: Transform, k: number): Transform {
+    return t.kind === 'move' ? { kind: 'move', by: [t.by[0] * k, t.by[1] * k] }
+        : t.kind === 'rotate' ? { ...t, angle: t.angle * k } : { ...t, factor: t.factor ** k };
+}
+
+/** Copy (or Scale) with a number of copies: each one step further on, all in one undo step. */
+function copyMany(t: Transform, copies: number): string | null {
+    const s = get();
+    const ids = selectedGeometry();
+    let g = s.geometry;
+    const made: string[] = [];
+    for (let k = 1; k <= copies; k++) {
+        const r = transformEntities(g, ids, stepped(t, k), true);
+        if ('error' in r) {
+            return r.error;
+        }
+        g = r.g;
+        made.push(...r.created);
+    }
+    const selection: Selected[] = made.map((id) => ({ type: g.curves.some((c) => c.id === id) ? 'curve' : 'point', id }));
+    if (!commit(g, { selection, editPreview: [] })) {
+        return get().message;
+    }
+    set({ message: `Made ${copies} copies.` });
+    return null;
+}
+
+/**
+ * Move, turn or scale keeping relations (and Stretch): the selected points are pulled to their new places and the
+ * sketch is solved with every relation kept, so attached curves stretch along. Stretch holds every other point still.
+ */
+function moveKeeping(t: Transform, stretch: boolean): string | null {
+    const s = get();
+    const ids = selectedGeometry();
+    const points = new Set(ids.flatMap((id) => {
+        const c = curveOf(s.geometry, id);
+        return c ? curvePoints(c) : [id];
+    }).filter((id) => id !== ORIGIN && pointOf(s.geometry, id)));
+    if (!points.size) {
+        return 'Select the curves or points first.';
+    }
+    if (!solverReady()) {
+        return 'The solver is still loading; try again in a moment.';
+    }
+    const targets = [...points].map((id) => {
+        const p = pointOf(s.geometry, id)!;
+        const [u, v] = transformPoint(t, [p.u, p.v]);
+        return { point: id, u, v };
+    });
+    // A scale also scales the selected circles.
+    const scaled = t.kind === 'scale' ? new Set(ids) : new Set<string>();
+    const start: SketchGeometry = { ...s.geometry, curves: s.geometry.curves.map((c) => (c.kind === 'circle' && scaled.has(c.id) ? { ...c, radius: c.radius * (t as { factor: number }).factor } : c)) };
+    const hold = stretch ? new Set(s.geometry.points.filter((p) => !points.has(p.id)).map((p) => p.id)) : undefined;
+    const r = solveGeometry(start, { targets, hold });
+    const miss = r.ok ? Math.max(...targets.map((x) => {
+        const p = pointOf(r.geometry, x.point);
+        return p ? Math.hypot(p.u - x.u, p.v - x.v) : 0;
+    })) : Infinity;
+    if (miss > 1e-3) {
+        return 'The relations to the rest of the sketch do not let it go there. Clear Keep relations to break them.';
+    }
+    if (!commit(r.geometry, { editPreview: [] })) {
+        return get().message;
+    }
+    set({ message: stretch ? 'Stretched.' : 'Moved, keeping its relations.' });
+    return null;
+}
+
+/** Stretch: moves the selected curves and points by `by`; the curves attached to them stretch, the rest stays. */
+export function stretchSelected(by: Pt): string | null {
+    return moveKeeping({ kind: 'move', by }, true);
 }
 
 /** Whether a dimension refers only to the moved curves (or their points). */
