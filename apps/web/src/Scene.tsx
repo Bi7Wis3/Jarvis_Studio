@@ -722,6 +722,23 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
         state.first = false;
     }, [asked, ids, boundsVersion, controls]);
 
+    // Leaving a sketch puts the view back where it was when the sketch was started (the sketch turned it square on
+    // to its plane). Declared before the effects that turn the view for a sketch, so it records the view first.
+    const sketching = useSketcher((s) => s.active);
+    const beforeSketch = useRef<{ position: Vector3; target: Vector3 } | null>(null);
+    useEffect(() => {
+        if (!controls) {
+            return;
+        }
+        if (sketching) {
+            beforeSketch.current = { position: controls.getPosition(new Vector3()), target: controls.getTarget(new Vector3()) };
+        } else if (beforeSketch.current) {
+            const { position, target } = beforeSketch.current;
+            beforeSketch.current = null;
+            moveTo(position, target, true);
+        }
+    }, [sketching, controls]);
+
     // Once the user takes the camera, a framing still waiting for part sizes is dropped.
     useEffect(() => {
         if (!controls) {

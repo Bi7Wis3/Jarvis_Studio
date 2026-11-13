@@ -264,6 +264,25 @@ export function Manipulators({ offsets }: { offsets: Record<string, Vec3> }) {
     const camera = useThree((s) => s.camera);
     const gl = useThree((s) => s.gl);
     const size = useThree((s) => s.size);
+    const viewControls = useThree((s) => s.controls) as CameraControlsImpl | null;
+
+    // A depth arrow seen end-on is only a dot (the view is still square on to the sketch just drawn): tip the view
+    // to a three-quarter angle so the arrow can be seen and pulled, as SolidWorks turns the view when a feature
+    // starts from a sketch.
+    const arrow = handles.find((h) => h.kind === 'distance');
+    const arrowKey = arrow && arrow.kind === 'distance' ? `${toolId}:${arrow.direction.map((n) => Math.round(n * 100)).join()}` : null;
+    useEffect(() => {
+        if (!arrow || arrow.kind !== 'distance' || !viewControls) {
+            return;
+        }
+        const view = camera.getWorldDirection(new Vector3());
+        if (Math.abs(view.dot(new Vector3(...arrow.direction))) < 0.9) {
+            return;
+        }
+        const polar = viewControls.polarAngle;
+        const tipped = MathUtils.clamp(polar, MathUtils.degToRad(50), MathUtils.degToRad(65));
+        void viewControls.rotate(MathUtils.degToRad(-35), tipped - polar, true);
+    }, [arrowKey, viewControls]);
     const controls = useThree((s) => s.controls) as CameraControlsImpl | null;
     const shift = useRef<Group>(null);
     const [hover, setHover] = useState<string | null>(null);
