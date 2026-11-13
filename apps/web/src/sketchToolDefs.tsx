@@ -10,7 +10,7 @@ import {
     startTransformPick, stopTransformPick, stretchSelected, transformCentre, transformSelected, useSketcher, type TransformKind,
 } from './sketcher';
 import { constraintRefs, liveIds } from './sketchGeometry';
-import { findProblems } from './sketchRepair';
+import { findProblems, GAP } from './sketchRepair';
 import type { Transform } from './sketchEdit';
 import { QUICK_SNAPS } from './snapping';
 import type { Pt } from './sketchMath';
@@ -203,13 +203,25 @@ function transformTool(kind: TransformKind): ToolDef {
 /** Repair sketch: the problems found, each with its fix; hovering one lights up its geometry. */
 function RepairList() {
     const g = useSketcher((s) => s.geometry);
-    const problems = useMemo(() => findProblems(g), [g]);
+    const [gapText, setGapText] = useState(String(GAP));
+    const gap = Number(gapText) > 0 ? Number(gapText) : GAP;
+    const problems = useMemo(() => findProblems(g, gap), [g, gap]);
     useEffect(() => () => setHighlight([]), []);
+    const gapField = (
+        <label className="tb-field">
+            <span>Showing gaps smaller than</span>
+            <span className="tb-input">
+                <input type="number" min={0} step={0.1} value={gapText} onChange={(e) => setGapText(e.target.value)} aria-label="Gap size" />
+                <em>mm</em>
+            </span>
+        </label>
+    );
     if (!problems.length) {
-        return <p className="tb-note">No problems found: no gaps, overlapping duplicates, zero-length curves or relations to deleted geometry.</p>;
+        return <>{gapField}<p className="tb-note">No problems found: no gaps, overlaps, tiny or zero-length curves or relations to deleted geometry.</p></>;
     }
     return (
         <>
+            {gapField}
             <div className="sk-list">
                 {problems.map((p) => (
                     <div key={p.key} className="sk-row" onMouseEnter={() => setHighlight(p.refs)} onMouseLeave={() => setHighlight([])}>
@@ -219,7 +231,7 @@ function RepairList() {
                 ))}
             </div>
             <div className="sk-list-actions">
-                <button type="button" className="sk-small" onClick={() => repairAll()}>Fix all</button>
+                <button type="button" className="sk-small" onClick={() => repairAll(gap)}>Fix all</button>
             </div>
         </>
     );

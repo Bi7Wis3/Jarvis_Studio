@@ -1895,8 +1895,8 @@ export function repairProblem(problem: Problem): boolean {
 }
 
 /** Fixes everything Repair sketch finds; says how many. */
-export function repairAll(): boolean {
-    const r = fixAll(get().geometry);
+export function repairAll(gap?: number): boolean {
+    const r = fixAll(get().geometry, gap);
     if (!r.fixed) {
         set({ message: 'Nothing to repair.' });
         return true;

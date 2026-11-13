@@ -6,6 +6,7 @@ import { circularSketchPattern, linearSketchPattern } from './sketchPattern';
 import { extendAt, mirrorCurves, offsetEntities, splitAt, trimAt } from './sketchEdit';
 import { chamferSides, filletCornerAt, filletSides, type FilletCorner } from './sketchFillet';
 import { unmetConstraints } from './sketchCheck';
+import { findProblems, fixAll } from './sketchRepair';
 import { powerTrim, trimBetween, trimCorner } from './sketchTrim';
 import type { Pt } from './sketchMath';
 
@@ -477,6 +478,30 @@ describe('split entities', () => {
         const two = splitAt(c.g, c.id, [10, 0], [-10, 0]) as { g: SketchGeometry };
         expect(two.g.curves.filter((k) => k.kind === 'arc')).toHaveLength(2);
         expect(solveGeometry(two.g).ok).toBe(true);
+    });
+});
+
+describe('repair sketch: gap size and overlaps', () => {
+    it('finds gaps smaller than the chosen size, and scraps shorter than twice it', () => {
+        let g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [10, 0] }).g;
+        g = addLine(g, { at: [10.8, 0] }, { at: [20, 5] }).g;
+        expect(findProblems(g).some((p) => p.kind === 'gap')).toBe(false);
+        expect(findProblems(g, 1).some((p) => p.kind === 'gap')).toBe(true);
+        const scrap = addLine(g, { at: [40, 40] }, { at: [40.5, 40] });
+        expect(findProblems(scrap.g, 0.2).some((p) => p.key === `zero:${scrap.id}`)).toBe(false);
+        expect(findProblems(scrap.g, 0.5).some((p) => p.key === `zero:${scrap.id}`)).toBe(true);
+    });
+
+    it('merges two lines that overlap in part into one', () => {
+        let g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [10, 0] }).g;
+        g = addLine(g, { at: [6, 0] }, { at: [16, 0] }).g;
+        const problem = findProblems(g).find((p) => p.kind === 'overlap')!;
+        expect(problem).toBeDefined();
+        const out = fixAll(g).g;
+        expect(out.curves).toHaveLength(1);
+        const l = out.curves[0] as Extract<SketchCurve, { kind: 'line' }>;
+        expect([at(out, l.a)[0], at(out, l.b)[0]].sort((a, b) => a - b)).toEqual([0, 16]);
+        expect(out.points).toHaveLength(2);
     });
 });
 
