@@ -337,11 +337,20 @@ const feature = z.discriminatedUnion('op', [
         op: z.literal('pattern'),
         features: z.array(z.string()).min(1).describe('Ids of earlier steps to repeat (holes, cuts, bosses)'),
         kind: z.enum(['linear', 'circular']),
-        count: z.number().int().min(2).max(200),
-        direction: z.union([axisRef, vec3]).optional().describe('linear: the direction'),
-        spacing: z.number().optional().describe('linear: distance between copies'),
-        axis: axisRef.optional().describe('circular: the axis'),
-        angle: z.number().optional().describe('circular: total sweep in degrees; default 360'),
+        count: z.number().int().min(2).max(200).describe('Number of instances, the seed included'),
+        direction: z.union([axisRef, vec3]).optional().describe('linear (required): the direction'),
+        spacing: z.number().optional().describe('linear (required): distance between instances'),
+        reverse: z.boolean().optional().describe('Reverse direction 1 (circular: turn the other way)'),
+        direction2: z.union([axisRef, vec3]).optional().describe('linear: a second direction (a grid)'),
+        count2: z.number().int().min(2).max(200).optional().describe('linear: instances along direction 2'),
+        spacing2: z.number().optional().describe('linear: spacing along direction 2'),
+        reverse2: z.boolean().optional(),
+        seedOnly2: z.boolean().optional().describe('linear: repeat only the seed along direction 2'),
+        axis: axisRef.optional().describe('circular (required): the axis'),
+        angle: z.number().optional().describe('circular: total angle in degrees (default 360), or with equal false the angle between instances'),
+        equal: z.boolean().optional().describe('circular: default true, equal spacing over the total angle'),
+        skip: z.array(z.tuple([z.number().int().min(1), z.number().int().min(1)])).optional()
+            .describe('Instances to leave out, as [n along direction 1, n along direction 2 (1 if none)]; the seed is [1, 1]'),
     }),
     z.object({
         ...featureBase,
@@ -422,10 +431,34 @@ export function checkHistory(part: Pick<Part, 'id' | 'features'>): void {
                     throw new Error(`${where}: step "${id}" is not an earlier step of ${part.id}`);
                 }
             }
+            checkPattern(where, f);
         }
         const { id: _id, name: _name, suppressed: _s, ...body } = f;
         scan(where, body);
         seen.set(f.id, f.op);
+    }
+}
+
+/** A pattern's fields per kind: the schema leaves them optional, since one object covers both kinds. */
+function checkPattern(where: string, f: Extract<Feature, { op: 'pattern' }>): void {
+    const g = f as unknown as Partial<Extract<Feature, { op: 'pattern'; kind: 'linear' }>> & Partial<Extract<Feature, { op: 'pattern'; kind: 'circular' }>>;
+    if (f.kind === 'linear') {
+        if (g.direction === undefined) {
+            throw new Error(`${where}: a linear pattern needs a direction (an axis or a vector)`);
+        }
+        if (g.spacing === undefined) {
+            throw new Error(`${where}: a linear pattern needs a spacing`);
+        }
+        if (g.direction2 !== undefined && (g.count2 === undefined || g.spacing2 === undefined)) {
+            throw new Error(`${where}: direction 2 needs count2 and spacing2`);
+        }
+    } else if (g.axis === undefined) {
+        throw new Error(`${where}: a circular pattern needs an axis`);
+    } else if (g.equal === false && g.angle === undefined) {
+        throw new Error(`${where}: without equal spacing give the angle between instances`);
+    }
+    if (g.skip?.some(([i, j]) => i === 1 && j === 1)) {
+        throw new Error(`${where}: the seed (instance [1, 1]) cannot be skipped`);
     }
 }
 
@@ -776,7 +809,7 @@ export function createTools(store: ProjectStore): StudioTool[] {
         {
             name: 'features_update',
             description: 'Edits features in a part\'s history by id: change dimensions, rename, or suppress/unsuppress. '
-                + 'Only the fields given change; the op cannot change.',
+                + 'Only the fields given change (null removes an optional field); the op cannot change.',
             schema: {
                 partId: z.string(),
                 updates: z.array(z.object({ id: z.string() }).passthrough()).min(1)
@@ -796,7 +829,13 @@ export function createTools(store: ProjectStore): StudioTool[] {
                         if (!update) {
                             return f;
                         }
-                        const merged = { ...f, ...update, id: f.id, op: f.op };
+                        const merged: Record<string, unknown> = { ...f, ...update, id: f.id, op: f.op };
+                        // null removes an optional field (an option turned off in a form).
+                        for (const [key, value] of Object.entries(update)) {
+                            if (value === null) {
+                                delete merged[key];
+                            }
+                        }
                         // Switching between an inline sketch and a sketch step replaces the other one.
                         if ('sketchRef' in update) {
                             delete merged.sketch;
@@ -807,7 +846,7 @@ export function createTools(store: ProjectStore): StudioTool[] {
                         if (!parsed.success) {
                             throw new Error(`feature ${f.id}: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
                         }
-                        return merged as Feature;
+                        return merged as unknown as Feature;
                     });
                     for (const u of updates) {
                         if (!part.features.some((f) => f.id === u.id)) {

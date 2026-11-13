@@ -200,6 +200,47 @@ describe('pattern', () => {
         expect(openEdges(half)).toBe(0);
     }, SLOW);
 
+    it('makes grids in two directions, skips instances and spaces circular copies by angle', async () => {
+        const plain = volume(await mesh(sharpBox([60, 4, 60])));
+        const hole = holeArea(3) * 4;
+        // 3 x 2 grid with one instance skipped: 5 holes.
+        const grid = await mesh(sharpBox([60, 4, 60]), [
+            plainHole('h', [-20, 2, -10]),
+            {
+                id: 'p', op: 'pattern', kind: 'linear', features: ['h'], direction: 'x', count: 3, spacing: 20,
+                direction2: 'z', count2: 2, spacing2: 20, skip: [[3, 2]],
+            },
+        ]);
+        expect((plain - volume(grid)) / (5 * hole)).toBeCloseTo(1, 1);
+        // Seed only along direction 2, and direction 1 reversed from the right-hand side.
+        const seedOnly = await mesh(sharpBox([60, 4, 60]), [
+            plainHole('h', [20, 2, -10]),
+            {
+                id: 'p', op: 'pattern', kind: 'linear', features: ['h'], direction: 'x', count: 3, spacing: 20, reverse: true,
+                direction2: 'z', count2: 2, spacing2: 20, seedOnly2: true,
+            },
+        ]);
+        expect((plain - volume(seedOnly)) / (4 * hole)).toBeCloseTo(1, 1);
+        expect(openEdges(seedOnly)).toBe(0);
+        // 4 instances 30 degrees apart (not shared over 360).
+        const fan = await mesh(sharpBox([60, 4, 60]), [
+            plainHole('h', [20, 2, 0]),
+            { id: 'p', op: 'pattern', kind: 'circular', features: ['h'], axis: 'y', count: 4, angle: 30, equal: false },
+        ]);
+        expect((plain - volume(fan)) / (4 * hole)).toBeCloseTo(1, 1);
+    }, SLOW);
+
+    it('says what is missing instead of failing with a type error', async () => {
+        await expect(mesh(sharpBox([20, 4, 20]), [
+            plainHole('h', [0, 2, 0]),
+            { id: 'p', op: 'pattern', kind: 'linear', features: ['h'], count: 2, spacing: 5 } as unknown as Feature,
+        ])).rejects.toThrow(/a linear pattern needs direction 1/);
+        await expect(mesh(sharpBox([20, 4, 20]), [
+            plainHole('h', [0, 2, 0]),
+            { id: 'p', op: 'pattern', kind: 'circular', features: ['h'], count: 2 } as unknown as Feature,
+        ])).rejects.toThrow(/a circular pattern needs an axis/);
+    }, SLOW);
+
     it('repeats sketch extrusions and rejects steps without a tool', async () => {
         const bosses = await mesh(sharpBox([60, 4, 20]), [
             { id: 'b', op: 'extrude', mode: 'add', distance: 5, sketch: { plane: 'top', offset: 2, profiles: [circle([-20, 0], 3)] } },

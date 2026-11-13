@@ -332,9 +332,22 @@ export type Feature = FeatureBase & (
      * (springs, coils). twist rotates the profile along the path in degrees.
      */
     | { op: 'sweep'; profile: SketchSource; path: SketchSource | { helix: HelixPath }; twist?: number; mode: 'add' | 'cut' }
-    /** Repeats earlier steps (by id) in a line or around an axis, e.g. a bolt-hole circle. */
-    | { op: 'pattern'; features: string[]; kind: 'linear'; direction: AxisRef | Vec3; count: number; spacing: number }
-    | { op: 'pattern'; features: string[]; kind: 'circular'; axis: AxisRef; count: number; angle?: number }
+    /**
+     * Repeats earlier steps (by id) in a line or around an axis, e.g. a bolt-hole circle. Instances are numbered
+     * from 1 (the seed) along each direction; `skip` lists [direction 1, direction 2] instance numbers left out
+     * (direction 2 is 1 without a second direction, and always 1 for circular).
+     */
+    | {
+        op: 'pattern'; features: string[]; kind: 'linear'; direction: AxisRef | Vec3; count: number; spacing: number; reverse?: boolean;
+        /** Direction 2: a second row direction. seedOnly2: only the seed is repeated along it, not the direction 1 copies. */
+        direction2?: AxisRef | Vec3; count2?: number; spacing2?: number; reverse2?: boolean; seedOnly2?: boolean;
+        skip?: [number, number][];
+    }
+    | {
+        /** equal (default true): `angle` is the total angle (default 360) shared out equally; false: the angle between instances. */
+        op: 'pattern'; features: string[]; kind: 'circular'; axis: AxisRef; count: number; angle?: number; equal?: boolean;
+        reverse?: boolean; skip?: [number, number][];
+    }
     /**
      * Boolean with another part's body, as placed in the assembly: join adds it, cut removes it (e.g. a clearance
      * pocket shaped by a PCB), intersect keeps only the overlap.

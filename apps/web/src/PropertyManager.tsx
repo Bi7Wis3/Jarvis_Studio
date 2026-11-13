@@ -64,7 +64,9 @@ function featureName(tool: ToolDef, ctx: Ctx, values: Values): string {
         return partOf(ctx, ctx.edit.partId)?.name ?? tool.label;
     }
     if (tool.op && ctx.part) {
-        return nextFeatureName(ctx.part.features, { op: tool.op, mode: values.mode === 'cut' ? 'cut' : 'add' });
+        return nextFeatureName(ctx.part.features, {
+            op: tool.op, mode: values.mode === 'cut' ? 'cut' : 'add', kind: typeof values.kind === 'string' ? values.kind : undefined,
+        });
     }
     return tool.label;
 }

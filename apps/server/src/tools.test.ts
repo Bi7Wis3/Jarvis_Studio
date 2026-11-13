@@ -342,6 +342,30 @@ describe('feature history', () => {
         expect(store.get().view.rollback).toEqual({ partId: 'body', count: 2 });
     });
 
+    it('refuses a pattern without its direction or axis, or skipping the seed', () => {
+        addBody();
+        const add = (pattern: Record<string, unknown>) => () => run('features_add', {
+            partId: 'body', features: [{ op: 'pattern', features: ['hollow'], count: 3, ...pattern }],
+        });
+        expect(add({ kind: 'linear', spacing: 5 })).toThrow(/needs a direction/);
+        expect(add({ kind: 'circular' })).toThrow(/needs an axis/);
+        expect(add({ kind: 'circular', axis: 'y', equal: false })).toThrow(/angle between instances/);
+        expect(add({ kind: 'linear', direction: 'x', spacing: 5, skip: [[1, 1]] })).toThrow(/seed/);
+        expect(add({ kind: 'linear', direction: 'x', spacing: 5, direction2: 'z' })).toThrow(/direction 2/);
+        expect(add({ kind: 'linear', direction: 'x', spacing: 5, direction2: 'z', count2: 2, spacing2: 4, skip: [[2, 2]] })()).toContain('Added 1');
+    });
+
+    it('removes optional fields an update sets to null', () => {
+        addBody();
+        run('features_add', { partId: 'body', features: [{
+            op: 'pattern', kind: 'linear', features: ['hollow'], direction: 'x', spacing: 5, count: 2, direction2: 'z', count2: 2, spacing2: 5,
+        }] });
+        run('features_update', { partId: 'body', updates: [{ id: 'pattern', direction2: null, count2: null, spacing2: null }] });
+        const f = store.get().parts[0].features?.[1];
+        expect(f).toMatchObject({ op: 'pattern', direction: 'x' });
+        expect(f).not.toHaveProperty('direction2');
+    });
+
     it('appends at the end when the part is not rolled back', () => {
         addBody();
         store.mutate((d) => {

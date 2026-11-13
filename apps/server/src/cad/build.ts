@@ -8,7 +8,7 @@ import {
     localGC, makeAx3, measureVolume, Plane, revolution, setOC, Solid, twistExtrude, Vector, Wire, type Edge, type Face, type Shape3D,
 } from 'replicad';
 import type {
-    EdgeSelect, FacePickRef, FaceSelect, FastenerShape, Feature, HelixPath, PlaneRef, PrintSettings, Repeat, Shape, Sketch,
+    AxisRef, EdgeSelect, FacePickRef, FaceSelect, FastenerShape, Feature, HelixPath, PlaneRef, PrintSettings, Repeat, Shape, Sketch,
     ThreadSize, Vec3,
 } from '@jarvis/core';
 import {
@@ -1137,21 +1137,56 @@ function pattern(shape: Shape3D | null, f: Extract<Feature, { op: 'pattern' }>, 
         throw new Error('a pattern needs the ids of the steps to repeat');
     }
     const earlier = before(state);
-    let move: (s: Shape3D, i: number) => Shape3D;
+    const skipped = new Set((f.skip ?? []).map(([i, j]) => `${i},${j}`));
+    // Instances as [n along direction 1, n along direction 2], numbered from 0 here (the seed is [0, 0]).
+    const instances: [number, number][] = [];
+    let move: (s: Shape3D, i: number, j: number) => Shape3D;
     if (f.kind === 'linear') {
-        const d = Array.isArray(f.direction) ? f.direction : resolveAxis(f.direction, earlier, 'pattern direction').direction;
-        const l = Math.hypot(...d);
-        if (!(l > 1e-9)) throw new Error('pattern direction must be a non-zero vector');
-        if (!Number.isFinite(f.spacing) || f.spacing === 0) throw new Error('pattern spacing must be non-zero');
-        const step: Vec3 = [(d[0] / l) * f.spacing, (d[1] / l) * f.spacing, (d[2] / l) * f.spacing];
-        move = (s, i) => s.translate(step[0] * i, step[1] * i, step[2] * i);
+        const step = (direction: AxisRef | Vec3 | undefined, spacing: number | undefined, reverse: boolean | undefined, what: string): Vec3 => {
+            if (direction === undefined) throw new Error(`a linear pattern needs ${what}: an axis or a direction vector`);
+            const d = Array.isArray(direction) ? direction : resolveAxis(direction, earlier, `pattern ${what}`).direction;
+            const l = Math.hypot(...d);
+            if (!(l > 1e-9)) throw new Error(`pattern ${what} must be a non-zero vector`);
+            if (spacing === undefined || !Number.isFinite(spacing) || spacing === 0) throw new Error(`pattern spacing along ${what} must be non-zero`);
+            const s = (reverse ? -spacing : spacing) / l;
+            return [d[0] * s, d[1] * s, d[2] * s];
+        };
+        const a = step(f.direction, f.spacing, f.reverse, 'direction 1');
+        const second = f.direction2 !== undefined;
+        const b = second ? step(f.direction2, f.spacing2, f.reverse2, 'direction 2') : [0, 0, 0] as Vec3;
+        const count2 = second ? Math.floor(f.count2 ?? 0) : 1;
+        if (second && !(count2 >= 2)) throw new Error('direction 2 needs a count of at least 2');
+        for (let j = 0; j < count2; j++) {
+            for (let i = 0; i < (j > 0 && f.seedOnly2 ? 1 : count); i++) {
+                instances.push([i, j]);
+            }
+        }
+        move = (s, i, j) => s.translate(a[0] * i + b[0] * j, a[1] * i + b[1] * j, a[2] * i + b[2] * j);
     } else {
+        if (f.axis === undefined) throw new Error('a circular pattern needs an axis');
         const axis = resolveAxis(f.axis, earlier, 'pattern axis');
-        const sweep = f.angle ?? 360;
-        if (!(Math.abs(sweep) > 1e-6 && Math.abs(sweep) <= 360)) throw new Error('pattern angle must be between 0 and 360');
-        // A full turn spreads the copies evenly without a duplicate at 360; a partial arc includes both ends.
-        const angle = Math.abs(sweep) >= 360 ? sweep / count : sweep / (count - 1);
+        const equal = f.equal !== false;
+        let angle: number;
+        if (equal) {
+            const total = f.angle ?? 360;
+            if (!(Math.abs(total) > 1e-6 && Math.abs(total) <= 360)) throw new Error('pattern angle must be between 0 and 360');
+            // A full turn spreads the copies evenly without a duplicate at 360; a partial arc includes both ends.
+            angle = Math.abs(total) >= 360 ? total / count : total / (count - 1);
+        } else {
+            angle = f.angle ?? NaN;
+            if (!(Math.abs(angle) > 1e-6 && Math.abs(angle * (count - 1)) < 360 + 1e-6)) {
+                throw new Error('the angle between instances must be above 0, and all instances must fit in one turn');
+            }
+        }
+        if (f.reverse) angle = -angle;
+        for (let i = 0; i < count; i++) {
+            instances.push([i, 0]);
+        }
         move = (s, i) => s.rotate(angle * i, axis.point, axis.direction);
+    }
+    const placed = instances.filter(([i, j]) => (i || j) && !skipped.has(`${i + 1},${j + 1}`));
+    if (placed.length === 0) {
+        throw new Error('every instance of the pattern is skipped');
     }
     let body = shape;
     for (const id of f.features) {
@@ -1167,7 +1202,7 @@ function pattern(shape: Shape3D | null, f: Extract<Feature, { op: 'pattern' }>, 
         if (!made) {
             throw new Error(`step "${step.name ?? id}" (${step.op}) cannot be patterned: only steps that add or cut material can`);
         }
-        const copies = Array.from({ length: count - 1 }, (_, i) => move(made.tool.clone(), i + 1));
+        const copies = placed.map(([i, j]) => move(made.tool.clone(), i, j));
         body = combine(body, fuseAll(copies), made.mode, `pattern of "${step.name ?? id}"`);
     }
     return needBody(body);

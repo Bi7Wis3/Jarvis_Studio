@@ -18,6 +18,7 @@ import { evaluateTools } from './evaluateToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { stepAtBar } from './historyOps';
 import { designCopy } from './partCopy';
+import { circularPatternTool, linearPatternTool, patternEditor } from './patternToolDefs';
 import { Icon } from './icons';
 import {
     choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, redoSketch, setTool,
@@ -152,7 +153,7 @@ function vecValues(key: string, value: Vec3): Values {
 const opts = (...pairs: [string, string][]) => pairs.map(([value, label]) => ({ value, label }));
 
 /** Wraps validation errors in the same shape as a server error, so the popup shows them inline. */
-async function attempt(build: () => Promise<Result>): Promise<Result> {
+export async function attempt(build: () => Promise<Result>): Promise<Result> {
     try {
         return await build();
     } catch (e) {
@@ -165,7 +166,7 @@ function half(part: Part | null): Vec3 {
 }
 
 /** The full part from the history (the viewport copy may be cut back by the timeline). */
-function fullPart(id: string): Part | undefined {
+export function fullPart(id: string): Part | undefined {
     return useStudio.getState().history?.parts.find((p) => p.id === id);
 }
 
@@ -184,7 +185,7 @@ async function addPart(part: Record<string, unknown>): Promise<Result & { id?: s
 }
 
 /** Adds a feature, or updates the edited one in place (keeping its id and name). */
-function saveFeature(ctx: Ctx, feature: Record<string, unknown>): Promise<Result> {
+export function saveFeature(ctx: Ctx, feature: Record<string, unknown>): Promise<Result> {
     if (ctx.edit?.feature) {
         const { name: _name, op: _op, ...fields } = feature;
         return runTool('features_update', { partId: ctx.edit.partId, updates: [{ id: ctx.edit.feature.id, ...fields }] });
@@ -1517,12 +1518,13 @@ const solidTools: ToolDef[] = [
 
 // ---- Pattern, transform, material ---------------------------------------------------------------------
 
+/** Assembly: copies of the whole part (SolidWorks component pattern). Feature patterns are in patternToolDefs.tsx. */
 const patternTool: ToolDef = {
     id: 'pattern',
     preview: true,
-    label: 'Pattern',
+    label: 'Component pattern',
     icon: 'pattern',
-    hint: 'copies of the whole part',
+    hint: 'copies of the whole part in the assembly',
     needsPart: true,
     width: 300,
     panel: true,
@@ -1996,7 +1998,7 @@ export const noEditTool: ToolDef = {
 export const PART_GROUPS: ToolGroup[] = [
     { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchStartTools },
     { id: 'solid', label: 'Solid', icon: 'extrude', collapse: 4, tools: solidTools },
-    { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool] },
+    { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [linearPatternTool, circularPatternTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
     { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, othersTool, sketchesTool, sketchVisibilityTool] },
     { id: 'inspect', label: 'Inspect', icon: 'check', collapse: 1, tools: [checkTool, ...evaluateTools] },
@@ -2032,6 +2034,9 @@ export const ALL_TOOLS: ToolDef[] = [
 export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketch' {
     if (feature && (feature.op === 'extrude' || feature.op === 'revolve') && feature.sketchRef) {
         return solidTools.find((t) => t.id === (feature.op === 'revolve' ? 'revolve' : feature.mode === 'cut' ? 'cut' : 'extrude'))!;
+    }
+    if (feature?.op === 'pattern') {
+        return patternEditor(feature);
     }
     if (feature?.op === 'loft') {
         return feature.sections.every((s) => s.sketchRef) ? loftTool : noEditTool;
