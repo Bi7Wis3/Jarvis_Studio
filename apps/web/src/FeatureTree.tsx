@@ -933,7 +933,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                 <button type="button" className="br-back" onClick={() => setWorkspace('assembly')} title="Back to assembly">
                     ‹ Assembly
                 </button>
-                <span className="br-title">History</span>
+                <span className="br-title" title="The part's features in the order they were built">Feature tree</span>
                 <button type="button" className="br-min" onClick={onMinimise} title="Minimise" aria-label="Minimise panel">–</button>
             </div>
             <div className="br-part">
