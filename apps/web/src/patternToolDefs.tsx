@@ -6,7 +6,8 @@ import { useStudio } from './state';
 import { stepAtBar } from './historyOps';
 import {
     axisOptions, axisValue, CIRCULAR_DEFAULTS, circularFeature, circularValues, LINEAR_DEFAULTS, linearFeature, linearValues,
-    MIRROR_DEFAULTS, mirrorFeature, mirrorValues, patternableSteps, planeOptions, withoutNulls,
+    COMBINE_OPERATIONS, combineFeature, combineValues, MIRROR_DEFAULTS, mirrorFeature, mirrorValues, patternableSteps, planeOptions,
+    SPLIT_KEEP, splitFeature, splitValues, withoutNulls,
 } from './patternForm';
 import { attempt, fullPart, saveFeature, type Ctx, type Field, type ToolDef } from './toolDefs';
 
@@ -155,6 +156,61 @@ export const mirrorTool: ToolDef = {
         ? <p className="tb-note">If the mirror image does not touch the body, the part becomes two bodies, and later fillets, shells and drafts on it fail.</p>
         : null),
     apply: (v, ctx) => attempt(() => save(ctx, mirrorFeature(v))),
+};
+
+/** Other parts a part can be combined with: not itself, nor an instance of itself. */
+function otherParts(ctx: Ctx) {
+    const self = ctx.edit?.partId ?? ctx.part?.id;
+    return (useStudio.getState().history?.parts ?? [])
+        .filter((p) => p.id !== self && p.instanceOf !== self)
+        .map((p) => ({ value: p.id, label: p.name }));
+}
+
+/**
+ * Combine. SolidWorks combines bodies of one multibody part; parts here have one body, so the other body is
+ * another part as placed in the assembly.
+ */
+export const combineTool: ToolDef = {
+    id: 'combine',
+    preview: true,
+    label: 'Combine',
+    icon: 'combine',
+    op: 'combine',
+    hint: 'add, subtract or keep the overlap with another part',
+    needsPart: true,
+    width: 300,
+    fields: (ctx) => [
+        { key: 'operation', label: 'Operation type', kind: 'select', options: COMBINE_OPERATIONS },
+        { key: 'other', label: 'Other part', kind: 'select', options: otherParts(ctx) },
+    ],
+    defaults: (ctx) => combineValues(ctx.edit?.feature?.op === 'combine' ? ctx.edit.feature : null, otherParts(ctx)[0]?.value ?? ''),
+    top: () => <p className="tb-note">Parts have one body each, so the other body is another part, where it sits in the assembly.</p>,
+    apply: (v, ctx) => attempt(() => save(ctx, combineFeature(v))),
+};
+
+/** Split: cut the body with a plane and keep one side or both. */
+export const splitTool: ToolDef = {
+    id: 'split',
+    preview: true,
+    label: 'Split',
+    icon: 'split',
+    op: 'split',
+    hint: 'cut the body with a plane',
+    needsPart: true,
+    width: 300,
+    fields: (ctx) => {
+        const { features, upto } = scope(ctx);
+        return [
+            { key: 'plane', label: 'Trimming plane', kind: 'select', options: planeOptions(features, upto), section: 'Trim tools' },
+            { key: 'keep', label: 'Keep', kind: 'select', options: SPLIT_KEEP, section: 'Resulting bodies' },
+        ];
+    },
+    defaults: (ctx) => splitValues(ctx.edit?.feature?.op === 'split' ? ctx.edit.feature : null),
+    top: () => <p className="tb-note">Only a plane can split for now; sketches, surfaces and faces cannot yet.</p>,
+    extra: (api) => (api.values.keep === 'both'
+        ? <p className="tb-note">Both keeps two bodies in this part: later fillets, shells and drafts on it fail.</p>
+        : null),
+    apply: (v, ctx) => attempt(() => save(ctx, splitFeature(v))),
 };
 
 /** The editor for a pattern step. */

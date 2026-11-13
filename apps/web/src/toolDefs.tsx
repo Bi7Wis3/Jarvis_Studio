@@ -20,7 +20,7 @@ import { stepAtBar } from './historyOps';
 import { designCopy } from './partCopy';
 import { CHAMFER_TYPES, chamferTypeFields, chamferTypeValues } from './chamferForm';
 import { BOX_DEFAULTS, boxShape, boxValues, CYLINDER_DEFAULTS, cylinderShape, cylinderValues } from './primitiveForm';
-import { circularPatternTool, linearPatternTool, mirrorTool, patternEditor } from './patternToolDefs';
+import { circularPatternTool, combineTool, linearPatternTool, mirrorTool, patternEditor, splitTool } from './patternToolDefs';
 import { Icon } from './icons';
 import {
     choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, redoSketch, setTool,
@@ -1496,6 +1496,8 @@ const solidTools: ToolDef[] = [
     featureTools.hole,
     featureTools.pocket,
     featureTools.thread,
+    combineTool,
+    splitTool,
 ];
 
 // ---- Pattern, transform, material ---------------------------------------------------------------------
@@ -2019,6 +2021,9 @@ export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketc
     }
     if (feature?.op === 'pattern') {
         return patternEditor(feature);
+    }
+    if (feature?.op === 'combine' || feature?.op === 'split') {
+        return feature.op === 'combine' ? combineTool : splitTool;
     }
     if (feature?.op === 'loft') {
         return feature.sections.every((s) => s.sketchRef) ? loftTool : noEditTool;

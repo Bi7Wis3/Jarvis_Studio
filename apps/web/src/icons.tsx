@@ -131,6 +131,18 @@ const PATHS: Record<string, ReactNode> = {
             <path d="M9 6L3 18h6zM15 6l6 12h-6z" />
         </>
     ),
+    combine: (
+        <>
+            <rect x="3.5" y="3.5" width="11" height="11" rx="1" />
+            <rect x="9.5" y="9.5" width="11" height="11" rx="1" opacity="0.7" />
+        </>
+    ),
+    split: (
+        <>
+            <path d="M4 6h6v12H4zM14 6h6v12h-6z" />
+            <path d="M12 2v20" strokeDasharray="2 2" />
+        </>
+    ),
     delete: (
         <>
             <path d="M4 7h16M10 7V4.5h4V7" />

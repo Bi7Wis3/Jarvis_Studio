@@ -1,7 +1,7 @@
 // Form values <-> pattern features for the Linear pattern and Circular pattern tools (SolidWorks Linear Pattern and
 // Circular Pattern PropertyManagers, as far as the kernel goes). Pure, so the round trips can be tested.
 
-import type { AxisRef, Feature, Vec3 } from '@jarvis/core';
+import type { AxisRef, Feature, PlaneRef, Vec3 } from '@jarvis/core';
 
 type Values = Record<string, string | boolean | string[]>;
 type Option = { value: string; label: string };
@@ -247,17 +247,72 @@ export function mirrorValues(f: Mirror): Values {
     };
 }
 
+/** A plane select's value as a PlaneRef: front / top / right, or `ref:<plane step id>`. */
+function planeFromValue(value: string, what: string): PlaneRef {
+    if (value.startsWith('ref:')) {
+        return { planeRef: value.slice(4) };
+    }
+    if (value === 'front' || value === 'top' || value === 'right') {
+        return value;
+    }
+    throw new Error(`Pick ${what}.`);
+}
+
+const planeValue = (plane: PlaneRef): string => (typeof plane === 'string' ? plane : `ref:${plane.planeRef}`);
+
 /** The mirror's fields; `features` is null (removed) when mirroring the body. */
 export function mirrorFeature(v: Values): Record<string, unknown> {
-    const value = String(v.plane ?? '');
-    const plane = value.startsWith('ref:') ? { planeRef: value.slice(4) } : value;
-    if (typeof plane === 'string' && !['front', 'top', 'right'].includes(plane)) {
-        throw new Error('Pick a mirror plane.');
-    }
+    const plane = planeFromValue(String(v.plane ?? ''), 'a mirror plane');
     const offset = number(v, 'offset', 'Offset');
     const features = v.what === 'features' ? (Array.isArray(v.features) ? v.features : []) : null;
     if (features && features.length === 0) {
         throw new Error('Pick the features to mirror.');
     }
     return { op: 'mirror', plane, offset, features };
+}
+
+// ---- Combine and split ----------------------------------------------------------------------------------------
+
+type Combine = Extract<Feature, { op: 'combine' }>;
+type Split = Extract<Feature, { op: 'split' }>;
+
+/** SolidWorks names for the operations. */
+export const COMBINE_OPERATIONS: Option[] = [
+    { value: 'join', label: 'Add' },
+    { value: 'cut', label: 'Subtract' },
+    { value: 'intersect', label: 'Common' },
+];
+
+export function combineValues(f: Combine | null, firstOther: string): Values {
+    return { operation: f?.operation ?? 'join', other: f?.part ?? firstOther };
+}
+
+export function combineFeature(v: Values): Record<string, unknown> {
+    const part = String(v.other ?? '');
+    if (!part) {
+        throw new Error('Pick the other part.');
+    }
+    const operation = String(v.operation);
+    if (!['join', 'cut', 'intersect'].includes(operation)) {
+        throw new Error('Pick an operation.');
+    }
+    return { op: 'combine', part, operation };
+}
+
+export const SPLIT_KEEP: Option[] = [
+    { value: 'positive', label: 'The side the plane faces' },
+    { value: 'negative', label: 'The other side' },
+    { value: 'both', label: 'Both (two bodies)' },
+];
+
+export function splitValues(f: Split | null): Values {
+    return { plane: f ? planeValue(f.plane) : 'right', keep: f?.keep ?? 'positive' };
+}
+
+export function splitFeature(v: Values): Record<string, unknown> {
+    const keep = String(v.keep);
+    if (!['positive', 'negative', 'both'].includes(keep)) {
+        throw new Error('Pick which side to keep.');
+    }
+    return { op: 'split', plane: planeFromValue(String(v.plane ?? ''), 'a trimming plane'), keep };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Feature } from '@jarvis/core';
 import {
-    axisFromValue, axisOptions, axisValue, CIRCULAR_DEFAULTS, circularFeature, circularValues, LINEAR_DEFAULTS, linearFeature,
+    axisFromValue, axisOptions, axisValue, CIRCULAR_DEFAULTS, combineFeature, combineValues, splitFeature, splitValues, circularFeature, circularValues, LINEAR_DEFAULTS, linearFeature,
     linearValues, MIRROR_DEFAULTS, mirrorFeature, mirrorValues, parseSkip, patternableSteps, planeOptions, skipText, withoutNulls,
 } from './patternForm';
 
@@ -74,6 +74,16 @@ describe('pattern form', () => {
         expect(mirrorFeature(mirrorValues({ id: 'm', ...features } as Extract<Feature, { op: 'mirror' }>))).toEqual(features);
         expect(mirrorFeature({ ...MIRROR_DEFAULTS, plane: 'top', features: ['h'] })).toMatchObject({ plane: 'top', features: null });
         expect(() => mirrorFeature({ ...MIRROR_DEFAULTS, what: 'features', features: [] })).toThrow(/features to mirror/);
+    });
+
+    it('round-trips combine and split', () => {
+        const combine = { id: 'c', op: 'combine', part: 'pcb', operation: 'cut' } as const;
+        expect(combineFeature(combineValues(combine, 'other'))).toEqual({ op: 'combine', part: 'pcb', operation: 'cut' });
+        expect(combineValues(null, 'pcb')).toEqual({ operation: 'join', other: 'pcb' });
+        expect(() => combineFeature(combineValues(null, ''))).toThrow(/other part/);
+        const split = { id: 's', op: 'split', plane: { planeRef: 'pl' }, keep: 'both' } as const;
+        expect(splitFeature(splitValues(split))).toEqual({ op: 'split', plane: { planeRef: 'pl' }, keep: 'both' });
+        expect(splitFeature(splitValues(null))).toEqual({ op: 'split', plane: 'right', keep: 'positive' });
     });
 
     it('round-trips a circular pattern with equal spacing or an angle between instances', () => {
