@@ -1713,6 +1713,7 @@
     text-overflow: ellipsis;
     text-transform: none;
     white-space: nowrap;
+}
 
 /* Selection boxes: the label above the list; the active box (where view clicks go) is outlined in pink. */
 .pm .tb-field.pm-pick {
