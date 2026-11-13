@@ -1,12 +1,12 @@
 // The sketcher in the 3D view: plane picking, the sketch grid, entities, the entity in progress with live
-// dimensions, shaded closed profiles and a preview of the extrusion or revolve.
+// dimensions and shaded closed profiles (the finish panel's solid is previewed by the server, like other tools).
 
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Grid, Html, Line } from '@react-three/drei';
 import {
-    DoubleSide, Euler, ExtrudeGeometry, LatheGeometry, MathUtils, Matrix4, Path, Quaternion, Shape, ShapeGeometry, Vector2,
-    Vector3, type BufferGeometry, type Group, type Material, type Mesh, type PerspectiveCamera,
+    DoubleSide, Euler, MathUtils, Matrix4, Path, Quaternion, Shape, ShapeGeometry, Vector2,
+    Vector3, type Group, type Material, type Mesh, type PerspectiveCamera,
 } from 'three';
 import {
     shapeHalfExtents, type Feature, type Part, type Sketch, type SketchPlane, type SketchPlaneName, type SketchRegion, type Vec3,
@@ -120,8 +120,8 @@ function RegionFills({ regions, picked, onToggle }: { regions: SketchRegion[]; p
 }
 
 /**
- * Shaded closed profiles and, while finishing, a translucent preview of the solid. While finishing, each region
- * can be clicked to pick it; the preview then shows the picked regions only (all of them when none is picked).
+ * Shaded closed profiles. While finishing, each region can be clicked to pick it; the solid the panel would make
+ * is the server's preview (a ghost over the model, as for Extrude), so every option shows as it will be built.
  */
 function Profiles() {
     const geometry = useSketcher((s) => s.geometry);
@@ -132,52 +132,14 @@ function Profiles() {
     const nested = useMemo(() => nestProfiles(geometryProfiles(geometry).profiles), [geometry]);
     const regions = useMemo(() => (open ? regionsOf(geometry) : []), [open, geometry]);
     const picked = useMemo(() => (ownPicks ? pickedRegions(regions, picks) : []), [ownPicks, regions, picks]);
-    const used = useMemo(() => (ownPicks && picks.length ? regionOutlines(picked.map((i) => regions[i])) : nested),
-        [ownPicks, picks, picked, regions, nested]);
     const fill = useMemo(() => new ShapeGeometry(shapesFor(nested)), [nested]);
-    const solid = useMemo<BufferGeometry | null>(() => {
-        if (!finishing || !used.length) {
-            return null;
-        }
-        if (finishing.op === 'extrude') {
-            const depth = Math.max(0.1, finishing.distance);
-            const geometry = new ExtrudeGeometry(shapesFor(used), { depth, bevelEnabled: false, curveSegments: 24 });
-            const start = finishing.direction === 'reverse' ? -depth : finishing.direction === 'symmetric' ? -depth / 2 : 0;
-            return geometry.translate(0, 0, start);
-        }
-        const outer = used[0].outer;
-        const along = finishing.axis === 'v';
-        const points = outer.map(([u, v]) => new Vector2(Math.abs(along ? u : v), along ? v : u));
-        const lathe = new LatheGeometry([...points, points[0]], 64, 0, MathUtils.degToRad(finishing.angle || 360));
-        return along ? lathe : lathe.rotateZ(-Math.PI / 2);
-    }, [finishing, used]);
     useEffect(() => () => fill.dispose(), [fill]);
-    useEffect(() => () => solid?.dispose(), [solid]);
-    const cut = finishing?.mode === 'cut';
-    return (
-        <>
-            {open ? (
-                <RegionFills regions={regions} picked={picked} onToggle={(at) => toggleRegion(at, regions)} />
-            ) : (
-                <mesh geometry={fill} renderOrder={15} raycast={() => null}>
-                    <meshBasicMaterial color="#b46bff" transparent opacity={0.2} depthTest={false} depthWrite={false} side={DoubleSide} />
-                </mesh>
-            )}
-            {solid && (
-                <mesh geometry={solid} renderOrder={16} raycast={() => null}>
-                    <meshStandardMaterial
-                        color={cut ? '#ff6b78' : '#35e0ff'}
-                        transparent
-                        opacity={0.35}
-                        depthWrite={false}
-                        depthTest={false}
-                        side={DoubleSide}
-                        emissive={cut ? '#ff6b78' : '#35e0ff'}
-                        emissiveIntensity={0.25}
-                    />
-                </mesh>
-            )}
-        </>
+    return open ? (
+        <RegionFills regions={regions} picked={picked} onToggle={(at) => toggleRegion(at, regions)} />
+    ) : (
+        <mesh geometry={fill} renderOrder={15} raycast={() => null}>
+            <meshBasicMaterial color="#b46bff" transparent opacity={0.2} depthTest={false} depthWrite={false} side={DoubleSide} />
+        </mesh>
     );
 }
 

@@ -107,6 +107,12 @@ export interface Sketch {
      * so features can use some of them. Absent for sketches written directly as profiles.
      */
     regions?: SketchRegion[];
+    /**
+     * The open chains of the sketch (lines and arcs on no closed area: a sweep path, a guide), each a `path` profile
+     * that is not closed back to its start. Written by the sketcher next to `profiles`, which keeps only the closed
+     * areas the kernel extrudes; a sweep takes its path from here.
+     */
+    open?: SketchProfile[];
 }
 
 /** One bounded region: `loops[0]` is its outline, the other loops are holes in it; `at` is a point inside it. */
@@ -315,7 +321,7 @@ export type Feature = FeatureBase & (
      * Blends a solid through two or more sections, in order (each one closed profile without holes), e.g. from a
      * rectangle on the bottom plane to a circle on an offset plane. ruled: straight between sections, else smooth.
      */
-    | { op: 'loft'; sections: SketchSource[]; ruled?: boolean; mode: 'add' | 'cut' }
+    | { op: 'loft'; sections: SketchSource[]; ruled?: boolean; mode: 'add' | 'cut'; /** Joins the last section back to the first (3+ sections). */ closed?: boolean }
     /**
      * Mirrors the body built so far across a plane of the part frame (through `offset` along its normal) and joins
      * the copy; keepOriginal false replaces the body with its mirror image.
@@ -328,10 +334,16 @@ export type Feature = FeatureBase & (
     /** Construction point (builds nothing). */
     | { op: 'point'; position: Vec3 }
     /**
-     * Sweeps a closed profile along a path: an open or closed chain of lines and arcs in another sketch, or a helix
-     * (springs, coils). twist rotates the profile along the path in degrees.
+     * Sweeps a closed profile along a path: the open chain (or single closed profile) of another sketch, or a helix
+     * (springs, coils). `diameter` instead of `profile`: a circular profile, a round rod centred on the path start.
+     * `regions` picks the profile's areas (one, holes allowed). orientation: followPath turns the profile with the
+     * path (default), keepNormal keeps it parallel to its own plane. twist rotates the profile along a straight
+     * path, in degrees.
      */
-    | { op: 'sweep'; profile: SketchSource; path: SketchSource | { helix: HelixPath }; twist?: number; mode: 'add' | 'cut' }
+    | ({
+        op: 'sweep'; profile?: SketchSource; diameter?: number; path: SketchSource | { helix: HelixPath }; twist?: number;
+        orientation?: 'followPath' | 'keepNormal'; mode: 'add' | 'cut';
+    } & RegionPicks)
     /** Repeats earlier steps (by id) in a line or around an axis, e.g. a bolt-hole circle. */
     | { op: 'pattern'; features: string[]; kind: 'linear'; direction: AxisRef | Vec3; count: number; spacing: number }
     | { op: 'pattern'; features: string[]; kind: 'circular'; axis: AxisRef; count: number; angle?: number }
@@ -350,8 +362,19 @@ export type Feature = FeatureBase & (
         /** The plane the faces pivot about: a plane, or a flat face picked in the view. flip reverses the pull direction. */
         neutral?: PlaneRef; neutralFace?: FacePickRef; flip?: boolean;
     }
-    /** Printable ISO-style thread: external on a boss of `diameter`, or internal in a bore of `diameter`. */
-    | { op: 'thread'; kind: 'external' | 'internal'; diameter: number; pitch: number; length: number; position?: Vec3 }
+    /**
+     * Printable ISO-style thread: external on a shaft, or internal in a bore, of nominal (major) `diameter`.
+     * `at`: a point on the circular edge where it begins (an end of the shaft or hole); the axis, start and the
+     * direction along the cylinder come from that edge, and `diameter` defaults to the shaft's (external) or the
+     * hole's diameter + 1.0825 x pitch (internal). Without `at`: along +Y from `position`, a rod or bore of its own.
+     * The thread runs `length` mm (or `revolutions` turns) from the edge, starting `offset` mm along the cylinder.
+     * leftHanded: a left-hand thread. starts: a multi-start thread (lead =
+     * starts x pitch). startAngle turns where the thread begins about the axis, in degrees.
+     */
+    | {
+        op: 'thread'; kind: 'external' | 'internal'; diameter?: number; pitch: number; length?: number; position?: Vec3;
+        at?: Vec3; revolutions?: number; offset?: number; leftHanded?: boolean; starts?: number; startAngle?: number;
+    }
 );
 
 /** Settings for designing parts to be 3D printed (FDM by default). */

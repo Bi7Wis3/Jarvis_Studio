@@ -37,6 +37,68 @@ export function regionProfiles(entities: Entity[], ends: Map<string, [string, st
     return { profiles: [...entitiesToProfiles(others).profiles, ...found.flatMap((f) => f.profiles)], open };
 }
 
+/**
+ * The open chains of the entities: lines and arcs on no closed region, joined end to end into `path` profiles
+ * that are not closed back to their start (a sweep path, a guide). A chain ends where it stops or branches.
+ * Ordered by their first curve; arguments as for regionProfiles.
+ */
+export function openChains(entities: Entity[], ends: Map<string, [string, string]> = new Map()): SketchProfile[] {
+    const { curves, vertex } = graphOf(entities, ends);
+    const open = blocks(vertex).filter((b) => b.length === 1 && vertex[b[0]][0] !== vertex[b[0]][1]).map((b) => b[0]);
+    const at = new Map<number, number[]>();
+    for (const i of open) {
+        for (const v of vertex[i]) {
+            at.set(v, [...(at.get(v) ?? []), i]);
+        }
+    }
+    const used = new Set<number>();
+    const chains: { first: number; profile: SketchProfile }[] = [];
+    const walk = (start: number, first: number): void => {
+        const point = (v: number, i: number): Pt => (vertex[i][0] === v ? curves[i].a : curves[i].b);
+        const segments: SketchSegment[] = [];
+        let v = start;
+        let i = first;
+        const from = point(v, i);
+        const members: number[] = [];
+        for (;;) {
+            used.add(i);
+            members.push(i);
+            const next = vertex[i][0] === v ? vertex[i][1] : vertex[i][0];
+            const c = curves[i];
+            const to = point(next, i);
+            segments.push(c.kind === 'line' ? { kind: 'line', to } : { kind: 'arc', to, through: c.m });
+            v = next;
+            const onward = at.get(v) ?? [];
+            if (onward.length !== 2) {
+                break;
+            }
+            const k = onward.find((j) => j !== i)!;
+            if (used.has(k)) {
+                break;
+            }
+            i = k;
+        }
+        chains.push({ first: Math.min(...members), profile: { kind: 'path', start: from, segments } });
+    };
+    // From each end or branch point first, then (nothing should be left: open curves form no cycle) any curve.
+    for (const [v, list] of at) {
+        if (list.length !== 2) {
+            for (const i of list) {
+                if (!used.has(i)) {
+                    walk(v, i);
+                }
+            }
+        }
+    }
+    for (const i of open) {
+        if (!used.has(i)) {
+            walk(vertex[i][0], i);
+        }
+    }
+    chains.sort((a, b) => a.first - b.first);
+    return chains.map((c) => c.profile);
+}
+
 interface Loop {
     profile: SketchProfile;
     points: Pt[];

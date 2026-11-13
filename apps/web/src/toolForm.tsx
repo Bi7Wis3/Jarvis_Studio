@@ -57,9 +57,13 @@ function useToolPreview(tool: ToolDef, ctx: Ctx, values: Values, enabled: boolea
             const { values: v, ctx: c } = latest.current;
             let calls: ToolCall[] = [];
             try {
-                const captured = captureToolCalls(() => tool.apply!(v, c));
-                calls = captured.calls;
-                void Promise.resolve(captured.result).catch(() => undefined);
+                if (tool.previewCalls) {
+                    calls = tool.previewCalls(v, c);
+                } else {
+                    const captured = captureToolCalls(() => tool.apply!(v, c));
+                    calls = captured.calls;
+                    void Promise.resolve(captured.result).catch(() => undefined);
+                }
             } catch {
                 calls = [];
             }
@@ -120,7 +124,7 @@ export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
     const fields = missingPart ? [] : (tool.fields?.(ctx) ?? []).filter((f) => !f.show || f.show(values));
     // The preview stays in view until the form closes after OK, by when the real state has arrived (the server
     // sends the new project and mesh keys before the tool's answer), so the view never falls back to the old model.
-    const preview = useToolPreview(tool, ctx, values, !!tool.preview && !!tool.apply && !missingPart, busy);
+    const preview = useToolPreview(tool, ctx, values, !!(tool.preview || tool.previewCalls) && !!tool.apply && !missingPart, busy);
 
     useEffect(() => {
         form.current?.querySelector<HTMLElement>('input:not([type=checkbox]):not([type=color]), select, .tb-apply, .pm-ok')?.focus();

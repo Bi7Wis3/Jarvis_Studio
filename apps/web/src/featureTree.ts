@@ -44,7 +44,7 @@ export function sketchSources(feature: Feature): Source[] {
         case 'loft':
             return feature.sections.map((source, i) => ({ role: 'section', label: `Section ${i + 1}`, source }));
         case 'sweep': {
-            const sources: Source[] = [{ role: 'profile', label: 'Profile', source: feature.profile }];
+            const sources: Source[] = feature.profile ? [{ role: 'profile', label: 'Profile', source: feature.profile }] : [];
             if (!('helix' in feature.path)) {
                 sources.push({ role: 'path', label: 'Path', source: feature.path });
             }

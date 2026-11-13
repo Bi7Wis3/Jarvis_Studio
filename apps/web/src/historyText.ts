@@ -166,7 +166,9 @@ export function stepRefs(feature: Feature): string[] {
             ids.push(...planeIds(feature.sketch.plane));
             break;
         case 'sweep':
-            ids.push(...sourceIds(feature.profile));
+            if (feature.profile) {
+                ids.push(...sourceIds(feature.profile));
+            }
             ids.push(...('helix' in feature.path ? axisIds(feature.path.helix.axis) : sourceIds(feature.path)));
             break;
         case 'pattern':
@@ -302,10 +304,13 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
         case 'sketch': {
             const { sketch } = feature;
             const count = sketch.profiles.length;
-            return `Sketch on ${planeText(sketch.plane, part)}${sketch.offset ? ` +${mm(sketch.offset)}` : ''} · ${count} profile${count === 1 ? '' : 's'}`;
+            const chains = sketch.open?.length ?? 0;
+            return `Sketch on ${planeText(sketch.plane, part)}${sketch.offset ? ` +${mm(sketch.offset)}` : ''} · ${count} profile${count === 1 ? '' : 's'}`
+                + (chains ? ` · ${chains} open chain${chains === 1 ? '' : 's'}` : '');
         }
         case 'loft':
-            return `Loft · ${feature.sections.length} sections · ${feature.mode === 'add' ? 'join' : 'cut'}${feature.ruled ? ' · ruled' : ''}`;
+            return `Loft · ${feature.sections.length} sections · ${feature.mode === 'add' ? 'join' : 'cut'}${feature.ruled ? ' · ruled' : ''}`
+                + (feature.closed ? ' · closed' : '');
         case 'plane': {
             const d = feature.definition;
             switch (d.kind) {
@@ -337,7 +342,12 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                 return `Coil · ${mm(h.turns)} turns · pitch ${mm(h.pitch)} · ${mode}`;
             }
             const path = feature.path.sketchRef ? stepName(part, feature.path.sketchRef) : 'a path';
-            return `Sweep · along ${path} · ${mode}`;
+            return [
+                `Sweep${feature.profile ? '' : ` ⌀${mm(feature.diameter ?? 0)}`} · along ${path}`,
+                ...(feature.twist ? [`twist ${mm(feature.twist)}°`] : []),
+                ...(feature.orientation === 'keepNormal' ? ['normal kept constant'] : []),
+                mode,
+            ].join(' · ');
         }
         case 'pattern': {
             const steps = `${feature.features.length} step${feature.features.length === 1 ? '' : 's'}`;
@@ -359,7 +369,13 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                 `from ${feature.neutralFace ? 'a picked face' : feature.neutral ? planeRefText(feature.neutral, part) : 'no plane'}`,
             ].join(' · ');
         case 'thread':
-            return `${feature.kind} ⌀${mm(feature.diameter)} · P ${mm(feature.pitch)} · ${mm(feature.length)} mm`;
+            return [
+                `${feature.kind}${feature.diameter !== undefined ? ` ⌀${mm(feature.diameter)}` : ''}`,
+                `P ${mm(feature.pitch)}${(feature.starts ?? 1) > 1 ? ` × ${feature.starts} starts` : ''}`,
+                feature.revolutions !== undefined ? `${mm(feature.revolutions)} turns` : `${mm(feature.length ?? 0)} mm`,
+                ...(feature.leftHanded ? ['left hand'] : []),
+                ...(feature.at ? ['on a picked edge'] : []),
+            ].join(' · ');
     }
 }
 
@@ -389,7 +405,7 @@ export function sketchEdits(feature: Feature): { label: string; id: string }[] {
         case 'loft':
             return feature.sections.flatMap((s, i) => (s.sketchRef ? [{ label: `Edit section ${i + 1} sketch`, id: s.sketchRef }] : []));
         case 'sweep': {
-            const edits = feature.profile.sketchRef ? [{ label: 'Edit profile sketch', id: feature.profile.sketchRef }] : [];
+            const edits = feature.profile?.sketchRef ? [{ label: 'Edit profile sketch', id: feature.profile.sketchRef }] : [];
             if (!('helix' in feature.path) && feature.path.sketchRef) {
                 edits.push({ label: 'Edit path sketch', id: feature.path.sketchRef });
             }

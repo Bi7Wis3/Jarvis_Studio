@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SketchGeometry, SketchProfile } from '@jarvis/core';
-import { addArc, addCircle, addLine, addRect, geometryEntities, geometryProfiles, EMPTY_GEOMETRY } from './sketchGeometry';
+import { addArc, addCircle, addLine, addRect, geometryEntities, geometryOpenChains, geometryProfiles, EMPTY_GEOMETRY } from './sketchGeometry';
 import { area, entitiesToProfiles, inside, profilePoints, type Pt } from './sketchMath';
 
 const areaOf = (p: SketchProfile) => Math.abs(area(profilePoints(p)));
@@ -117,5 +117,35 @@ describe('sketch regions', () => {
     it('counts every curve of an open chain', () => {
         const g = polyline(EMPTY_GEOMETRY, [0, 0], [10, 0], [10, 10]);
         expect(geometryProfiles(g)).toEqual({ profiles: [], open: 2 });
+    });
+});
+
+describe('open chains', () => {
+    it('keeps a polyline with an arc as one open path, in order', () => {
+        let g = polyline(EMPTY_GEOMETRY, [0, 0], [0, 20]);
+        g = addArc(g, ref(g, [0, 20]), { at: [10, 30] }, [10 - 10 * Math.SQRT1_2, 20 + 10 * Math.SQRT1_2]).g;
+        g = polyline(g, [10, 30], [30, 30]);
+        expect(geometryProfiles(g)).toMatchObject({ profiles: [], open: 3 });
+        const [chain, ...rest] = geometryOpenChains(g);
+        expect(rest).toHaveLength(0);
+        if (chain.kind !== 'path') throw new Error('path expected');
+        // Walked from one free end to the other, whichever end it starts at.
+        const ends = [chain.start, chain.segments[chain.segments.length - 1].to];
+        expect(ends).toContainEqual([0, 0]);
+        expect(ends).toContainEqual([30, 30]);
+        expect(chain.segments.map((s) => s.kind).sort()).toEqual(['arc', 'line', 'line']);
+    });
+
+    it('splits chains at branch points and leaves closed areas out', () => {
+        let g = addRect(EMPTY_GEOMETRY, [0, 0], [10, 10]).g;
+        g = polyline(g, [20, 0], [30, 0], [40, 0]);
+        g = polyline(g, [30, 0], [30, 10]);
+        g = polyline(g, [10, 10], [15, 15]);
+        const chains = geometryOpenChains(g);
+        // Three legs meet at (30, 0); the tail on the square's corner is a chain of its own.
+        expect(chains).toHaveLength(4);
+        expect(chains.every((c) => c.kind === 'path' && c.segments.length === 1)).toBe(true);
+        expect(geometryProfiles(g).profiles).toHaveLength(1);
+        expect(geometryOpenChains(addCircle(EMPTY_GEOMETRY, { at: [0, 0] }, 5).g)).toEqual([]);
     });
 });

@@ -344,6 +344,12 @@ const PATHS: Record<string, ReactNode> = {
             <path d="M5 16L8.5 5.8M19 16l-3.5-10.2" />
         </>
     ),
+    sweep: (
+        <>
+            <path d="M5 18c4 0 4-12 8-12s4 12 8 12" />
+            <ellipse cx="5" cy="18" rx="2.2" ry="3" />
+        </>
+    ),
     select: <path d="M6 3l12 9-5.5 1.2L16 20l-2.6 1.2-3-6.6L6 18z" />,
     dimension: (
         <>
