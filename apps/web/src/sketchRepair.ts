@@ -5,7 +5,7 @@
 import type { SketchConstraint, SketchCurve, SketchGeometry } from '@jarvis/core';
 import { ORIGIN, curveOf, measure, pointOf, solveGeometry, type SolveResult } from './solver';
 import { addConstraint, constraintRefs, danglingConstraints, type NewConstraint } from './sketchGeometry';
-import { curvePoints } from './sketchEdit';
+import { chainOf, curvePoints } from './sketchEdit';
 import { dist, round, type Pt } from './sketchMath';
 
 /** End points closer than this (mm) that are not joined count as a gap. */
@@ -13,7 +13,7 @@ export const GAP = 0.5;
 /** Positions closer than this are the same. */
 const SAME = 1e-3;
 
-export type ProblemKind = 'gap' | 'duplicate' | 'zero' | 'dangling';
+export type ProblemKind = 'gap' | 'duplicate' | 'overlap' | 'zero' | 'dangling';
 
 export interface Problem {
     /** Stable key: kind and the ids involved. */
@@ -71,14 +71,68 @@ function joined(g: SketchGeometry, a: string, b: string): boolean {
     return g.constraints.some((c) => c.kind === 'coincident' && ((c.a === a && c.b === b) || (c.a === b && c.b === a)));
 }
 
-/** Everything Repair sketch would fix, zero-length curves first, then duplicates, gaps and dangling relations. */
-export function findProblems(g: SketchGeometry): Problem[] {
+/** Length of a line or arc. */
+function lengthOf(g: SketchGeometry, c: SketchCurve): number {
+    if (c.kind === 'line') {
+        return dist(P(g, c.a), P(g, c.b));
+    }
+    if (c.kind === 'circle') {
+        return 2 * Math.PI * c.radius;
+    }
+    const m = P(g, c.center);
+    const [s, e] = [P(g, c.start), P(g, c.end)];
+    const sweep = (((Math.atan2(e[1] - m[1], e[0] - m[0]) - Math.atan2(s[1] - m[1], s[0] - m[0])) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    return dist(m, s) * sweep;
+}
+
+/** Two lines on one line that overlap in part (neither lies within the other): their span from end to end, as point ids. */
+function overlapSpan(g: SketchGeometry, a: SketchCurve, b: SketchCurve): [string, string] | null {
+    if (a.kind !== 'line' || b.kind !== 'line') {
+        return null;
+    }
+    const [p, q] = [P(g, a.a), P(g, a.b)];
+    const len = dist(p, q);
+    if (len < SAME) {
+        return null;
+    }
+    const u: Pt = [(q[0] - p[0]) / len, (q[1] - p[1]) / len];
+    const off = (x: Pt) => Math.abs((x[0] - p[0]) * u[1] - (x[1] - p[1]) * u[0]);
+    if (off(P(g, b.a)) > SAME || off(P(g, b.b)) > SAME) {
+        return null;
+    }
+    const t = (id: string) => { const x = P(g, id); return (x[0] - p[0]) * u[0] + (x[1] - p[1]) * u[1]; };
+    const all = [a.a, a.b, b.a, b.b].map((id) => ({ id, t: t(id) })).sort((x, y) => x.t - y.t);
+    const [b0, b1] = [Math.min(t(b.a), t(b.b)), Math.max(t(b.a), t(b.b))];
+    // Overlapping by more than a point, and each sticking out past the other.
+    const shared = Math.min(len, b1) - Math.max(0, b0);
+    if (shared <= SAME || (b0 >= -SAME && b1 <= len + SAME) || (b0 <= SAME && b1 >= len - SAME)) {
+        return null;
+    }
+    return [all[0].id, all[3].id];
+}
+
+/**
+ * Everything Repair sketch would fix: zero-length and tiny pieces (a chain shorter than twice the gap size) first,
+ * then duplicates and lines that overlap in part, gaps smaller than `gap`, and dangling relations.
+ */
+export function findProblems(g: SketchGeometry, gap = GAP): Problem[] {
     const out: Problem[] = [];
     const zero = new Set<string>();
     for (const c of g.curves) {
         if (isZero(g, c)) {
             zero.add(c.id);
             out.push({ key: `zero:${c.id}`, kind: 'zero', text: `${NOUN[c.kind]} ${c.id} has no length`, action: 'Remove', refs: [c.id, ...curvePoints(c)] });
+        }
+    }
+    // Tiny: a whole chain shorter than twice the gap size (a stray scrap, not a short side of a bigger shape).
+    for (const c of g.curves) {
+        if (zero.has(c.id) || c.kind === 'circle') {
+            continue;
+        }
+        const chain = chainOf(g, c.id).segments.map((s) => s.curve);
+        if (chain.reduce((sum, k) => sum + lengthOf(g, k), 0) < 2 * gap) {
+            zero.add(c.id);
+            out.push({ key: `zero:${c.id}`, kind: 'zero', text: `${NOUN[c.kind]} ${c.id} is shorter than ${round(2 * gap, 0.001)} mm`, action: 'Remove', refs: [c.id, ...curvePoints(c)] });
         }
     }
     const curves = g.curves.filter((c) => !zero.has(c.id));
@@ -95,6 +149,11 @@ export function findProblems(g: SketchGeometry): Problem[] {
                 duplicate.add(extra.id);
                 const text = a.kind === 'line' ? `Line ${extra.id} lies on line ${kept.id}` : `${NOUN[extra.kind]} ${extra.id} is the same as ${kept.id}`;
                 out.push({ key: `duplicate:${extra.id}`, kind: 'duplicate', text, action: 'Remove duplicate', refs: [extra.id, kept.id] });
+                continue;
+            }
+            if (overlapSpan(g, a, b)) {
+                duplicate.add(b.id);
+                out.push({ key: `overlap:${a.id}:${b.id}`, kind: 'overlap', text: `Lines ${a.id} and ${b.id} overlap`, action: 'Merge', refs: [a.id, b.id] });
             }
         }
     }
@@ -106,7 +165,7 @@ export function findProblems(g: SketchGeometry): Problem[] {
         for (let j = i + 1; j < ends.length; j++) {
             const [a, b] = [ends[i], ends[j]];
             const d = dist(P(g, a), P(g, b));
-            if (d >= GAP || joined(g, a, b)) {
+            if (d >= gap || joined(g, a, b)) {
                 continue;
             }
             const oa = owners(a);
@@ -200,6 +259,25 @@ export function fixProblem(g: SketchGeometry, problem: Problem): SketchGeometry 
             return mergePoints(g, ids[0], ids[1]);
         case 'duplicate':
             return removeCurve(g, ids[0]);
+        case 'overlap': {
+            // The first line takes the whole span; the second goes.
+            const [a, b] = [curveOf(g, ids[0]), curveOf(g, ids[1])];
+            const span = a && b ? overlapSpan(g, a, b) : null;
+            if (!span || a?.kind !== 'line') {
+                return g;
+            }
+            const merged = { ...g, curves: g.curves.map((c) => (c.id === a.id ? { ...a, a: span[0], b: span[1] } : c)) };
+            // Its length and middle no longer hold.
+            const out = removeCurve(merged, ids[1]);
+            const used = new Set(out.curves.flatMap(curvePoints));
+            const gone = new Set([a.a, a.b].filter((p) => !used.has(p) && p !== ORIGIN));
+            return {
+                points: out.points.filter((p) => !gone.has(p.id)),
+                curves: out.curves,
+                constraints: out.constraints.filter((k) => !constraintRefs(k).some((r) => gone.has(r))
+                    && !((k.kind === 'length' || k.kind === 'midpoint') && k.line === a.id)),
+            };
+        }
         case 'zero': {
             const c = curveOf(g, ids[0]);
             if (!c) {
@@ -216,12 +294,12 @@ export function fixProblem(g: SketchGeometry, problem: Problem): SketchGeometry 
 }
 
 /** Fixes everything found, one problem at a time (each fix can change what is left). */
-export function fixAll(g: SketchGeometry): { g: SketchGeometry; fixed: number } {
+export function fixAll(g: SketchGeometry, gap = GAP): { g: SketchGeometry; fixed: number } {
     let out = g;
     let fixed = 0;
     const tried = new Set<string>();
     for (let i = 0; i < 1000; i++) {
-        const next = findProblems(out).find((p) => !tried.has(p.key));
+        const next = findProblems(out, gap).find((p) => !tried.has(p.key));
         if (!next) {
             break;
         }

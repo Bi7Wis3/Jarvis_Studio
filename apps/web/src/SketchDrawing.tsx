@@ -564,7 +564,7 @@ export function Drawing() {
     const hovered = picking && hover ? hover.id : null;
     // Lit from the relations or repair list.
     const lit = new Set(highlight);
-    const xformFrom = tool === 'xform' && xform?.picks.length === 1 && (xform.kind === 'move' || xform.kind === 'copy') ? xform.picks[0] : null;
+    const xformFrom = tool === 'xform' && xform?.picks.length === 1 && (xform.kind === 'move' || xform.kind === 'copy' || xform.kind === 'stretch') ? xform.picks[0] : null;
     const conflictRefs = new Set(g.constraints.filter((c) => conflicting.includes(c.id)).flatMap((c) => Object.values(c).filter((v) => typeof v === 'string')));
     const at = draft.map((d) => d.at);
     const preview = cursor && draft.length && !['select', 'dimension'].includes(tool) && !tool.startsWith('c:') && !isEditTool(tool)
@@ -601,7 +601,7 @@ export function Drawing() {
             {preview && <EntityLine entity={preview} color={DRAFT} dashed width={2.4} />}
             {tool === 'centerArc' && draft.length === 2 && <EntityLine entity={{ kind: 'line', a: at[0], b: at[1] }} color={DRAFT} dashed />}
             {/* Trim: the piece that goes, in red; extend and offset: what gets added. */}
-            {(isEditTool(tool) || tool === 'xform') && editPreview.map((e, i) => (
+            {(isEditTool(tool) || tool === 'xform' || tool === 'select') && editPreview.map((e, i) => (
                 <EntityLine key={`edit-${i}`} entity={e} color={tool === 'trim' ? CONFLICT : DRAFT} dashed={tool !== 'trim'} width={tool === 'trim' ? 4.2 : 2.4} />
             ))}
             {xformFrom && cursor && <EntityLine entity={{ kind: 'line', a: xformFrom, b: cursor }} color={DRAFT} dashed width={1.4} />}

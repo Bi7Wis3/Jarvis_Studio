@@ -10,7 +10,7 @@ import type {
 import { sketchCentrelines } from '@jarvis/core/reference';
 import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { useStudio } from './state';
-import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, loadSolver, measure, pointOf, solveGeometry, solverReady } from './solver';
+import { AXIS_U, AXIS_V, ORIGIN, curveOf, curveRadius, isDimension, loadSolver, measure, pointOf, solveGeometry, solverReady } from './solver';
 import { regionsOf } from './regionPick';
 import { geometryOpenChains } from './sketchGeometry';
 import {
@@ -20,10 +20,14 @@ import {
     toggleConstruction, type ConstraintTool, type NewConstraint, type Pick, type PointRef,
 } from './sketchGeometry';
 import {
-    addCentreArc, addCentreRect, chamferCorner, circularPattern, cornerOf, curvePoints, extendAt, filletCorner, linearPattern, mirrorCurves, offsetChain,
-    offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type Transform,
+    addCentreArc, addCentreRect, curvePoints, extendAt, mirrorCurves, offsetEntities,
+    offsetPreview, sideDistance, splitAt, transformEntities, transformPoint, trimAt, type OffsetCap, type OffsetOptions, type Transform,
 } from './sketchEdit';
+import { powerTrim, trimBetween, trimCorner, trimmable, type TrimMode } from './sketchTrim';
+import { circularSketchPattern, linearSketchPattern, type CircularPatternOptions, type LinearPatternOptions } from './sketchPattern';
+import { chamferSides, filletCornerAt, filletCornerOf, filletSides, type ChamferOptions, type FilletCorner } from './sketchFillet';
 import { fixAll, fixProblem, fullyDefine, mergePoints, type Problem } from './sketchRepair';
+import { unmetConstraints } from './sketchCheck';
 import { dist, mid, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
 import { snapCursor, type QuickSnap, type Snap, type SnapKind } from './snapping';
 
@@ -37,13 +41,13 @@ export type SketchIntent = 'extrude' | 'cut' | 'revolve' | 'sketch';
 export type DrawTool = 'line' | 'centerline' | 'point' | 'rect' | 'centerRect' | 'circle' | 'arc' | 'centerArc' | 'slot' | 'polygon'
     | 'tangentArc' | 'perimeterCircle' | 'rect3';
 /** Tools that change existing geometry. */
-export type EditTool = 'trim' | 'extend' | 'fillet' | 'chamfer' | 'offset' | 'mirror';
+export type EditTool = 'trim' | 'extend' | 'fillet' | 'chamfer' | 'offset' | 'mirror' | 'split';
 /** xform: picking points for Move, Copy, Rotate or Scale while their form is open. */
 export type SketchTool = 'select' | DrawTool | EditTool | 'dimension' | 'xform' | `c:${ConstraintTool}`;
 
-export type TransformKind = 'move' | 'copy' | 'rotate' | 'scale';
+export type TransformKind = 'move' | 'copy' | 'rotate' | 'scale' | 'stretch';
 
-const EDIT_TOOLS: readonly string[] = ['trim', 'extend', 'fillet', 'chamfer', 'offset', 'mirror'];
+const EDIT_TOOLS: readonly string[] = ['trim', 'extend', 'fillet', 'chamfer', 'offset', 'mirror', 'split'];
 export const isEditTool = (tool: SketchTool): tool is EditTool => EDIT_TOOLS.includes(tool);
 
 /** The operation chosen in the finish popup; drives the live preview. */
@@ -70,6 +74,46 @@ export interface FinishOp {
 }
 
 export type Selected = { type: 'point' | 'curve' | 'constraint'; id: string };
+
+/** Options of the edit tools (the SolidWorks PropertyManager options of each). */
+export interface EditOptions {
+    trimMode: TrimMode;
+    /** Keep trimmed entities as construction geometry. */
+    trimConstruction: boolean;
+    /** Ignore trimming of construction geometry. */
+    trimIgnoreConstruction: boolean;
+    offsetDistance: number;
+    /** Add dimensions: one offset dimension. */
+    offsetDimension: boolean;
+    offsetReverse: boolean;
+    /** Select chain: all contiguous entities, else only the picked ones. */
+    offsetChain: boolean;
+    offsetBoth: boolean;
+    /** Cap ends of a bi-directional open offset. */
+    offsetCap: OffsetCap;
+    /** Construction geometry: turn the original (base) and / or the offset into construction. */
+    offsetBaseConstruction: boolean;
+    offsetConstruction: boolean;
+    /** Keep constrained corners: the sharp corner stays as a point with its relations and dimensions. */
+    filletKeepCorners: boolean;
+    /** Dimension each fillet; off: an equal relation to the first one. */
+    filletDimensionEach: boolean;
+    chamferType: 'distance' | 'angle';
+    chamferEqual: boolean;
+    chamferDistance2: number;
+    chamferAngle: number;
+    /** Copy: keep the originals. */
+    mirrorCopy: boolean;
+}
+
+export const DEFAULT_EDIT_OPTIONS: EditOptions = {
+    trimMode: 'power', trimConstruction: false, trimIgnoreConstruction: false,
+    offsetDistance: 5, offsetDimension: true, offsetReverse: false, offsetChain: true, offsetBoth: false, offsetCap: 'none',
+    offsetBaseConstruction: false, offsetConstruction: false,
+    filletKeepCorners: true, filletDimensionEach: false,
+    chamferType: 'distance', chamferEqual: true, chamferDistance2: 2, chamferAngle: 45,
+    mirrorCopy: true,
+};
 
 /** A dimension being placed or edited: its value input sits at `at`. */
 export interface DimDraft {
@@ -112,6 +156,14 @@ interface SketcherState {
     /** The last fillet radius and chamfer distance, used until another is typed. */
     filletRadius: number;
     chamferDistance: number;
+    /** The options of the edit tools, set in their forms. */
+    editOptions: EditOptions;
+    /** Power trim: the sketch before the stroke (for undo), where the pointer was, and the path so far. */
+    trimStroke: { from: SketchGeometry; path: Pt[]; trimmed: number; slop: number } | null;
+    /** Trim corner: the first line and where it was clicked; trim away inside / outside: the two boundaries. */
+    trimPicks: { id: string; at: Pt }[];
+    /** Fillet: the first fillet made since the tool started (later ones of the same radius are equal to it). */
+    filletFirst: string | null;
     /** First point of the current line chain, to close it on. */
     chainStart: string | null;
     cursor: Pt | null;
@@ -191,6 +243,9 @@ const IDLE = {
     editText: null,
     offsetCurve: null,
     mirrorAbout: false,
+    trimStroke: null,
+    trimPicks: [],
+    filletFirst: null,
     chainStart: null,
     cursor: null,
     snapKind: null,
@@ -234,6 +289,7 @@ export const useSketcher = create<SketcherState>(() => ({
     sides: 6,
     filletRadius: 5,
     chamferDistance: 2,
+    editOptions: DEFAULT_EDIT_OPTIONS,
     look: 0,
     showOthers: true,
     showSketches: true,
@@ -273,6 +329,16 @@ function commit(next: SketchGeometry, patch: Partial<SketcherState> = {}, messag
         set({
             message: message ?? `Over-constrained${names.length ? `: conflicts with ${names.join(', ')}` : ''}. Not applied.`,
             conflicting: result.conflicting,
+        });
+        return false;
+    }
+    // A solve can report success without meeting every relation: refuse that too.
+    const unmet = unmetConstraints(result.geometry);
+    if (unmet.length) {
+        const names = unmet.map((id) => describe(next, id)).filter(Boolean);
+        set({
+            message: message ?? `Cannot solve${names.length ? `: ${names.join(', ')} would not hold` : ''}. Not applied.`,
+            conflicting: unmet,
         });
         return false;
     }
@@ -375,7 +441,79 @@ export function setTool(tool: SketchTool): void {
     set({
         tool, draft: [], chainStart: null, typed: '', picks, hover: null, dimDrag: null, dimDraft: null, message: null,
         editPreview: [], editText: null, offsetCurve: null, mirrorAbout: false, arcSweep: 0, ...(tool === 'xform' ? {} : { xform: null }),
+        trimStroke: null, trimPicks: [], filletFirst: null,
     });
+}
+
+/** An edit tool's form opened: the tool starts from the current selection where it can use it (pre-selection). */
+export function startEditTool(tool: EditTool): void {
+    const selected = get().selection;
+    setTool(tool);
+    const curves = selected.filter((x): x is Pick => x.type === 'curve');
+    if (tool === 'offset' && curves.length) {
+        set({ offsetCurve: curves[0].id, picks: curves });
+    }
+    if (tool === 'fillet' || tool === 'chamfer') {
+        // Selected corner points, or two selected curves, are filleted with OK.
+        const used = new Set(get().geometry.curves.flatMap(curvePoints));
+        const corners = selected.filter((x): x is Pick => x.type === 'point' && used.has(x.id));
+        set({ picks: [...corners, ...curves.slice(0, 2)] });
+    }
+    if (tool === 'mirror') {
+        set({ picks: curves });
+    }
+}
+
+/**
+ * The edit tool form's OK: applies what is waiting (an offset, the selected corners, a mirror) and returns an error
+ * to show, or null to close the form.
+ */
+export function finishEditTool(tool: EditTool): string | null {
+    const s = get();
+    if (tool === 'offset' && s.offsetCurve) {
+        // The form's distance, on the side the pointer was last (left of the chain without one), Reverse flips it.
+        const side = s.cursor ? Math.sign(sideDistance(s.geometry, s.offsetCurve, s.cursor, offsetAllowed(s))) || 1 : 1;
+        const o = s.editOptions;
+        applyOffset(side * (o.offsetReverse ? -1 : 1) * Math.abs(o.offsetDistance));
+        return get().offsetCurve ? get().message ?? 'The offset could not be applied.' : null;
+    }
+    if (tool === 'fillet' || tool === 'chamfer') {
+        const size = tool === 'fillet' ? s.filletRadius : s.chamferDistance;
+        const points = s.picks.filter((p) => p.type === 'point').map((p) => p.id);
+        const curves = s.picks.filter((p) => p.type === 'curve').map((p) => p.id);
+        const errors: string[] = [];
+        for (const id of points) {
+            const corner = filletCornerAt(get().geometry, id);
+            if ('error' in corner) {
+                errors.push(corner.error);
+            } else if (!applyCorner(tool, corner, size)) {
+                errors.push(get().message ?? 'Not applied.');
+            }
+        }
+        if (curves.length === 2) {
+            const corner = filletCornerOf(get().geometry, curves[0], curves[1]);
+            if ('error' in corner) {
+                errors.push(corner.error);
+            } else if (!applyCorner(tool, corner, size)) {
+                errors.push(get().message ?? 'Not applied.');
+            }
+        }
+        set({ picks: [] });
+        return errors.length ? errors[0] : null;
+    }
+    return null;
+}
+
+/** Changes edit tool options (from the tool's form). */
+export function setEditOptions(patch: Partial<EditOptions> & { filletRadius?: number; chamferDistance?: number }): void {
+    const { filletRadius, chamferDistance, ...options } = patch;
+    set((s) => ({
+        editOptions: { ...s.editOptions, ...options },
+        trimPicks: patch.trimMode ? [] : s.trimPicks,
+        picks: patch.trimMode ? [] : s.picks,
+        ...(filletRadius && filletRadius > 0 ? { filletRadius } : {}),
+        ...(chamferDistance && chamferDistance > 0 ? { chamferDistance } : {}),
+    }));
 }
 
 export function undoSketch(): void {
@@ -434,6 +572,23 @@ export function sketchMove(raw: Pt, tolerance: number): void {
                 set({ geometry: result.geometry, dof: result.dof, cursor: raw });
             }
         }
+        return;
+    }
+    if (s.trimStroke) {
+        const path = s.trimStroke.path;
+        const last = path[path.length - 1];
+        if (path.length === 1 && dist(path[0], raw) <= s.trimStroke.slop) {
+            // Not a drag yet: a click trims on release instead.
+            set({ cursor: raw });
+            return;
+        }
+        const { trimConstruction, trimIgnoreConstruction } = s.editOptions;
+        const r = powerTrim(s.geometry, last, raw, { construction: trimConstruction, ignoreConstruction: trimIgnoreConstruction });
+        const trail = [...path, raw];
+        set({
+            geometry: r.g, cursor: raw, trimStroke: { ...s.trimStroke, path: trail, trimmed: s.trimStroke.trimmed + r.trimmed },
+            editPreview: trail.slice(1).map((p, i): NewEntity => ({ kind: 'line', a: trail[i], b: p })), editText: null, hover: null,
+        });
         return;
     }
     if (isEditTool(s.tool)) {
@@ -517,6 +672,11 @@ export function sketchDown(raw: Pt, tolerance: number): boolean {
         set({ dimDrag: { picks, from: raw, slop: tolerance * 0.4 }, cursor: raw, hover: null });
         return true;
     }
+    if (s.tool === 'trim' && s.editOptions.trimMode === 'power') {
+        // Power trim: the press starts a stroke (not a camera orbit); a press without a drag stays a click.
+        set({ trimStroke: { from: s.geometry, path: [raw], trimmed: 0, slop: tolerance * 0.4 } });
+        return true;
+    }
     if (s.tool !== 'select') {
         return false;
     }
@@ -540,6 +700,16 @@ export function sketchDown(raw: Pt, tolerance: number): boolean {
 
 export function sketchUp(): void {
     const s = get();
+    if (s.trimStroke) {
+        const { from, trimmed } = s.trimStroke;
+        const after = s.geometry;
+        // The whole stroke is one undo step; the trimmed sketch is solved and checked like any edit.
+        set({ trimStroke: null, editPreview: [], geometry: from });
+        if (trimmed && commit(after, { selection: [] })) {
+            set({ message: `Trimmed ${trimmed} piece${trimmed === 1 ? '' : 's'}.` });
+        }
+        return;
+    }
     if (s.drag) {
         // One undo step for the whole drag, and none for a press that moved nothing.
         const moved = s.dragFrom && s.dragFrom !== s.geometry;
@@ -935,7 +1105,7 @@ export function applyTyped(): string | null {
         return null;
     }
     if (s.tool === 'offset') {
-        const d = s.cursor && s.offsetCurve ? sideDistance(s.geometry, s.offsetCurve, s.cursor) : 1;
+        const d = s.cursor && s.offsetCurve ? sideDistance(s.geometry, s.offsetCurve, s.cursor, offsetAllowed(s)) : 1;
         applyOffset((Math.sign(d) || 1) * Math.abs(nums[0]));
         return null;
     }
@@ -1307,7 +1477,7 @@ export function sketchEscape(): void {
     } else if (s.draft.length) {
         set({ draft: [], chainStart: null });
     } else if (s.picks.length || s.offsetCurve || s.mirrorAbout || s.xform?.picks.length) {
-        set((x) => ({ picks: [], offsetCurve: null, mirrorAbout: false, editPreview: [], editText: null, xform: x.xform && { ...x.xform, picks: [] } }));
+        set((x) => ({ picks: [], trimPicks: [], offsetCurve: null, mirrorAbout: false, editPreview: [], editText: null, xform: x.xform && { ...x.xform, picks: [] } }));
     } else if (s.tool !== 'select') {
         set({ tool: 'select', message: null });
     } else if (s.selection.length) {
@@ -1338,9 +1508,29 @@ function cornerPick(g: SketchGeometry, raw: Pt, tolerance: number): Pick | null 
     return best ? { type: 'point', id: best.id } : drawnCurveAt(g, raw, tolerance);
 }
 
+/** The curves being offset: the picked one(s). */
+function offsetIds(s: SketcherState): string[] {
+    const ids = s.picks.filter((p) => p.type === 'curve').map((p) => p.id);
+    return s.offsetCurve && !ids.includes(s.offsetCurve) ? [s.offsetCurve, ...ids] : ids;
+}
+
+/** With Select chain off, the chain only runs through the picked curves. */
+function offsetAllowed(s: SketcherState): ReadonlySet<string> | undefined {
+    return s.editOptions.offsetChain ? undefined : new Set(offsetIds(s));
+}
+
+/** The offset's options from the form, at signed distance d. */
+function offsetOptions(s: SketcherState, d: number): OffsetOptions {
+    const o = s.editOptions;
+    return {
+        distance: d, chain: o.offsetChain, both: o.offsetBoth, cap: o.offsetCap, dimension: o.offsetDimension,
+        baseConstruction: o.offsetBaseConstruction, offsetConstruction: o.offsetConstruction,
+    };
+}
+
 /** Offset distance for the cursor: the typed value on the cursor's side, else the cursor's own distance. */
 function offsetDistance(s: SketcherState, raw: Pt): number {
-    const d = s.offsetCurve ? sideDistance(s.geometry, s.offsetCurve, raw) : 0;
+    const d = s.offsetCurve ? sideDistance(s.geometry, s.offsetCurve, raw, offsetAllowed(s)) : 0;
     const typed = s.typed ? evaluate(s.typed) : null;
     return typed !== null ? (Math.sign(d) || 1) * Math.abs(typed) : round(d, 0.01);
 }
@@ -1352,24 +1542,47 @@ function editHover(s: SketcherState, raw: Pt, tolerance: number): Partial<Sketch
         case 'trim':
         case 'extend': {
             const pick = drawnCurveAt(g, raw, tolerance);
-            const plan = pick && (s.tool === 'trim' ? trimAt(g, pick.id, raw) : extendAt(g, pick.id, raw));
+            const o = s.editOptions;
+            if (s.tool === 'trim' && o.trimMode !== 'power' && o.trimMode !== 'closest') {
+                return { hover: pick, editPreview: [], editText: null };
+            }
+            if (s.tool === 'trim' && pick && !trimmable(g, pick.id, { ignoreConstruction: o.trimIgnoreConstruction })) {
+                return { hover: null, editPreview: [], editText: null };
+            }
+            const plan = pick && (s.tool === 'trim' ? trimAt(g, pick.id, raw, { construction: o.trimConstruction }) : extendAt(g, pick.id, raw));
             const shown = plan ? ('removed' in plan ? plan.removed : plan.added) : null;
             return { hover: null, editPreview: shown ? [shown] : [], editText: null };
         }
         case 'fillet':
         case 'chamfer': {
             const size = s.tool === 'fillet' ? `R${round(s.filletRadius, 0.01)}` : `${round(s.chamferDistance, 0.01)}`;
-            return { hover: cornerPick(g, raw, tolerance), editPreview: [], editText: s.typed ? null : size };
+            const pick = cornerPick(g, raw, tolerance);
+            // A corner under the pointer: the fillet or chamfer it would get.
+            let preview: NewEntity[] = [];
+            const corner = pick?.type === 'point' ? filletCornerAt(g, pick.id) : null;
+            if (corner && !('error' in corner)) {
+                const typed = s.typed ? evaluate(s.typed) : null;
+                const r = s.tool === 'fillet'
+                    ? filletSides(g, corner, Math.abs(typed ?? s.filletRadius), { keepCorners: s.editOptions.filletKeepCorners })
+                    : chamferSides(g, corner, chamferOptions(s, Math.abs(typed ?? s.chamferDistance)));
+                if (!('error' in r)) {
+                    const old = new Set(g.curves.map((c) => c.id));
+                    preview = geometryEntities(r.g, false).filter((e) => !old.has(e.id)) as NewEntity[];
+                }
+            }
+            return { hover: pick, editPreview: preview, editText: s.typed ? null : size };
         }
         case 'offset': {
             if (s.offsetCurve) {
                 const d = offsetDistance(s, raw);
-                return { hover: null, editPreview: offsetPreview(g, s.offsetCurve, d), editText: s.typed ? null : `${round(Math.abs(d), 0.01)}` };
+                return { hover: null, editPreview: offsetPreview(g, offsetIds(s), offsetOptions(s, d)), editText: s.typed ? null : `${round(Math.abs(d), 0.01)}` };
             }
             return { hover: drawnCurveAt(g, raw, tolerance), editPreview: [], editText: null };
         }
         case 'mirror':
             return { hover: curveAt(g, raw, tolerance), editPreview: [], editText: null };
+        case 'split':
+            return { hover: drawnCurveAt(g, raw, tolerance), editPreview: [], editText: null };
         default:
             return {};
     }
@@ -1385,13 +1598,24 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             if (!pick) {
                 return;
             }
-            const plan = tool === 'trim' ? trimAt(g, pick.id, raw) : extendAt(g, pick.id, raw);
+            const o = s.editOptions;
+            if (tool === 'trim' && o.trimMode !== 'power' && o.trimMode !== 'closest') {
+                trimPickClick(pick.id, raw);
+                return;
+            }
+            if (tool === 'trim' && !trimmable(g, pick.id, { ignoreConstruction: o.trimIgnoreConstruction })) {
+                set({ message: 'Construction geometry is not trimmed (Ignore trimming of construction geometry is on).' });
+                return;
+            }
+            const plan = tool === 'trim' ? trimAt(g, pick.id, raw, { construction: o.trimConstruction }) : extendAt(g, pick.id, raw);
             if (!plan) {
                 set({ message: tool === 'trim' ? 'Nothing to trim there: a circle needs two crossings.'
                     : 'Nothing to extend to: the end must be free and point at another curve.' });
                 return;
             }
-            commit(plan.g, { editPreview: [], selection: [] });
+            if (commit(plan.g, { editPreview: [], selection: [] }) && 'dropped' in plan && plan.dropped) {
+                set({ message: `Extended; removed ${plan.dropped} relation${plan.dropped === 1 ? '' : 's'} that held the end or the line's length.` });
+            }
             return;
         }
         case 'fillet':
@@ -1402,12 +1626,12 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             if (!pick) {
                 return;
             }
-            let corner: ReturnType<typeof cornerOf>;
+            let corner: ReturnType<typeof filletCornerAt>;
             if (pick.type === 'point') {
-                corner = cornerOf(g, { point: pick.id });
+                corner = filletCornerAt(g, pick.id);
             } else {
-                if (curveOf(g, pick.id)?.kind !== 'line') {
-                    set({ picks: [], message: 'Pick a corner, or two lines.' });
+                if (curveOf(g, pick.id)?.kind === 'circle') {
+                    set({ picks: [], message: tool === 'fillet' ? 'Pick a corner, or two lines or arcs.' : 'Pick a corner, or two lines.' });
                     return;
                 }
                 const first = s.picks.find((p) => p.type === 'curve' && p.id !== pick.id);
@@ -1415,14 +1639,13 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
                     set({ picks: [pick], message: null });
                     return;
                 }
-                corner = cornerOf(g, { lines: [first.id, pick.id] });
+                corner = filletCornerOf(g, first.id, pick.id);
             }
-            const r = 'error' in corner ? corner : tool === 'fillet' ? filletCorner(g, corner, size) : chamferCorner(g, corner, size);
-            if ('error' in r) {
-                set({ picks: [], message: r.error });
+            if ('error' in corner) {
+                set({ picks: [], message: corner.error });
                 return;
             }
-            commit(r.g, { picks: [], typed: '', hover: null, selection: [], ...(tool === 'fillet' ? { filletRadius: size } : { chamferDistance: size }) });
+            applyCorner(tool, corner, size);
             return;
         }
         case 'offset': {
@@ -1437,6 +1660,28 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             applyOffset(offsetDistance(s, raw));
             return;
         }
+        case 'split': {
+            const pick = drawnCurveAt(g, raw, tolerance);
+            if (!pick) {
+                return;
+            }
+            const first = s.trimPicks[0];
+            const circle = curveOf(g, pick.id)?.kind === 'circle';
+            if (circle && (!first || first.id !== pick.id)) {
+                // A circle takes two split points.
+                set({ trimPicks: [{ id: pick.id, at: raw }], picks: [pick], message: 'Click the second split point on the circle.' });
+                return;
+            }
+            const r = splitAt(g, pick.id, circle ? first.at : raw, circle ? raw : undefined);
+            if ('error' in r) {
+                set({ message: r.error });
+                return;
+            }
+            if (commit(r.g, { trimPicks: [], picks: [], selection: [{ type: 'point', id: r.point }] })) {
+                set({ message: r.dropped ? `Split; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} on the whole line (its length, middle or equal length).` : 'Split.' });
+            }
+            return;
+        }
         case 'mirror': {
             const pick = curveAt(g, raw, tolerance);
             if (!pick) {
@@ -1448,12 +1693,14 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             // An axis or a centre line is the mirror line straight away; any line once Enter was pressed.
             const about = objects.length > 0 && line && !objects.includes(pick.id) && (s.mirrorAbout || isAxis(pick.id) || !!curve?.construction);
             if (about) {
-                const r = mirrorCurves(g, objects, pick.id);
+                const r = mirrorCurves(g, objects, pick.id, s.editOptions.mirrorCopy);
                 if ('error' in r) {
                     set({ message: r.error });
                     return;
                 }
-                commit(r.g, { picks: [], mirrorAbout: false, hover: null, selection: [] });
+                if (commit(r.g, { picks: [], mirrorAbout: false, hover: null, selection: [] }) && r.dropped) {
+                    set({ message: `Mirrored; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} of the originals to the rest of the sketch.` });
+                }
                 return;
             }
             if (s.mirrorAbout) {
@@ -1470,17 +1717,95 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
     }
 }
 
+/** The chamfer's options from the form, with Distance 1 = `size`. */
+function chamferOptions(s: SketcherState, size: number): ChamferOptions {
+    const o = s.editOptions;
+    return o.chamferType === 'angle' ? { type: 'angle', distance: size, angle: o.chamferAngle }
+        : { type: 'distance', distance: size, ...(o.chamferEqual ? {} : { distance2: o.chamferDistance2 }) };
+}
+
+/** Fillets or chamfers one corner; says what happened to the corner's relations. False when it could not. */
+function applyCorner(tool: 'fillet' | 'chamfer', corner: FilletCorner, size: number): boolean {
+    const s = get();
+    const o = s.editOptions;
+    if (tool === 'chamfer') {
+        const r = chamferSides(s.geometry, corner, chamferOptions(s, size));
+        if ('error' in r) {
+            set({ picks: [], message: r.error });
+            return false;
+        }
+        return commit(r.g, { picks: [], typed: '', hover: null, selection: [], editPreview: [], chamferDistance: size });
+    }
+    // Dimension each fillet off: the first fillet of this session gets the radius, later ones are equal to it.
+    const first = !o.filletDimensionEach && s.filletFirst && curveOf(s.geometry, s.filletFirst) && Math.abs((curveRadius(s.geometry, s.filletFirst) ?? 0) - size) < 1e-6
+        ? s.filletFirst : null;
+    const r = filletSides(s.geometry, corner, size, { keepCorners: o.filletKeepCorners, equalTo: first });
+    if ('error' in r) {
+        set({ picks: [], message: r.error });
+        return false;
+    }
+    if (!commit(r.g, { picks: [], typed: '', hover: null, selection: [], editPreview: [], filletRadius: size, filletFirst: first ?? r.arc })) {
+        return false;
+    }
+    if (r.dropped) {
+        set({ message: `Filleted; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} or dimension${r.dropped === 1 ? '' : 's'} on the corner (Keep constrained corners is off).` });
+    } else if (r.kept) {
+        set({ message: 'Filleted; the corner stays as a point with its relations and dimensions.' });
+    }
+    return true;
+}
+
+/** Trim corner, inside and outside: clicks pick the lines or boundaries, then (inside / outside) the curves to trim. */
+function trimPickClick(id: string, at: Pt): void {
+    const s = get();
+    const o = s.editOptions;
+    const picks = s.trimPicks;
+    const settings = { construction: o.trimConstruction, ignoreConstruction: o.trimIgnoreConstruction };
+    if (o.trimMode === 'corner') {
+        if (!picks.length || picks[0].id === id) {
+            set({ trimPicks: [{ id, at }], picks: [{ type: 'curve', id }], message: null });
+            return;
+        }
+        const r = trimCorner(s.geometry, picks[0], { id, at });
+        if ('error' in r) {
+            set({ trimPicks: [], picks: [], message: r.error });
+            return;
+        }
+        commit(r.g, { trimPicks: [], picks: [], selection: [], editPreview: [] });
+        return;
+    }
+    if (picks.length < 2) {
+        if (picks.some((p) => p.id === id)) {
+            return;
+        }
+        const next = [...picks, { id, at }];
+        set({ trimPicks: next, picks: next.map((p) => ({ type: 'curve' as const, id: p.id })), message: null });
+        return;
+    }
+    if (!trimmable(s.geometry, id, settings)) {
+        set({ message: 'Construction geometry is not trimmed (Ignore trimming of construction geometry is on).' });
+        return;
+    }
+    const r = trimBetween(s.geometry, id, [picks[0].id, picks[1].id], o.trimMode === 'inside' ? 'inside' : 'outside', settings);
+    if ('error' in r) {
+        set({ message: r.error });
+        return;
+    }
+    // The boundaries stay picked for the next curve.
+    commit(r.g, { selection: [], editPreview: [] });
+}
+
 function applyOffset(d: number): void {
     const s = get();
     if (!s.offsetCurve) {
         return;
     }
-    const r = offsetChain(s.geometry, s.offsetCurve, d);
+    const r = offsetEntities(s.geometry, offsetIds(s), offsetOptions(s, d));
     if ('error' in r) {
         set({ typed: '', message: r.error });
         return;
     }
-    commit(r.g, { offsetCurve: null, picks: [], typed: '', editPreview: [], editText: null });
+    commit(r.g, { offsetCurve: null, picks: [], typed: '', editPreview: [], editText: null, selection: [] });
 }
 
 /** Enter in an edit tool: mirror moves on from picking curves to picking the line. False when it has no use for it. */
@@ -1506,22 +1831,46 @@ export function patternCentre(): Pt {
     return p ? [p.u, p.v] : [0, 0];
 }
 
-/** Copies the selected curves `count` times in all, `step` apart. Returns an error to show, or null. */
-export function linearPatternSelected(count: number, step: Pt): string | null {
-    const r = linearPattern(get().geometry, selectedCurves(), Math.round(count), step);
-    if ('error' in r) {
-        return r.error;
-    }
-    return commit(r.g, { selection: [] }) ? null : get().message;
+/** A circular pattern's centre: the selected point when it is there, else the position. */
+function centreRef(centre: Pt): string | Pt {
+    const s = get();
+    const point = s.selection.find((x) => x.type === 'point' && pointOf(s.geometry, x.id) && dist(centre, [pointOf(s.geometry, x.id)!.u, pointOf(s.geometry, x.id)!.v]) < 1e-6);
+    return point ? point.id : centre;
 }
 
-/** Copies the selected curves `count` times in all about `centre`, over `angle` degrees. Returns an error to show, or null. */
-export function circularPatternSelected(count: number, angle: number, centre: Pt): string | null {
-    const r = circularPattern(get().geometry, selectedCurves(), Math.round(count), angle, centre);
+function patternOf(kind: 'linear' | 'circular', o: LinearPatternOptions | (Omit<CircularPatternOptions, 'centre'> & { centre: Pt })) {
+    const g = get().geometry;
+    return kind === 'linear' ? linearSketchPattern(g, selectedCurves(), o as LinearPatternOptions)
+        : circularSketchPattern(g, selectedCurves(), { ...(o as CircularPatternOptions), centre: centreRef((o as { centre: Pt }).centre) });
+}
+
+/** Linear sketch pattern of the selected curves, tied to them. Returns an error to show, or null. */
+export function linearPatternSelected(o: LinearPatternOptions): string | null {
+    const r = patternOf('linear', o);
     if ('error' in r) {
         return r.error;
     }
-    return commit(r.g, { selection: [] }) ? null : get().message;
+    return commit(r.g, { selection: [], editPreview: [] }) ? null : get().message;
+}
+
+/** Circular sketch pattern of the selected curves about `centre`, tied to them. Returns an error to show, or null. */
+export function circularPatternSelected(o: Omit<CircularPatternOptions, 'centre'> & { centre: Pt }): string | null {
+    const r = patternOf('circular', o);
+    if ('error' in r) {
+        return r.error;
+    }
+    return commit(r.g, { selection: [], editPreview: [] }) ? null : get().message;
+}
+
+/** Shows the instances a pattern form would make (empty options clear it). */
+export function previewPattern(kind: 'linear' | 'circular', o: LinearPatternOptions | (Omit<CircularPatternOptions, 'centre'> & { centre: Pt }) | null): void {
+    const r = o ? patternOf(kind, o) : null;
+    if (!r || 'error' in r) {
+        set({ editPreview: [] });
+        return;
+    }
+    const made = new Set(r.created);
+    set({ editPreview: geometryEntities(r.g).filter((e) => made.has(e.id)) as NewEntity[] });
 }
 
 // ---- Move, copy, rotate, scale ----------------------------------------------------------------------------
@@ -1566,7 +1915,7 @@ function xformClick(raw: Pt, tolerance: number, additive: boolean): void {
 /** Moving or copying by two points: the selection drawn at the cursor once the first point is picked. */
 function xformPreview(s: SketcherState, cursor: Pt): NewEntity[] {
     const from = s.xform?.picks[0];
-    if (!from || (s.xform?.kind !== 'move' && s.xform?.kind !== 'copy')) {
+    if (!from || (s.xform?.kind !== 'move' && s.xform?.kind !== 'copy' && s.xform?.kind !== 'stretch')) {
         return [];
     }
     const t: Transform = { kind: 'move', by: [cursor[0] - from[0], cursor[1] - from[1]] };
@@ -1590,8 +1939,15 @@ function xformPreview(s: SketcherState, cursor: Pt): NewEntity[] {
  * Moves, turns or scales the selected curves and points, or copies them. Returns an error to show, or null; the
  * status line says what was done and how many relations to the rest of the sketch a move removed.
  */
-export function transformSelected(t: Transform, copy: boolean): string | null {
+export function transformSelected(t: Transform, copy: boolean, o: { keepRelations?: boolean; copies?: number } = {}): string | null {
     const s = get();
+    if (!copy && o.keepRelations) {
+        return moveKeeping(t, false);
+    }
+    const copies = copy ? Math.max(1, Math.round(o.copies ?? 1)) : 1;
+    if (copies > 1) {
+        return copyMany(t, copies);
+    }
     const r = transformEntities(s.geometry, selectedGeometry(), t, copy);
     if ('error' in r) {
         return r.error;
@@ -1610,6 +1966,80 @@ export function transformSelected(t: Transform, copy: boolean): string | null {
     const what = `${count} item${count === 1 ? '' : 's'}`;
     set({ message: r.dropped ? `${verb} ${what}; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} to the rest of the sketch.` : `${verb} ${what}.` });
     return null;
+}
+
+/** The transform applied k times: k steps of a move or turn, the factor to the power k for a scale. */
+function stepped(t: Transform, k: number): Transform {
+    return t.kind === 'move' ? { kind: 'move', by: [t.by[0] * k, t.by[1] * k] }
+        : t.kind === 'rotate' ? { ...t, angle: t.angle * k } : { ...t, factor: t.factor ** k };
+}
+
+/** Copy (or Scale) with a number of copies: each one step further on, all in one undo step. */
+function copyMany(t: Transform, copies: number): string | null {
+    const s = get();
+    const ids = selectedGeometry();
+    let g = s.geometry;
+    const made: string[] = [];
+    for (let k = 1; k <= copies; k++) {
+        const r = transformEntities(g, ids, stepped(t, k), true);
+        if ('error' in r) {
+            return r.error;
+        }
+        g = r.g;
+        made.push(...r.created);
+    }
+    const selection: Selected[] = made.map((id) => ({ type: g.curves.some((c) => c.id === id) ? 'curve' : 'point', id }));
+    if (!commit(g, { selection, editPreview: [] })) {
+        return get().message;
+    }
+    set({ message: `Made ${copies} copies.` });
+    return null;
+}
+
+/**
+ * Move, turn or scale keeping relations (and Stretch): the selected points are pulled to their new places and the
+ * sketch is solved with every relation kept, so attached curves stretch along. Stretch holds every other point still.
+ */
+function moveKeeping(t: Transform, stretch: boolean): string | null {
+    const s = get();
+    const ids = selectedGeometry();
+    const points = new Set(ids.flatMap((id) => {
+        const c = curveOf(s.geometry, id);
+        return c ? curvePoints(c) : [id];
+    }).filter((id) => id !== ORIGIN && pointOf(s.geometry, id)));
+    if (!points.size) {
+        return 'Select the curves or points first.';
+    }
+    if (!solverReady()) {
+        return 'The solver is still loading; try again in a moment.';
+    }
+    const targets = [...points].map((id) => {
+        const p = pointOf(s.geometry, id)!;
+        const [u, v] = transformPoint(t, [p.u, p.v]);
+        return { point: id, u, v };
+    });
+    // A scale also scales the selected circles.
+    const scaled = t.kind === 'scale' ? new Set(ids) : new Set<string>();
+    const start: SketchGeometry = { ...s.geometry, curves: s.geometry.curves.map((c) => (c.kind === 'circle' && scaled.has(c.id) ? { ...c, radius: c.radius * (t as { factor: number }).factor } : c)) };
+    const hold = stretch ? new Set(s.geometry.points.filter((p) => !points.has(p.id)).map((p) => p.id)) : undefined;
+    const r = solveGeometry(start, { targets, hold });
+    const miss = r.ok ? Math.max(...targets.map((x) => {
+        const p = pointOf(r.geometry, x.point);
+        return p ? Math.hypot(p.u - x.u, p.v - x.v) : 0;
+    })) : Infinity;
+    if (miss > 1e-3) {
+        return 'The relations to the rest of the sketch do not let it go there. Clear Keep relations to break them.';
+    }
+    if (!commit(r.geometry, { editPreview: [] })) {
+        return get().message;
+    }
+    set({ message: stretch ? 'Stretched.' : 'Moved, keeping its relations.' });
+    return null;
+}
+
+/** Stretch: moves the selected curves and points by `by`; the curves attached to them stretch, the rest stays. */
+export function stretchSelected(by: Pt): string | null {
+    return moveKeeping({ kind: 'move', by }, true);
 }
 
 /** Whether a dimension refers only to the moved curves (or their points). */
@@ -1678,8 +2108,8 @@ export function repairProblem(problem: Problem): boolean {
 }
 
 /** Fixes everything Repair sketch finds; says how many. */
-export function repairAll(): boolean {
-    const r = fixAll(get().geometry);
+export function repairAll(gap?: number): boolean {
+    const r = fixAll(get().geometry, gap);
     if (!r.fixed) {
         set({ message: 'Nothing to repair.' });
         return true;

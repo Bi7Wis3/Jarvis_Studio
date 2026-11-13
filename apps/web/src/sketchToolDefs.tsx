@@ -7,10 +7,10 @@ import type { Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, solveGeometry, solverReady } from './solver';
 import {
     clearTransformPicks, deleteConstraints, describe, fullyDefineSketch, repairAll, repairProblem, selectConstraint, setHighlight, setSnapKind, setTool,
-    startTransformPick, stopTransformPick, transformCentre, transformSelected, useSketcher, type TransformKind,
+    startTransformPick, stopTransformPick, stretchSelected, transformCentre, transformSelected, useSketcher, type TransformKind,
 } from './sketcher';
 import { constraintRefs, liveIds } from './sketchGeometry';
-import { findProblems } from './sketchRepair';
+import { findProblems, GAP } from './sketchRepair';
 import type { Transform } from './sketchEdit';
 import { QUICK_SNAPS } from './snapping';
 import type { Pt } from './sketchMath';
@@ -91,12 +91,15 @@ const TRANSFORMS: Record<TransformKind, { label: string; icon: string; hint: str
     copy: { label: 'Copy', icon: 'duplicate', hint: 'copy the selected curves and points' },
     rotate: { label: 'Rotate', icon: 'rotate', hint: 'turn the selected curves about a point' },
     scale: { label: 'Scale', icon: 'scale', hint: 'scale the selected curves about a point' },
+    stretch: { label: 'Stretch', icon: 'move', hint: 'move the selected curves and points; what is attached stretches' },
 };
+
+const movesBy = (kind: TransformKind) => kind === 'move' || kind === 'copy' || kind === 'stretch';
 
 /** What the form will act on, live. */
 function TransformNote({ kind }: { kind: TransformKind }) {
     const count = useSketcher((s) => s.selection.filter((x) => x.type !== 'constraint').length);
-    const by = kind === 'move' || kind === 'copy';
+    const by = movesBy(kind);
     return (
         <p className="tb-note">
             {count ? <><b>{count}</b> selected. </> : <>Select the curves first: click them in the view (Shift adds). </>}
@@ -116,7 +119,7 @@ function TransformPicker({ kind, api }: { kind: TransformKind; api: PopupApi }) 
         if (!picks?.length) {
             return;
         }
-        if (kind === 'move' || kind === 'copy') {
+        if (movesBy(kind)) {
             if (picks.length < 2) {
                 return;
             }
@@ -124,7 +127,7 @@ function TransformPicker({ kind, api }: { kind: TransformKind; api: PopupApi }) 
             const by: Pt = [b[0] - a[0], b[1] - a[1]];
             clearTransformPicks();
             api.set({ by0: fmt(by[0]), by1: fmt(by[1]) });
-            api.run(() => runTransform({ kind: 'move', by }, !!api.values.copy));
+            api.run(() => runTransform({ kind: 'move', by }, kind, { ...api.values, by0: fmt(by[0]), by1: fmt(by[1]) }));
             return;
         }
         const c = picks[picks.length - 1];
@@ -134,14 +137,35 @@ function TransformPicker({ kind, api }: { kind: TransformKind; api: PopupApi }) 
     return null;
 }
 
-async function runTransform(t: Transform, copy: boolean): Promise<Result> {
-    const error = transformSelected(t, copy);
+async function runTransform(t: Transform, kind: TransformKind, v: Values): Promise<Result> {
+    const error = kind === 'stretch' ? stretchSelected((t as { by: Pt }).by)
+        : transformSelected(t, !!v.copy, { keepRelations: !!v.keep, copies: Number(v.copies) || 1 });
     return { text: error ?? '', isError: !!error };
+}
+
+/** The form's transform. */
+function transformOf(kind: TransformKind, v: Values): Transform {
+    const centre: Pt = movesBy(kind) ? [0, 0] : [num(v, 'centre0', 'Centre U'), num(v, 'centre1', 'Centre V')];
+    return movesBy(kind) ? { kind: 'move', by: [num(v, 'by0', 'Move U'), num(v, 'by1', 'Move V')] }
+        : kind === 'rotate' ? { kind: 'rotate', centre, angle: num(v, 'angle', 'Angle') }
+            : { kind: 'scale', centre, factor: num(v, 'factor', 'Factor') };
+}
+
+/** Repeat: moves (or stretches) again by the same distance, keeping the form open. */
+function RepeatButton({ kind, api }: { kind: TransformKind; api: PopupApi }) {
+    return (
+        <div className="sk-list-actions">
+            <button type="button" className="sk-small" onClick={() => api.run(() => attempt(async () => runTransform(transformOf(kind, api.values), kind, api.values)), false)}>
+                Repeat
+            </button>
+        </div>
+    );
 }
 
 function transformTool(kind: TransformKind): ToolDef {
     const { label, icon, hint } = TRANSFORMS[kind];
-    const by = kind === 'move' || kind === 'copy';
+    const by = movesBy(kind);
+    const canCopy = kind !== 'stretch';
     return {
         id: `sk-${kind}`,
         label,
@@ -150,41 +174,54 @@ function transformTool(kind: TransformKind): ToolDef {
         width: 300,
         panel: true,
         fields: () => [
-            ...(by ? [vecField('by', 'Move by', 'mm')] : []),
+            ...(by ? [vecField('by', kind === 'stretch' ? 'Stretch by' : 'Move by', 'mm')] : []),
             ...(kind === 'rotate' ? [{ key: 'angle', label: 'Angle', kind: 'number', unit: 'deg' } as Field] : []),
             ...(kind === 'scale' ? [{ key: 'factor', label: 'Factor', kind: 'number', unit: '×', min: 0, step: 0.1 } as Field] : []),
             ...(by ? [] : [vecField('centre', 'About', 'mm')]),
-            { key: 'copy', label: 'Keep the original (copy)', kind: 'check' },
+            ...(canCopy ? [{ key: 'copy', label: 'Keep the original (copy)', kind: 'check' } as Field] : []),
+            ...(canCopy ? [{ key: 'copies', label: 'Number of copies', kind: 'number', min: 1, step: 1, show: (v: Values) => !!v.copy } as Field] : []),
+            ...(kind === 'move' || kind === 'rotate' ? [{ key: 'keep', label: 'Keep relations', kind: 'check', show: (v: Values) => !v.copy } as Field] : []),
         ],
         defaults: () => {
             const [u, v] = transformCentre();
             return {
                 by0: '10', by1: '0', by2: '0', angle: '90', factor: '2', centre0: fmt(u), centre1: fmt(v), centre2: '0',
-                copy: kind === 'copy',
+                copy: kind === 'copy', copies: '1', keep: false,
             };
         },
         top: () => <TransformNote kind={kind} />,
-        extra: (api) => <TransformPicker kind={kind} api={api} />,
-        apply: (v) => attempt(async () => {
-            const centre: Pt = by ? [0, 0] : [num(v, 'centre0', 'Centre U'), num(v, 'centre1', 'Centre V')];
-            const t: Transform = by ? { kind: 'move', by: [num(v, 'by0', 'Move U'), num(v, 'by1', 'Move V')] }
-                : kind === 'rotate' ? { kind: 'rotate', centre, angle: num(v, 'angle', 'Angle') }
-                    : { kind: 'scale', centre, factor: num(v, 'factor', 'Factor') };
-            return runTransform(t, !!v.copy);
-        }),
+        extra: (api) => (
+            <>
+                <TransformPicker kind={kind} api={api} />
+                {by && <RepeatButton kind={kind} api={api} />}
+            </>
+        ),
+        apply: (v) => attempt(async () => runTransform(transformOf(kind, v), kind, v)),
     };
 }
 
 /** Repair sketch: the problems found, each with its fix; hovering one lights up its geometry. */
 function RepairList() {
     const g = useSketcher((s) => s.geometry);
-    const problems = useMemo(() => findProblems(g), [g]);
+    const [gapText, setGapText] = useState(String(GAP));
+    const gap = Number(gapText) > 0 ? Number(gapText) : GAP;
+    const problems = useMemo(() => findProblems(g, gap), [g, gap]);
     useEffect(() => () => setHighlight([]), []);
+    const gapField = (
+        <label className="tb-field">
+            <span>Showing gaps smaller than</span>
+            <span className="tb-input">
+                <input type="number" min={0} step={0.1} value={gapText} onChange={(e) => setGapText(e.target.value)} aria-label="Gap size" />
+                <em>mm</em>
+            </span>
+        </label>
+    );
     if (!problems.length) {
-        return <p className="tb-note">No problems found: no gaps, overlapping duplicates, zero-length curves or relations to deleted geometry.</p>;
+        return <>{gapField}<p className="tb-note">No problems found: no gaps, overlaps, tiny or zero-length curves or relations to deleted geometry.</p></>;
     }
     return (
         <>
+            {gapField}
             <div className="sk-list">
                 {problems.map((p) => (
                     <div key={p.key} className="sk-row" onMouseEnter={() => setHighlight(p.refs)} onMouseLeave={() => setHighlight([])}>
@@ -194,7 +231,7 @@ function RepairList() {
                 ))}
             </div>
             <div className="sk-list-actions">
-                <button type="button" className="sk-small" onClick={() => repairAll()}>Fix all</button>
+                <button type="button" className="sk-small" onClick={() => repairAll(gap)}>Fix all</button>
             </div>
         </>
     );
@@ -206,6 +243,7 @@ export const moreModifyTools: ToolDef[] = [
     transformTool('copy'),
     transformTool('rotate'),
     transformTool('scale'),
+    transformTool('stretch'),
     {
         id: 'sk-repair',
         label: 'Repair sketch',

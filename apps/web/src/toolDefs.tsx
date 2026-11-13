@@ -17,6 +17,9 @@ import { RegionPickSession, useRegionPick } from './regionPick';
 import { showError } from './menus';
 import { addPicture, PicturePicker } from './DecalPanel';
 import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchToolDefs';
+import { editToolForms } from './sketchEditForms';
+import type { CircularPatternOptions, LinearPatternOptions } from './sketchPattern';
+import type { Pt } from './sketchMath';
 import { evaluateTools } from './evaluateToolDefs';
 import { referenceEditor, referenceTools } from './referenceToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
@@ -26,7 +29,7 @@ import { BOX_DEFAULTS, boxShape, boxValues, CYLINDER_DEFAULTS, cylinderShape, cy
 import { circularPatternTool, combineTool, linearPatternTool, mirrorTool, patternEditor, splitTool } from './patternToolDefs';
 import { Icon } from './icons';
 import {
-    choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, redoSketch, setTool,
+    choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, previewPattern, redoSketch, setTool,
     sketchProfiles, startSketch, undoSketch, useSketcher, constraintTool, toggleConstructionSelected, type FinishOp, type SketchIntent,
     type SketchTool,
 } from './sketcher';
@@ -1393,50 +1396,126 @@ const MODIFY_TOOLS: { id: SketchTool; label: string; key?: string; icon: string;
 
 const vecField = (key: string, label: string, unit: string): Field => ({ key, label, kind: 'vec', unit, axes: ['U', 'V', ''] });
 
-/** Pattern popups act on the curves selected in the sketch. */
+/** Instances to skip, typed as "i,j; i,j" (linear) or "i, i" (circular), counted from 1 for the original. */
+function skipList(text: Values[string]): number[][] {
+    return String(text ?? '').split(/;|\s{2,}/).map((part) => part.split(/[,\s]+/).filter(Boolean).map(Number))
+        .filter((nums) => nums.length && nums.every((n) => Number.isInteger(n) && n >= 1));
+}
+
+function linearOptions(v: Values): LinearPatternOptions {
+    const count2 = num(v, 'count2', 'Direction 2 instances', { min: 1 });
+    return {
+        count: num(v, 'count', 'Number of instances', { min: 1 }),
+        spacing: num(v, 'spacing', 'Spacing', { positive: true }),
+        angle: num(v, 'angle', 'Angle') + (v.reverse ? 180 : 0),
+        dimension: !!v.dimension,
+        fixDirection: !!v.fix,
+        count2,
+        spacing2: count2 > 1 ? num(v, 'spacing2', 'Direction 2 spacing', { positive: true }) : 0,
+        angle2: num(v, 'angle2', 'Direction 2 angle') + (v.reverse2 ? 180 : 0),
+        dimension2: !!v.dimension2,
+        dimensionAngle: !!v.between,
+        skip: skipList(v.skip).filter((n) => n.length === 2).map(([i, j]) => [i - 1, j - 1] as [number, number]),
+    };
+}
+
+/** Shows the pattern's instances while its form is open. */
+function PatternPreview({ kind, values }: { kind: 'linear' | 'circular'; values: Values }) {
+    const selection = useSketcher((s) => s.selection);
+    useEffect(() => {
+        try {
+            previewPattern(kind, kind === 'linear' ? linearOptions(values) : circularOptions(values));
+        } catch {
+            previewPattern(kind, null);
+        }
+    }, [values, selection]);
+    useEffect(() => () => previewPattern(kind, null), []);
+    return null;
+}
+
+/** Pattern forms act on the curves selected in the sketch. */
 const linearSketchPattern: ToolDef = {
     id: 'sk-pattern-linear',
     label: 'Linear pattern',
     icon: 'pattern',
-    hint: 'copies of the selected curves in a row',
+    hint: 'copies of the selected curves in a row or grid, tied to them',
     width: 300,
     panel: true,
     fields: () => [
-        { key: 'count', label: 'Count', kind: 'number', unit: '×', min: 2, step: 1 },
-        vecField('step', 'Spacing', 'mm'),
+        { key: 'spacing', label: 'Spacing', kind: 'number', unit: 'mm', section: 'Direction 1' },
+        { key: 'count', label: 'Number of instances', kind: 'number', min: 1, step: 1, section: 'Direction 1' },
+        { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Direction 1' },
+        { key: 'reverse', label: 'Reverse direction', kind: 'check', section: 'Direction 1' },
+        { key: 'dimension', label: 'Dimension X spacing', kind: 'check', section: 'Direction 1' },
+        { key: 'fix', label: 'Fix X-axis direction', kind: 'check', section: 'Direction 1' },
+        { key: 'count2', label: 'Number of instances', kind: 'number', min: 1, step: 1, section: 'Direction 2' },
+        { key: 'spacing2', label: 'Spacing', kind: 'number', unit: 'mm', section: 'Direction 2', show: (v) => Number(v.count2) > 1 },
+        { key: 'angle2', label: 'Angle', kind: 'number', unit: 'deg', section: 'Direction 2', show: (v) => Number(v.count2) > 1 && !v.between },
+        { key: 'reverse2', label: 'Reverse direction', kind: 'check', section: 'Direction 2', show: (v) => Number(v.count2) > 1 },
+        { key: 'dimension2', label: 'Dimension Y spacing', kind: 'check', section: 'Direction 2', show: (v) => Number(v.count2) > 1 },
+        { key: 'between', label: 'Dimension angle between axes', kind: 'check', section: 'Direction 2', show: (v) => Number(v.count2) > 1 },
+        { key: 'skip', label: 'Instances to skip (e.g. 2,1; 3,2)', kind: 'text', section: 'Instances to skip' },
     ],
-    defaults: () => ({ count: '3', step0: '20', step1: '0', step2: '0' }),
+    defaults: () => ({
+        spacing: '20', count: '3', angle: '0', reverse: false, dimension: true, fix: true,
+        count2: '1', spacing2: '20', angle2: '90', reverse2: false, dimension2: true, between: true, skip: '',
+    }),
+    top: () => <p className="tb-note">Select the curves to pattern in the view (Shift adds). The instances stay tied to them.</p>,
+    extra: (api) => <PatternPreview kind="linear" values={api.values} />,
     apply: (v) => attempt(async () => {
-        const error = linearPatternSelected(num(v, 'count', 'Count', { min: 2 }), [num(v, 'step0', 'Spacing U'), num(v, 'step1', 'Spacing V')]);
+        const error = linearPatternSelected(linearOptions(v));
         return { text: error ?? '', isError: !!error };
     }),
 };
+
+function circularOptions(v: Values): Omit<CircularPatternOptions, 'centre'> & { centre: Pt } {
+    return {
+        count: num(v, 'count', 'Number of instances', { min: 2 }),
+        angle: num(v, 'angle', 'Spacing') * (v.reverse ? -1 : 1),
+        equal: !!v.equal,
+        centre: [num(v, 'centre0', 'Centre U'), num(v, 'centre1', 'Centre V')],
+        dimensionRadius: !!v.radius,
+        dimensionAngle: !!v.angular,
+        skip: skipList(v.skip).flat().map((n) => n - 1),
+    };
+}
 
 const circularSketchPattern: ToolDef = {
     id: 'sk-pattern-circular',
     label: 'Circular pattern',
     icon: 'pattern-circular',
-    hint: 'copies of the selected curves round a point',
+    hint: 'copies of the selected curves round a point, tied to them',
     width: 300,
     panel: true,
     fields: () => [
-        { key: 'count', label: 'Count', kind: 'number', unit: '×', min: 2, step: 1 },
-        { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg' },
+        { key: 'reverse', label: 'Reverse direction', kind: 'check', section: 'Parameters' },
         vecField('centre', 'Centre', 'mm'),
-    ],
+        { key: 'angle', label: 'Spacing', kind: 'number', unit: 'deg', section: 'Parameters' },
+        { key: 'equal', label: 'Equal spacing', kind: 'check', section: 'Parameters' },
+        { key: 'radius', label: 'Dimension radius', kind: 'check', section: 'Parameters' },
+        { key: 'angular', label: 'Dimension angular spacing', kind: 'check', section: 'Parameters' },
+        { key: 'count', label: 'Number of instances', kind: 'number', min: 2, step: 1, section: 'Parameters' },
+        { key: 'skip', label: 'Instances to skip (e.g. 2, 4)', kind: 'text', section: 'Instances to skip' },
+    ].map((f) => ({ ...f, section: f.section ?? 'Parameters' }) as Field),
     defaults: () => {
         const [u, v] = patternCentre();
-        return { count: '6', angle: '360', centre0: fmt(u), centre1: fmt(v), centre2: '0' };
+        return {
+            reverse: false, centre0: fmt(u), centre1: fmt(v), centre2: '0', angle: '360', equal: true, radius: false, angular: true,
+            count: '6', skip: '',
+        };
     },
+    top: () => <p className="tb-note">Select the curves to pattern, and a point for the centre (else the origin). The instances stay tied to them.</p>,
+    extra: (api) => <PatternPreview kind="circular" values={api.values} />,
     apply: (v) => attempt(async () => {
-        const error = circularPatternSelected(num(v, 'count', 'Count', { min: 2 }), num(v, 'angle', 'Angle'),
-            [num(v, 'centre0', 'Centre U'), num(v, 'centre1', 'Centre V')]);
+        const error = circularPatternSelected(circularOptions(v));
         return { text: error ?? '', isError: !!error };
     }),
 };
 
 const modifyTools: ToolDef[] = [
-    ...MODIFY_TOOLS.map(({ id, label, key, icon, hint }): ToolDef => ({
+    // Edit tools with options open a form (sketchEditForms.tsx); the rest stay plain click tools.
+    ...editToolForms,
+    ...MODIFY_TOOLS.filter(({ id }) => !editToolForms.some((t) => t.id === `sk-${id}`)).map(({ id, label, key, icon, hint }): ToolDef => ({
         id: `sk-${id}`,
         label,
         icon,
