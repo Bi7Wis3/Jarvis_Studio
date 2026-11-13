@@ -184,9 +184,14 @@ function Profiles() {
 const PLANES: SketchPlaneName[] = ['top', 'front', 'right'];
 
 /** The three principal planes of the part, to click on to start sketching. */
+/** Edge length of the three planes offered when a sketch starts. */
+export function planePickerSize(part: Part | null): number {
+    return part ? Math.max(40, ...shapeHalfExtents(part.shape).map((h) => h * 2.4)) : 120;
+}
+
 function PlanePicker({ part }: { part: Part | null }) {
     const [hover, setHover] = useState<SketchPlaneName | null>(null);
-    const size = part ? Math.max(40, ...shapeHalfExtents(part.shape).map((h) => h * 2.4)) : 120;
+    const size = planePickerSize(part);
     return (
         <>
             {PLANES.map((plane) => (

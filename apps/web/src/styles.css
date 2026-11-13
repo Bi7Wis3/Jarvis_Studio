@@ -927,9 +927,44 @@ footer {
     border: 1px solid transparent;
     border-radius: 7px;
     background: none;
-    color: #c6cedb;
+    color: var(--tb-tint, #c6cedb);
     cursor: pointer;
     transition: background 0.12s ease, color 0.12s ease;
+}
+
+/* A quiet tint per group, so the kinds of tool can be told apart at a glance. */
+.tb-group.g-sketch {
+    --tb-tint: #8fd6ec;
+}
+
+.tb-group.g-modify,
+.tb-group.g-transform {
+    --tb-tint: #e6c98f;
+}
+
+.tb-group.g-constrain {
+    --tb-tint: #c5acf2;
+}
+
+.tb-group.g-solid,
+.tb-group.g-insert {
+    --tb-tint: #97dbab;
+}
+
+.tb-group.g-pattern {
+    --tb-tint: #86d5c9;
+}
+
+.tb-group.g-material {
+    --tb-tint: #ecb3c4;
+}
+
+.tb-group.g-view {
+    --tb-tint: #a3bdea;
+}
+
+.tb-group.g-export {
+    --tb-tint: #eab48e;
 }
 
 .tb-btn:hover:not([aria-disabled='true']) {

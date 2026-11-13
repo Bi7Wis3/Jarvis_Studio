@@ -15,7 +15,7 @@ import { useKernelMesh, type KernelMesh } from './meshes';
 import { edgeSegments, faceSoup, nearestEdge, pixelSize, type P3, type PickedEntity } from './picking';
 import { clearPicked, pickEntity, select, setWorkspace, useStudio } from './state';
 import { chooseFace, useSketcher } from './sketcher';
-import { SketchLayer, SketchSteps, sketchView } from './SketchLayer';
+import { planePickerSize, SketchLayer, SketchSteps, sketchView } from './SketchLayer';
 import { PartDecals } from './Decals';
 
 /** Animated values shared between the scene and the label overlay. */
@@ -642,6 +642,28 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
         moveTo(position, sphere.center, !state.first);
         state.first = false;
     }, [asked, ids, boundsVersion, controls]);
+
+    // Choosing a sketch plane: the three planes must be on screen and big enough to click. The camera only moves
+    // when they are not (off to the side, tiny, or filling the view), and keeps its direction.
+    const choosingPlane = useSketcher((s) => s.active && s.stage === 'plane');
+    const sketchPartId = useSketcher((s) => s.partId);
+    useEffect(() => {
+        if (!controls || !choosingPlane) {
+            return;
+        }
+        const part = project.parts.find((p) => p.id === sketchPartId) ?? null;
+        const centre = part ? partCentre(part, offsets[part.id]) : new Vector3();
+        const radius = planePickerSize(part) * 0.75;
+        const distance = camera.position.distanceTo(centre);
+        const onScreen = centre.clone().project(camera);
+        const apparent = radius / (distance * Math.tan(MathUtils.degToRad(camera.fov) / 2));
+        const visible = onScreen.z < 1 && Math.abs(onScreen.x) < 0.7 && Math.abs(onScreen.y) < 0.7 && apparent > 0.15 && apparent < 0.9;
+        if (!visible) {
+            const direction = camera.getWorldDirection(new Vector3()).negate();
+            const fitted = (radius / Math.sin(MathUtils.degToRad(camera.fov) / 2)) * 1.6;
+            moveTo(centre.clone().addScaledVector(direction, fitted), centre, true);
+        }
+    }, [choosingPlane, sketchPartId, controls]);
 
     // Sketching: turn to look straight at the sketch plane.
     useEffect(() => {

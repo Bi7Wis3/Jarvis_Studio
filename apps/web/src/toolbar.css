@@ -478,3 +478,54 @@
 .sk-notice {
     color: #ffd166;
 }
+
+/* The Add picture tool's drop zone. */
+.pic-drop {
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+    padding: 14px 10px;
+    border: 1px dashed rgba(53, 224, 255, 0.45);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+}
+
+.pic-drop.dragging {
+    border-style: solid;
+    background: rgba(53, 224, 255, 0.1);
+    color: var(--text);
+}
+
+.pic-drop p {
+    margin: 0;
+}
+
+.pic-drop button {
+    padding: 4px 12px;
+    border: 1px solid rgba(53, 224, 255, 0.45);
+    border-radius: 6px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.pic-drop button:hover {
+    background: rgba(53, 224, 255, 0.14);
+}
+
+.tb-popup .br-placing {
+    margin: 0;
+}
+
+.tb-popup .br-placing button {
+    padding: 1px 7px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: none;
+    color: var(--text);
+    font-size: 11px;
+    cursor: pointer;
+}

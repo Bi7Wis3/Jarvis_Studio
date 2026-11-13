@@ -1,6 +1,6 @@
-// Decals section of the part history: list, edit and place pictures on the part's surface.
+// Pictures on a part's surface: the Add picture tool's picker, placement, and the list in the part history.
 
-import { useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { Euler, Matrix4, Quaternion, Vector3 } from 'three';
 import { explodeOffsets, shapeHalfExtents, type Decal, type Part, type Vec3 } from '@jarvis/core';
 import { assetUrl, partGeometry } from './Decals';
@@ -122,91 +122,122 @@ function fillSurface(part: Part, decal: Decal): void {
     });
 }
 
-export function DecalPanel({ part }: { part: Part }) {
-    const placing = useStudio((s) => s.placingDecal);
-    const [busy, setBusy] = useState(false);
+/** Uploads a picture and starts placing it: the next click on the part's surface puts it there. */
+export async function addPicture(part: Part, blob: Blob | null | undefined): Promise<{ text: string; isError: boolean }> {
+    if (!blob) {
+        return { text: 'No picture was chosen.', isError: true };
+    }
+    try {
+        const [image, aspect] = await Promise.all([upload(blob), imageAspect(blob)]);
+        startPlacing({ image, size: fitSize(part, aspect) }, null);
+        return { text: 'Click the surface to place the picture.', isError: false };
+    } catch (e) {
+        return { text: e instanceof Error ? e.message : 'The picture could not be uploaded.', isError: true };
+    }
+}
+
+const imageIn = (data: DataTransfer | null) => [...(data?.files ?? [])].find((f) => f.type.startsWith('image/'));
+
+/**
+ * The Add picture tool: drop a picture here, paste one (Ctrl+V anywhere while this is open), or choose a file.
+ * Once a picture is in, it says to click the surface, and `onDone` is called when the picture is placed or cancelled.
+ */
+export function PicturePicker({ busy, onPicture, onDone }: { busy: boolean; onPicture: (blob: Blob) => void; onDone: () => void }) {
+    const placing = useStudio((s) => !!s.placingDecal);
     const [dragging, setDragging] = useState(false);
     const file = useRef<HTMLInputElement>(null);
-    const decals = part.decals ?? [];
+    const wasPlacing = useRef(false);
+    const latest = useRef({ onPicture, onDone });
+    latest.current = { onPicture, onDone };
 
-    const start = async (blob: Blob | null | undefined) => {
-        if (!blob) {
-            return;
+    useEffect(() => {
+        if (wasPlacing.current && !placing) {
+            latest.current.onDone();
         }
-        setBusy(true);
-        try {
-            const [image, aspect] = await Promise.all([upload(blob), imageAspect(blob)]);
-            startPlacing({ image, size: fitSize(part, aspect) }, null);
-        } catch (e) {
-            showError(e instanceof Error ? e.message : 'The picture could not be uploaded.');
-        } finally {
-            setBusy(false);
-        }
-    };
+        wasPlacing.current = placing;
+    }, [placing]);
+    useEffect(() => {
+        // Capture phase, so the prompt bar does not also attach the pasted picture.
+        const onPaste = (event: ClipboardEvent) => {
+            const image = imageIn(event.clipboardData);
+            if (image) {
+                event.preventDefault();
+                event.stopPropagation();
+                latest.current.onPicture(image);
+            }
+        };
+        window.addEventListener('paste', onPaste, true);
+        return () => window.removeEventListener('paste', onPaste, true);
+    }, []);
 
-    const fromTransfer = (data: DataTransfer | null) => [...(data?.files ?? [])].find((f) => f.type.startsWith('image/'));
-
-    const onPaste = (event: ClipboardEvent<HTMLElement>) => {
-        const image = fromTransfer(event.clipboardData);
-        if (image) {
-            // Keep the prompt bar's own paste handler from attaching it as well.
-            event.preventDefault();
-            event.stopPropagation();
-            void start(image);
-        }
-    };
-    const onDrop = (event: DragEvent<HTMLElement>) => {
-        setDragging(false);
-        const image = fromTransfer(event.dataTransfer);
-        if (image) {
-            event.preventDefault();
-            void start(image);
-        }
-    };
-
-    const update = (decal: Decal, fields: Partial<Decal>) =>
-        void tool('decals_update', { partId: part.id, updates: [{ id: decal.id, ...fields }] });
-
+    if (placing) {
+        return (
+            <div className="br-placing">
+                <span>Click the surface to place the picture · Esc cancels</span>
+                <button type="button" onClick={cancelPlacing}>Cancel</button>
+            </div>
+        );
+    }
     return (
-        <section
-            className={`br-decals ${dragging ? 'dragging' : ''}`}
-            tabIndex={0}
-            onPaste={onPaste}
-            onDragOver={(event) => {
+        <div
+            className={`pic-drop ${dragging ? 'dragging' : ''}`}
+            onDragOver={(event: DragEvent<HTMLElement>) => {
                 if ([...event.dataTransfer.items].some((i) => i.type.startsWith('image/'))) {
                     event.preventDefault();
                     setDragging(true);
                 }
             }}
             onDragLeave={() => setDragging(false)}
-            onDrop={onDrop}
-            aria-label="Decals"
+            onDrop={(event: DragEvent<HTMLElement>) => {
+                setDragging(false);
+                const image = imageIn(event.dataTransfer);
+                if (image) {
+                    event.preventDefault();
+                    onPicture(image);
+                }
+            }}
         >
+            <p>{busy ? 'Uploading…' : 'Drop a picture here, or paste one with Ctrl+V.'}</p>
+            <button type="button" onClick={() => file.current?.click()} disabled={busy}>Choose a file…</button>
+            <input
+                ref={file}
+                type="file"
+                accept={IMAGE_TYPES.join(',')}
+                hidden
+                onChange={(event) => {
+                    const chosen = event.target.files?.[0];
+                    event.target.value = '';
+                    if (chosen) {
+                        onPicture(chosen);
+                    }
+                }}
+            />
+        </div>
+    );
+}
+
+/** The part's pictures in its history panel: move, stretch, wrap or remove each. Hidden while it has none. */
+export function DecalPanel({ part }: { part: Part }) {
+    const placing = useStudio((s) => s.placingDecal);
+    const decals = part.decals ?? [];
+
+    const update = (decal: Decal, fields: Partial<Decal>) =>
+        void tool('decals_update', { partId: part.id, updates: [{ id: decal.id, ...fields }] });
+
+    if (!decals.length && !placing) {
+        return null;
+    }
+    return (
+        <section className="br-decals" aria-label="Pictures">
             <div className="br-decals-head">
-                <span className="br-title">Decals</span>
+                <span className="br-title">Pictures</span>
                 {decals.length > 0 && <span className="br-count">{decals.length}</span>}
-                <button type="button" className="br-add" onClick={() => file.current?.click()} disabled={busy}>
-                    {busy ? 'Uploading…' : 'Add picture…'}
-                </button>
-                <input
-                    ref={file}
-                    type="file"
-                    accept={IMAGE_TYPES.join(',')}
-                    hidden
-                    onChange={(event) => {
-                        void start(event.target.files?.[0]);
-                        event.target.value = '';
-                    }}
-                />
             </div>
             {placing && (
                 <div className="br-placing">
                     <span>Click the surface to place the picture · Esc cancels</span>
                     <button type="button" onClick={cancelPlacing}>Cancel</button>
                 </div>
-            )}
-            {decals.length === 0 && !placing && (
-                <p className="br-empty">Choose, paste (Ctrl+V here) or drop a picture to put it on the surface.</p>
             )}
             <ul>
                 {decals.map((decal) => (

@@ -137,6 +137,13 @@ const PATHS: Record<string, ReactNode> = {
             <path d="M6 7l1 13h10l1-13M10 11v6M14 11v6" />
         </>
     ),
+    picture: (
+        <>
+            <rect x="3.5" y="5" width="17" height="14" rx="2" />
+            <circle cx="9" cy="10" r="1.6" />
+            <path d="M4 17l5-4.5 3.5 3 3-2.5 4.5 4" />
+        </>
+    ),
     material: (
         <>
             <circle cx="12" cy="12" r="8.5" />

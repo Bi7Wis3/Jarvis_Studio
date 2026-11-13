@@ -12,6 +12,7 @@ import { STANDARD_LENGTHS, threadData } from '@jarvis/core/fasteners';
 import { clearEditing, editItem, refit, runTool, select, setSketchHidden, setWorkspace, useStudio } from './state';
 import { RegionPickSession, useRegionPick } from './regionPick';
 import { showError } from './menus';
+import { addPicture, PicturePicker } from './DecalPanel';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { Icon } from './icons';
 import {
@@ -1797,6 +1798,24 @@ const sketchHistoryTools: ToolDef[] = [
     { id: 'sk-redo', label: 'Redo', icon: 'redo', shortcut: 'Ctrl+Shift+Z', instant: () => redoSketch() },
 ];
 
+/** Puts a picture on the part's surface: choose, drop or paste it, then click where it goes. */
+const pictureTool: ToolDef = {
+    id: 'picture',
+    label: 'Add picture',
+    icon: 'picture',
+    hint: 'put a picture on the surface of the part',
+    needsPart: true,
+    noApply: true,
+    width: 280,
+    top: (api, ctx) => (
+        <PicturePicker
+            busy={false}
+            onPicture={(blob) => api.run(() => addPicture(ctx.part!, blob), false)}
+            onDone={() => api.run(async () => ({ text: '', isError: false }))}
+        />
+    ),
+};
+
 // ---- Workspaces ---------------------------------------------------------------------------------------
 
 const newPartTool: ToolDef = {
@@ -1825,7 +1844,7 @@ export const PART_GROUPS: ToolGroup[] = [
     { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchStartTools },
     { id: 'solid', label: 'Solid', icon: 'extrude', collapse: 4, tools: solidTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool] },
-    { id: 'material', label: 'Material', icon: 'material', tools: [materialTool] },
+    { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
     { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, othersTool, sketchesTool, sketchVisibilityTool] },
     { id: 'inspect', label: 'Inspect', icon: 'check', collapse: 1, tools: [checkTool] },
     { id: 'history', label: 'History', icon: 'undo', tools: historyTools },
@@ -1843,7 +1862,7 @@ export const ASSEMBLY_GROUPS: ToolGroup[] = [
     { id: 'insert', label: 'Insert', icon: 'box', collapse: 3, tools: [...primitiveTools, fastener, newPartTool] },
     { id: 'transform', label: 'Transform', icon: 'move', collapse: 4, tools: transformTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool, explodeTool] },
-    { id: 'material', label: 'Material', icon: 'material', tools: [materialTool] },
+    { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
     { id: 'view', label: 'View', icon: 'views', collapse: 5, tools: [viewsTool, fitTool, gridTool, edgesTool, labelsTool] },
     { id: 'export', label: 'Export', icon: 'stl', collapse: 1, tools: exportTools },
     { id: 'history', label: 'History', icon: 'undo', tools: historyTools },

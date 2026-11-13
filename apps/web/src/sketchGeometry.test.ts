@@ -82,6 +82,24 @@ describe('sketch geometry', () => {
         expect(dimensionFromPicks(g, picks, [5, 2])).not.toHaveProperty('axis');
     });
 
+    it('dimensions the distance between two parallel lines, and the angle between two that are not', () => {
+        const rect = addRect(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [40, 18] }).g;
+        const lineAt = (v: number) => rect.curves.find((c) => c.kind === 'line' && [c.a, c.b].every((id) => rect.points.find((p) => p.id === id)!.v === v))!;
+        const [bottom, top] = [lineAt(0), lineAt(18)];
+        const side = rect.curves.find((c) => c !== bottom && c !== top)!;
+        const picks = (x: { id: string }, y: { id: string }) => [{ type: 'curve' as const, id: x.id }, { type: 'curve' as const, id: y.id }];
+        const between = dimensionFromPicks(rect, picks(bottom, top), [50, 9]);
+        expect(between).toMatchObject({ kind: 'distance', b: top.id });
+        expect(dimensionFromPicks(rect, picks(bottom, side), [50, 9])).toMatchObject({ kind: 'angle' });
+        // A line and the axis it runs along: its offset from that axis.
+        expect(dimensionFromPicks(rect, picks(top, { id: 'axis-u' }), [50, 9])).toMatchObject({ kind: 'distance', b: 'axis-u' });
+        // The distance drives the geometry: 18 becomes 25.
+        const solved = solveGeometry({ ...rect, constraints: [...rect.constraints, { ...between!, id: 'd', value: 25 } as never] });
+        expect(solved.ok).toBe(true);
+        const vs = solved.geometry.points.map((p) => p.v);
+        expect(Math.max(...vs) - Math.min(...vs)).toBeCloseTo(25, 4);
+    });
+
     it('evaluates typed expressions', () => {
         expect(evaluate('40/2')).toBe(20);
         expect(evaluate('25.4*2')).toBeCloseTo(50.8);

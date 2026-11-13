@@ -510,6 +510,27 @@ export function dimensionFromPicks(g: SketchGeometry, picks: Pick[], place: Pt):
         return { kind: 'distance', a: a.id, b: b.id, value: 0, ...(axis ? { axis } : {}) };
     }
     if (kinds[0] === 'line' && kinds[1] === 'line') {
+        // Parallel lines have no angle to set: dimension the distance between them, from an end of one to the other.
+        const direction = (id: string): Pt | null => {
+            if (id === AXIS_U || id === AXIS_V) {
+                return id === AXIS_U ? [1, 0] : [0, 1];
+            }
+            const line = curveOf(g, id);
+            const p = line?.kind === 'line' ? pointOf(g, line.a) : null;
+            const q = line?.kind === 'line' ? pointOf(g, line.b) : null;
+            const length = p && q ? Math.hypot(q.u - p.u, q.v - p.v) : 0;
+            return p && q && length > 0 ? [(q.u - p.u) / length, (q.v - p.v) / length] : null;
+        };
+        const da = direction(a.id);
+        const db = direction(b.id);
+        const drawn = [a, b].find((pick) => curveOf(g, pick.id)?.kind === 'line');
+        if (da && db && drawn && Math.abs(da[0] * db[1] - da[1] * db[0]) < Math.sin((0.5 * Math.PI) / 180)) {
+            const line = curveOf(g, drawn.id);
+            const other = drawn === a ? b : a;
+            if (line?.kind === 'line') {
+                return { kind: 'distance', a: line.a, b: other.id, value: 0 };
+            }
+        }
         return { kind: 'angle', a: a.id, b: b.id, value: 0 };
     }
     const pi = kinds.indexOf('point');
