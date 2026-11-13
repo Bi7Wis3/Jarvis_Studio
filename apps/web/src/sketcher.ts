@@ -17,8 +17,9 @@ import {
 } from './sketchGeometry';
 import {
     addCentreArc, addCentreRect, chamferCorner, circularPattern, cornerOf, curvePoints, extendAt, filletCorner, linearPattern, mirrorCurves, offsetChain,
-    offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type Transform,
+    offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type OffsetCap, type Transform,
 } from './sketchEdit';
+import { powerTrim, trimBetween, trimCorner, trimmable, type TrimMode } from './sketchTrim';
 import { fixAll, fixProblem, fullyDefine, type Problem } from './sketchRepair';
 import { unmetConstraints } from './sketchCheck';
 import { dist, mid, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
@@ -63,6 +64,46 @@ export interface FinishOp {
 
 export type Selected = { type: 'point' | 'curve' | 'constraint'; id: string };
 
+/** Options of the edit tools (the SolidWorks PropertyManager options of each). */
+export interface EditOptions {
+    trimMode: TrimMode;
+    /** Keep trimmed entities as construction geometry. */
+    trimConstruction: boolean;
+    /** Ignore trimming of construction geometry. */
+    trimIgnoreConstruction: boolean;
+    offsetDistance: number;
+    /** Add dimensions: one offset dimension. */
+    offsetDimension: boolean;
+    offsetReverse: boolean;
+    /** Select chain: all contiguous entities, else only the picked ones. */
+    offsetChain: boolean;
+    offsetBoth: boolean;
+    /** Cap ends of a bi-directional open offset. */
+    offsetCap: OffsetCap;
+    /** Construction geometry: turn the original (base) and / or the offset into construction. */
+    offsetBaseConstruction: boolean;
+    offsetConstruction: boolean;
+    /** Keep constrained corners: the sharp corner stays as a point with its relations and dimensions. */
+    filletKeepCorners: boolean;
+    /** Dimension each fillet; off: an equal relation to the first one. */
+    filletDimensionEach: boolean;
+    chamferType: 'distance' | 'angle';
+    chamferEqual: boolean;
+    chamferDistance2: number;
+    chamferAngle: number;
+    /** Copy: keep the originals. */
+    mirrorCopy: boolean;
+}
+
+export const DEFAULT_EDIT_OPTIONS: EditOptions = {
+    trimMode: 'power', trimConstruction: false, trimIgnoreConstruction: false,
+    offsetDistance: 5, offsetDimension: true, offsetReverse: false, offsetChain: true, offsetBoth: false, offsetCap: 'none',
+    offsetBaseConstruction: false, offsetConstruction: false,
+    filletKeepCorners: true, filletDimensionEach: false,
+    chamferType: 'distance', chamferEqual: true, chamferDistance2: 2, chamferAngle: 45,
+    mirrorCopy: true,
+};
+
 /** A dimension being placed or edited: its value input sits at `at`. */
 export interface DimDraft {
     constraint: NewConstraint;
@@ -102,6 +143,12 @@ interface SketcherState {
     /** The last fillet radius and chamfer distance, used until another is typed. */
     filletRadius: number;
     chamferDistance: number;
+    /** The options of the edit tools, set in their forms. */
+    editOptions: EditOptions;
+    /** Power trim: the sketch before the stroke (for undo), where the pointer was, and the path so far. */
+    trimStroke: { from: SketchGeometry; path: Pt[]; trimmed: number; slop: number } | null;
+    /** Trim corner: the first line and where it was clicked; trim away inside / outside: the two boundaries. */
+    trimPicks: { id: string; at: Pt }[];
     /** First point of the current line chain, to close it on. */
     chainStart: string | null;
     cursor: Pt | null;
@@ -180,6 +227,8 @@ const IDLE = {
     editText: null,
     offsetCurve: null,
     mirrorAbout: false,
+    trimStroke: null,
+    trimPicks: [],
     chainStart: null,
     cursor: null,
     snapKind: null,
@@ -223,6 +272,7 @@ export const useSketcher = create<SketcherState>(() => ({
     sides: 6,
     filletRadius: 5,
     chamferDistance: 2,
+    editOptions: DEFAULT_EDIT_OPTIONS,
     look: 0,
     showOthers: true,
     showSketches: true,
@@ -363,7 +413,26 @@ export function setTool(tool: SketchTool): void {
     set({
         tool, draft: [], chainStart: null, typed: '', picks, hover: null, dimDrag: null, dimDraft: null, message: null,
         editPreview: [], editText: null, offsetCurve: null, mirrorAbout: false, arcSweep: 0, ...(tool === 'xform' ? {} : { xform: null }),
+        trimStroke: null, trimPicks: [],
     });
+}
+
+/** An edit tool's form opened: the tool starts from the current selection where it can use it (pre-selection). */
+export function startEditTool(tool: EditTool): void {
+    setTool(tool);
+}
+
+/**
+ * The edit tool form's OK: applies what is waiting (an offset, the selected corners, a mirror) and returns an error
+ * to show, or null to close the form.
+ */
+export function finishEditTool(_tool: EditTool): string | null {
+    return null;
+}
+
+/** Changes edit tool options (from the tool's form). */
+export function setEditOptions(patch: Partial<EditOptions>): void {
+    set((s) => ({ editOptions: { ...s.editOptions, ...patch }, trimPicks: patch.trimMode ? [] : s.trimPicks, picks: patch.trimMode ? [] : s.picks }));
 }
 
 export function undoSketch(): void {
@@ -422,6 +491,23 @@ export function sketchMove(raw: Pt, tolerance: number): void {
                 set({ geometry: result.geometry, dof: result.dof, cursor: raw });
             }
         }
+        return;
+    }
+    if (s.trimStroke) {
+        const path = s.trimStroke.path;
+        const last = path[path.length - 1];
+        if (path.length === 1 && dist(path[0], raw) <= s.trimStroke.slop) {
+            // Not a drag yet: a click trims on release instead.
+            set({ cursor: raw });
+            return;
+        }
+        const { trimConstruction, trimIgnoreConstruction } = s.editOptions;
+        const r = powerTrim(s.geometry, last, raw, { construction: trimConstruction, ignoreConstruction: trimIgnoreConstruction });
+        const trail = [...path, raw];
+        set({
+            geometry: r.g, cursor: raw, trimStroke: { ...s.trimStroke, path: trail, trimmed: s.trimStroke.trimmed + r.trimmed },
+            editPreview: trail.slice(1).map((p, i): NewEntity => ({ kind: 'line', a: trail[i], b: p })), editText: null, hover: null,
+        });
         return;
     }
     if (isEditTool(s.tool)) {
@@ -505,6 +591,11 @@ export function sketchDown(raw: Pt, tolerance: number): boolean {
         set({ dimDrag: { picks, from: raw, slop: tolerance * 0.4 }, cursor: raw, hover: null });
         return true;
     }
+    if (s.tool === 'trim' && s.editOptions.trimMode === 'power') {
+        // Power trim: the press starts a stroke (not a camera orbit); a press without a drag stays a click.
+        set({ trimStroke: { from: s.geometry, path: [raw], trimmed: 0, slop: tolerance * 0.4 } });
+        return true;
+    }
     if (s.tool !== 'select') {
         return false;
     }
@@ -528,6 +619,16 @@ export function sketchDown(raw: Pt, tolerance: number): boolean {
 
 export function sketchUp(): void {
     const s = get();
+    if (s.trimStroke) {
+        const { from, trimmed } = s.trimStroke;
+        const after = s.geometry;
+        // The whole stroke is one undo step; the trimmed sketch is solved and checked like any edit.
+        set({ trimStroke: null, editPreview: [], geometry: from });
+        if (trimmed && commit(after, { selection: [] })) {
+            set({ message: `Trimmed ${trimmed} piece${trimmed === 1 ? '' : 's'}.` });
+        }
+        return;
+    }
     if (s.drag) {
         // One undo step for the whole drag, and none for a press that moved nothing.
         const moved = s.dragFrom && s.dragFrom !== s.geometry;
@@ -1105,7 +1206,7 @@ export function sketchEscape(): void {
     } else if (s.draft.length) {
         set({ draft: [], chainStart: null });
     } else if (s.picks.length || s.offsetCurve || s.mirrorAbout || s.xform?.picks.length) {
-        set((x) => ({ picks: [], offsetCurve: null, mirrorAbout: false, editPreview: [], editText: null, xform: x.xform && { ...x.xform, picks: [] } }));
+        set((x) => ({ picks: [], trimPicks: [], offsetCurve: null, mirrorAbout: false, editPreview: [], editText: null, xform: x.xform && { ...x.xform, picks: [] } }));
     } else if (s.tool !== 'select') {
         set({ tool: 'select', message: null });
     } else if (s.selection.length) {
@@ -1150,7 +1251,14 @@ function editHover(s: SketcherState, raw: Pt, tolerance: number): Partial<Sketch
         case 'trim':
         case 'extend': {
             const pick = drawnCurveAt(g, raw, tolerance);
-            const plan = pick && (s.tool === 'trim' ? trimAt(g, pick.id, raw) : extendAt(g, pick.id, raw));
+            const o = s.editOptions;
+            if (s.tool === 'trim' && o.trimMode !== 'power' && o.trimMode !== 'closest') {
+                return { hover: pick, editPreview: [], editText: null };
+            }
+            if (s.tool === 'trim' && pick && !trimmable(g, pick.id, { ignoreConstruction: o.trimIgnoreConstruction })) {
+                return { hover: null, editPreview: [], editText: null };
+            }
+            const plan = pick && (s.tool === 'trim' ? trimAt(g, pick.id, raw, { construction: o.trimConstruction }) : extendAt(g, pick.id, raw));
             const shown = plan ? ('removed' in plan ? plan.removed : plan.added) : null;
             return { hover: null, editPreview: shown ? [shown] : [], editText: null };
         }
@@ -1183,7 +1291,16 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             if (!pick) {
                 return;
             }
-            const plan = tool === 'trim' ? trimAt(g, pick.id, raw) : extendAt(g, pick.id, raw);
+            const o = s.editOptions;
+            if (tool === 'trim' && o.trimMode !== 'power' && o.trimMode !== 'closest') {
+                trimPickClick(pick.id, raw);
+                return;
+            }
+            if (tool === 'trim' && !trimmable(g, pick.id, { ignoreConstruction: o.trimIgnoreConstruction })) {
+                set({ message: 'Construction geometry is not trimmed (Ignore trimming of construction geometry is on).' });
+                return;
+            }
+            const plan = tool === 'trim' ? trimAt(g, pick.id, raw, { construction: o.trimConstruction }) : extendAt(g, pick.id, raw);
             if (!plan) {
                 set({ message: tool === 'trim' ? 'Nothing to trim there: a circle needs two crossings.'
                     : 'Nothing to extend to: the end must be free and point at another curve.' });
@@ -1268,6 +1385,46 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             return;
         }
     }
+}
+
+/** Trim corner, inside and outside: clicks pick the lines or boundaries, then (inside / outside) the curves to trim. */
+function trimPickClick(id: string, at: Pt): void {
+    const s = get();
+    const o = s.editOptions;
+    const picks = s.trimPicks;
+    const settings = { construction: o.trimConstruction, ignoreConstruction: o.trimIgnoreConstruction };
+    if (o.trimMode === 'corner') {
+        if (!picks.length || picks[0].id === id) {
+            set({ trimPicks: [{ id, at }], picks: [{ type: 'curve', id }], message: null });
+            return;
+        }
+        const r = trimCorner(s.geometry, picks[0], { id, at });
+        if ('error' in r) {
+            set({ trimPicks: [], picks: [], message: r.error });
+            return;
+        }
+        commit(r.g, { trimPicks: [], picks: [], selection: [], editPreview: [] });
+        return;
+    }
+    if (picks.length < 2) {
+        if (picks.some((p) => p.id === id)) {
+            return;
+        }
+        const next = [...picks, { id, at }];
+        set({ trimPicks: next, picks: next.map((p) => ({ type: 'curve' as const, id: p.id })), message: null });
+        return;
+    }
+    if (!trimmable(s.geometry, id, settings)) {
+        set({ message: 'Construction geometry is not trimmed (Ignore trimming of construction geometry is on).' });
+        return;
+    }
+    const r = trimBetween(s.geometry, id, [picks[0].id, picks[1].id], o.trimMode === 'inside' ? 'inside' : 'outside', settings);
+    if ('error' in r) {
+        set({ message: r.error });
+        return;
+    }
+    // The boundaries stay picked for the next curve.
+    commit(r.g, { selection: [], editPreview: [] });
 }
 
 function applyOffset(d: number): void {

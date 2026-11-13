@@ -114,9 +114,20 @@ function useCtx(): Ctx {
 const CONSTRAINT_HINT = 'Pick the geometry in the view (or select it first, then press the button)';
 
 function sketchHint(tool: SketchTool): string {
+    if (tool === 'trim') {
+        return TRIM_HINTS[useSketcher.getState().editOptions.trimMode];
+    }
     return tool.startsWith('c:') ? `${tool.slice(2)[0].toUpperCase()}${tool.slice(3)}: ${CONSTRAINT_HINT.toLowerCase()}`
         : SKETCH_HINTS[tool as keyof typeof SKETCH_HINTS];
 }
+
+const TRIM_HINTS = {
+    power: 'Power trim: drag across curves to trim each where the pointer crosses · or click a piece to remove it',
+    corner: 'Corner: click two lines on the sides to keep · they are trimmed or extended to meet',
+    inside: 'Trim away inside: click two boundaries, then the curves to cut away between them',
+    outside: 'Trim away outside: click two boundaries, then the curves to cut away outside them',
+    closest: 'Trim to closest: click the piece of a curve to remove, up to where other curves cross it',
+};
 
 const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}`>, string> = {
     select: 'Click to select, Shift adds · drag points, lines or dimension values to move · double-click a dimension to edit · Delete removes',
@@ -446,7 +457,13 @@ export function Toolbar() {
                 }
                 if (SKETCH_KEYS[key]) {
                     event.preventDefault();
-                    setTool(SKETCH_KEYS[key]);
+                    // Edit tools with a form open it, as their button does.
+                    const form = ALL_TOOLS.some((t) => t.id === `sk-${SKETCH_KEYS[key]}` && !t.instant);
+                    if (form) {
+                        openById(`sk-${SKETCH_KEYS[key]}`);
+                    } else {
+                        setTool(SKETCH_KEYS[key]);
+                    }
                     return;
                 }
                 if (key === 'f') {

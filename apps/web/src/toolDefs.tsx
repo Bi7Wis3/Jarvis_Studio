@@ -14,6 +14,7 @@ import { RegionPickSession, useRegionPick } from './regionPick';
 import { showError } from './menus';
 import { addPicture, PicturePicker } from './DecalPanel';
 import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchToolDefs';
+import { editToolForms } from './sketchEditForms';
 import { evaluateTools } from './evaluateToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { Icon } from './icons';
@@ -1112,7 +1113,9 @@ const circularSketchPattern: ToolDef = {
 };
 
 const modifyTools: ToolDef[] = [
-    ...MODIFY_TOOLS.map(({ id, label, key, icon, hint }): ToolDef => ({
+    // Edit tools with options open a form (sketchEditForms.tsx); the rest stay plain click tools.
+    ...editToolForms,
+    ...MODIFY_TOOLS.filter(({ id }) => !editToolForms.some((t) => t.id === `sk-${id}`)).map(({ id, label, key, icon, hint }): ToolDef => ({
         id: `sk-${id}`,
         label,
         icon,

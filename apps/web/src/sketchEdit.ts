@@ -179,6 +179,13 @@ function cutsOn(g: SketchGeometry, c: SketchCurve): Cut[] {
     return cuts.sort((a, b) => a.t - b.t);
 }
 
+export interface TrimOptions {
+    /** Only crossings with these curves cut (trim away inside / outside: the two boundaries). */
+    by?: string[];
+    /** Keep the removed piece as construction geometry. */
+    construction?: boolean;
+}
+
 export interface TrimPlan {
     /** The new geometry, before solving. */
     g: SketchGeometry;
@@ -190,20 +197,29 @@ export interface TrimPlan {
  * Trims the curve at the piece around `at`: the part between the nearest crossings with other curves (or the curve's
  * ends) is removed. A curve nothing crosses goes completely; a circle needs two crossings.
  */
-export function trimAt(g: SketchGeometry, curveId: string, at: Pt): TrimPlan | null {
+export function trimAt(g: SketchGeometry, curveId: string, at: Pt, opts: TrimOptions = {}): TrimPlan | null {
     const c = curveOf(g, curveId);
     if (!c) {
         return null;
     }
     const s = shapeOf(g, c);
-    const cuts = cutsOn(g, c);
+    const all = cutsOn(g, c);
+    const cuts = opts.by ? all.filter((k) => opts.by!.includes(k.by)) : all;
     const t0 = paramOf(s, at);
+    const keep = !!opts.construction && !c.construction;
     const whole = (): TrimPlan => ({
-        g: dropUnused(dropConstraints({ ...g, curves: g.curves.filter((k) => k.id !== c.id) }, (k) => constraintRefs(k).includes(c.id)), curvePoints(c)),
+        g: keep ? { ...g, curves: g.curves.map((k) => (k.id === c.id ? { ...k, construction: true } : k)) }
+            : dropUnused(dropConstraints({ ...g, curves: g.curves.filter((k) => k.id !== c.id) }, (k) => constraintRefs(k).includes(c.id)), curvePoints(c)),
         removed: s.kind === 'line' ? { kind: 'line', a: s.a, b: s.b }
             : s.sweep === undefined ? { kind: 'circle', c: s.c, r: s.r } : pieceOf(s, 0, s.sweep),
     });
     let out = g;
+    /** Keep trimmed entities as construction geometry: the removed piece stays, as construction, on the same points. */
+    const ghost = (curve: SketchCurve) => {
+        if (keep) {
+            out = putCurve(out, { ...curve, id: newId('c', out), construction: true });
+        }
+    };
     /** The point at a cut: the existing one there, or a new one held on the cutting curve. */
     const pointAt = (cut: Cut): string => {
         if (cut.point) {
@@ -229,6 +245,7 @@ export function trimAt(g: SketchGeometry, curveId: string, at: Pt): TrimPlan | n
         const start = pointAt(after);
         const end = pointAt(before);
         out = putCurve(out, { id: c.id, kind: 'arc', center: c.center, start, end, ...(c.construction ? { construction: true } : {}) });
+        ghost({ id: '', kind: 'arc', center: c.center, start: end, end: start });
         return { g: dropOnOwnEnds(out, [c.id]), removed: pieceOf(s, from, to) };
     }
 
@@ -262,6 +279,7 @@ export function trimAt(g: SketchGeometry, curveId: string, at: Pt): TrimPlan | n
     } else {
         out = putCurve(out, piece(c, first, lowerId!));
     }
+    ghost(piece(c, lowerId ?? first, upperId ?? last));
     // A line's length, middle and equal-length no longer hold; an arc keeps its radius relations.
     if (c.kind === 'line') {
         out = dropConstraints(out, (k) => (k.kind === 'length' && k.line === c.id) || (k.kind === 'midpoint' && k.line === c.id)
@@ -505,6 +523,9 @@ export function chamferCorner(g: SketchGeometry, corner: Corner, distance: numbe
 }
 
 // ---- Offset -------------------------------------------------------------------------------------------
+
+/** Cap ends of an open bi-directional offset: none, arcs or lines. */
+export type OffsetCap = 'none' | 'arcs' | 'lines';
 
 /** One curve of a chain, in the direction the chain runs (from → to); a circle runs counter-clockwise. */
 export interface Segment {
