@@ -237,5 +237,14 @@ const mirror = editTool({
     note: MirrorNote,
 });
 
+const split = editTool({
+    id: 'split',
+    label: 'Split',
+    icon: 'trim',
+    hint: 'split a curve in two at a point',
+    fields: [],
+    note: () => <p className="tb-note">Click a line or arc where it splits; a circle takes two points. The split point can be dimensioned.</p>,
+});
+
 /** In the Modify group, in place of the plain click tools. */
-export const editToolForms: ToolDef[] = [trim, extend, fillet, chamfer, offset, mirror];
+export const editToolForms: ToolDef[] = [trim, extend, fillet, chamfer, offset, mirror, split];

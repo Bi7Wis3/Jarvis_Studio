@@ -149,6 +149,7 @@ const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}`>, string> = {
     chamfer: 'Click a corner, or two lines, to cut it · type a distance + Enter to change it · options in the form',
     offset: 'Click a curve (or select curves first), then click where the copy goes · or type the distance + Enter',
     mirror: 'Click the curves to mirror, then an axis or a centre line · or press Enter and click any line',
+    split: 'Click a line or arc where it splits in two · a circle: click two points',
 };
 
 const SKETCH_KEYS: Record<string, SketchTool> = {

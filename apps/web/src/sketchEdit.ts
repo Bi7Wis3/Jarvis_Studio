@@ -289,6 +289,67 @@ export function trimAt(g: SketchGeometry, curveId: string, at: Pt, opts: TrimOpt
     return { g: dropUnused(out, [first, last]), removed };
 }
 
+// ---- Split --------------------------------------------------------------------------------------------
+
+/**
+ * Splits a line or arc in two at the point nearest `at`, with a split point both pieces share (they stay in line, or
+ * on one circle). A circle needs two split points (`at2`) and becomes two arcs. A line's length, middle and equal
+ * length no longer hold and go (`dropped`).
+ */
+export function splitAt(g: SketchGeometry, curveId: string, at: Pt, at2?: Pt): { g: SketchGeometry; point: string; dropped: number } | { error: string } {
+    const c = curveOf(g, curveId);
+    if (!c) {
+        return { error: 'Pick a line, arc or circle.' };
+    }
+    const s = shapeOf(g, c);
+    const onCurve = (p: Pt): Pt => (s.kind === 'line'
+        ? (() => {
+            const t = paramOf(s, p);
+            return [s.a[0] + (s.b[0] - s.a[0]) * t, s.a[1] + (s.b[1] - s.a[1]) * t] as Pt;
+        })()
+        : polar(s.c, s.r, angleOf(s.c, p)));
+    const inside = (p: Pt) => (s.kind === 'line' ? paramOf(s, p) > 1e-6 && paramOf(s, p) < 1 - 1e-6
+        : s.sweep === undefined || (paramOf(s, p) > 1e-6 && paramOf(s, p) < s.sweep - 1e-6));
+    const p = onCurve(at);
+    if (!inside(p)) {
+        return { error: 'Click inside the curve, away from its ends.' };
+    }
+    let out = g;
+    const r = newPoint(out, p);
+    out = r.g;
+    const second = newId('c', out);
+    const construction = c.construction ? { construction: true } : {};
+    if (c.kind === 'line') {
+        out = putCurve(out, { ...c, b: r.id });
+        out = putCurve(out, { id: second, kind: 'line', a: r.id, b: c.b, ...construction });
+        const before = out.constraints.length;
+        out = dropConstraints(out, (k) => (k.kind === 'length' && k.line === c.id) || (k.kind === 'midpoint' && k.line === c.id)
+            || (k.kind === 'equal' && (k.a === c.id || k.b === c.id)));
+        const dropped = before - out.constraints.length;
+        // In line: the far end of the second piece stays on the first.
+        out = addConstraint(out, { kind: 'pointOnCurve', point: c.b, curve: c.id }).g;
+        return { g: out, point: r.id, dropped };
+    }
+    if (c.kind === 'arc') {
+        out = putCurve(out, { ...c, end: r.id });
+        out = putCurve(out, { id: second, kind: 'arc', center: c.center, start: r.id, end: c.end, ...construction });
+        return { g: out, point: r.id, dropped: 0 };
+    }
+    if (!at2) {
+        return { error: 'A circle is split at two points: click the second.' };
+    }
+    const q = onCurve(at2);
+    if (dist(p, q) < 1e-6) {
+        return { error: 'Click a second point away from the first.' };
+    }
+    const r2 = newPoint(out, q);
+    out = r2.g;
+    // The circle becomes two arcs about its centre, the first keeping its id (and its radius dimension).
+    out = putCurve(out, { id: c.id, kind: 'arc', center: c.center, start: r.id, end: r2.id, ...construction });
+    out = putCurve(out, { id: second, kind: 'arc', center: c.center, start: r2.id, end: r.id, ...construction });
+    return { g: out, point: r.id, dropped: 0 };
+}
+
 // ---- Extend -------------------------------------------------------------------------------------------
 
 export interface ExtendPlan {

@@ -3,7 +3,7 @@ import type { SketchCurve, SketchGeometry } from '@jarvis/core';
 import { ORIGIN, curveOf, curveRadius, loadSolver, pointOf, solveGeometry } from './solver';
 import { addCircle, addConstraint, addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import { circularSketchPattern, linearSketchPattern } from './sketchPattern';
-import { extendAt, mirrorCurves, offsetEntities, trimAt } from './sketchEdit';
+import { extendAt, mirrorCurves, offsetEntities, splitAt, trimAt } from './sketchEdit';
 import { chamferSides, filletCornerAt, filletSides, type FilletCorner } from './sketchFillet';
 import { unmetConstraints } from './sketchCheck';
 import { powerTrim, trimBetween, trimCorner } from './sketchTrim';
@@ -453,6 +453,30 @@ describe('sketch fillet and chamfer', () => {
         expect(e2.find((p) => Math.abs(p[1]) < 1e-6)![0]).toBeCloseTo(5, 5);
         expect(e2.find((p) => Math.abs(p[0]) < 1e-6)![1]).toBeCloseTo(5, 5);
         expect(chamferSides(g, corner, { type: 'angle', distance: 5, angle: 95 })).toHaveProperty('error');
+    });
+});
+
+describe('split entities', () => {
+    it('splits a line into two in line, an arc into two on one circle, and a circle at two points', () => {
+        let g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [30, 0] }, 'horizontal').g;
+        const line = g.curves[0];
+        g = addConstraint(g, { kind: 'length', line: line.id, value: 30 }).g;
+        const r = splitAt(g, line.id, [10, 1]) as { g: SketchGeometry; point: string; dropped: number };
+        expect(r.dropped).toBe(1);
+        let out = solveGeometry(r.g);
+        expect(out.ok).toBe(true);
+        expect(lines(out.geometry)).toHaveLength(2);
+        expect(at(out.geometry, r.point)).toEqual([10, 0]);
+        // Moving the far end up keeps both pieces in line.
+        const far = (curveOf(r.g, r.g.curves[1].id) as Extract<SketchCurve, { kind: 'line' }>).b;
+        out = solveGeometry({ ...out.geometry, constraints: [...out.geometry.constraints.filter((k) => k.kind !== 'horizontal'), { id: 'f', kind: 'fix', point: line.kind === 'line' ? line.a : '' }, { id: 'd', kind: 'distance', a: far, b: 'axis-u', value: 6 }] });
+        expect(out.ok).toBe(true);
+        expect(unmetConstraints(out.geometry)).toEqual([]);
+        const c = addCircle(EMPTY_GEOMETRY, { at: [0, 0] }, 10);
+        expect(splitAt(c.g, c.id, [10, 0])).toHaveProperty('error');
+        const two = splitAt(c.g, c.id, [10, 0], [-10, 0]) as { g: SketchGeometry };
+        expect(two.g.curves.filter((k) => k.kind === 'arc')).toHaveLength(2);
+        expect(solveGeometry(two.g).ok).toBe(true);
     });
 });
 

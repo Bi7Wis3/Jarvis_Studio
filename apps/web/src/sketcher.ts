@@ -17,7 +17,7 @@ import {
 } from './sketchGeometry';
 import {
     addCentreArc, addCentreRect, curvePoints, extendAt, mirrorCurves, offsetEntities,
-    offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type OffsetCap, type OffsetOptions, type Transform,
+    offsetPreview, sideDistance, splitAt, transformEntities, transformPoint, trimAt, type OffsetCap, type OffsetOptions, type Transform,
 } from './sketchEdit';
 import { powerTrim, trimBetween, trimCorner, trimmable, type TrimMode } from './sketchTrim';
 import { circularSketchPattern, linearSketchPattern, type CircularPatternOptions, type LinearPatternOptions } from './sketchPattern';
@@ -36,13 +36,13 @@ export type SketchIntent = 'extrude' | 'cut' | 'revolve' | 'sketch';
 
 export type DrawTool = 'line' | 'centerline' | 'point' | 'rect' | 'centerRect' | 'circle' | 'arc' | 'centerArc' | 'slot' | 'polygon';
 /** Tools that change existing geometry. */
-export type EditTool = 'trim' | 'extend' | 'fillet' | 'chamfer' | 'offset' | 'mirror';
+export type EditTool = 'trim' | 'extend' | 'fillet' | 'chamfer' | 'offset' | 'mirror' | 'split';
 /** xform: picking points for Move, Copy, Rotate or Scale while their form is open. */
 export type SketchTool = 'select' | DrawTool | EditTool | 'dimension' | 'xform' | `c:${ConstraintTool}`;
 
 export type TransformKind = 'move' | 'copy' | 'rotate' | 'scale' | 'stretch';
 
-const EDIT_TOOLS: readonly string[] = ['trim', 'extend', 'fillet', 'chamfer', 'offset', 'mirror'];
+const EDIT_TOOLS: readonly string[] = ['trim', 'extend', 'fillet', 'chamfer', 'offset', 'mirror', 'split'];
 export const isEditTool = (tool: SketchTool): tool is EditTool => EDIT_TOOLS.includes(tool);
 
 /** The operation chosen in the finish popup; drives the live preview. */
@@ -1368,6 +1368,8 @@ function editHover(s: SketcherState, raw: Pt, tolerance: number): Partial<Sketch
         }
         case 'mirror':
             return { hover: curveAt(g, raw, tolerance), editPreview: [], editText: null };
+        case 'split':
+            return { hover: drawnCurveAt(g, raw, tolerance), editPreview: [], editText: null };
         default:
             return {};
     }
@@ -1443,6 +1445,28 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
                 return;
             }
             applyOffset(offsetDistance(s, raw));
+            return;
+        }
+        case 'split': {
+            const pick = drawnCurveAt(g, raw, tolerance);
+            if (!pick) {
+                return;
+            }
+            const first = s.trimPicks[0];
+            const circle = curveOf(g, pick.id)?.kind === 'circle';
+            if (circle && (!first || first.id !== pick.id)) {
+                // A circle takes two split points.
+                set({ trimPicks: [{ id: pick.id, at: raw }], picks: [pick], message: 'Click the second split point on the circle.' });
+                return;
+            }
+            const r = splitAt(g, pick.id, circle ? first.at : raw, circle ? raw : undefined);
+            if ('error' in r) {
+                set({ message: r.error });
+                return;
+            }
+            if (commit(r.g, { trimPicks: [], picks: [], selection: [{ type: 'point', id: r.point }] })) {
+                set({ message: r.dropped ? `Split; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} on the whole line (its length, middle or equal length).` : 'Split.' });
+            }
             return;
         }
         case 'mirror': {
