@@ -9,7 +9,7 @@ import { stepRefs } from './historyText';
  * is not rolled back.
  */
 export function stepAtBar(project: Pick<Project, 'parts' | 'view'> | null, partId: string): string | null {
-    const rollback = project?.view.rollback;
+    const rollback = project?.view?.rollback;
     const features = project?.parts.find((p) => p.id === partId)?.features ?? [];
     if (!rollback || rollback.partId !== partId || rollback.count >= features.length) {
         return null;
