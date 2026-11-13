@@ -287,9 +287,12 @@ const feature = z.discriminatedUnion('op', [
     z.object({
         ...featureBase,
         op: z.literal('mirror'),
-        plane: z.enum(['YZ', 'XY', 'XZ']).describe('Part-frame plane: YZ mirrors left/right, XY front/back, XZ up/down'),
+        plane: z.union([z.enum(['YZ', 'XY', 'XZ']), planeRef])
+            .describe('right (= YZ) mirrors left/right, front (= XY) front/back, top (= XZ) up/down; or { planeRef }'),
         offset: z.number().optional().describe('Moves the plane along its normal'),
         keepOriginal: z.boolean().optional().describe('Default true: join the mirror image to the body'),
+        features: z.array(z.string()).min(1).optional()
+            .describe('Features to mirror: earlier steps that add or cut material, applied again mirrored; omit to mirror the whole body'),
     }),
     z.object({
         ...featureBase,
@@ -432,6 +435,12 @@ export function checkHistory(part: Pick<Part, 'id' | 'features'>): void {
                 }
             }
             checkPattern(where, f);
+        } else if (f.op === 'mirror') {
+            for (const id of f.features ?? []) {
+                if (!seen.has(id)) {
+                    throw new Error(`${where}: step "${id}" is not an earlier step of ${part.id}`);
+                }
+            }
         }
         const { id: _id, name: _name, suppressed: _s, ...body } = f;
         scan(where, body);

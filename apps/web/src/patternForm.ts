@@ -216,3 +216,48 @@ export function circularFeature(v: Values): Record<string, unknown> {
 export function withoutNulls(feature: Record<string, unknown>): Record<string, unknown> {
     return Object.fromEntries(Object.entries(feature).filter(([, value]) => value !== null));
 }
+
+// ---- Mirror ---------------------------------------------------------------------------------------------------
+
+type Mirror = Extract<Feature, { op: 'mirror' }>;
+
+const OLD_PLANES: Record<string, string> = { YZ: 'right', XY: 'front', XZ: 'top' };
+
+/** Mirror planes to choose from: the three base planes and the plane steps before `upto`. */
+export function planeOptions(features: readonly Feature[] | undefined, upto?: string): Option[] {
+    const list = features ?? [];
+    const end = upto ? list.findIndex((f) => f.id === upto) : -1;
+    const planes = (end < 0 ? list : list.slice(0, end))
+        .filter((f) => f.op === 'plane')
+        .map((f) => ({ value: `ref:${f.id}`, label: f.name ?? f.id }));
+    return [
+        { value: 'front', label: 'Front plane' },
+        { value: 'top', label: 'Top plane' },
+        { value: 'right', label: 'Right plane' },
+        ...planes,
+    ];
+}
+
+export const MIRROR_DEFAULTS: Values = { plane: 'right', offset: '0', what: 'body', features: [] };
+
+export function mirrorValues(f: Mirror): Values {
+    const plane = typeof f.plane === 'string' ? OLD_PLANES[f.plane] ?? f.plane : `ref:${f.plane.planeRef}`;
+    return {
+        plane, offset: String(f.offset ?? 0), what: f.features?.length ? 'features' : 'body', features: [...(f.features ?? [])],
+    };
+}
+
+/** The mirror's fields; `features` is null (removed) when mirroring the body. */
+export function mirrorFeature(v: Values): Record<string, unknown> {
+    const value = String(v.plane ?? '');
+    const plane = value.startsWith('ref:') ? { planeRef: value.slice(4) } : value;
+    if (typeof plane === 'string' && !['front', 'top', 'right'].includes(plane)) {
+        throw new Error('Pick a mirror plane.');
+    }
+    const offset = number(v, 'offset', 'Offset');
+    const features = v.what === 'features' ? (Array.isArray(v.features) ? v.features : []) : null;
+    if (features && features.length === 0) {
+        throw new Error('Pick the features to mirror.');
+    }
+    return { op: 'mirror', plane, offset, features };
+}

@@ -257,6 +257,38 @@ describe('pattern', () => {
     }, SLOW);
 });
 
+describe('mirror features', () => {
+    it('mirrors chosen features about a plane step, leaving the rest of the body alone', async () => {
+        const plain = volume(await mesh(sharpBox([60, 4, 60])));
+        const hole = holeArea(3) * 4;
+        // Plane x = 5; a hole at x = 15 mirrors to x = -5. A hole not chosen is not mirrored.
+        const m = await mesh(sharpBox([60, 4, 60]), [
+            { id: 'pl', op: 'plane', definition: { kind: 'offset', base: 'right', distance: 5 } },
+            plainHole('h', [15, 2, 0]),
+            plainHole('other', [0, 2, 20]),
+            { id: 'm', op: 'mirror', plane: { planeRef: 'pl' }, features: ['h'] },
+        ]);
+        expect((plain - volume(m)) / (3 * hole)).toBeCloseTo(1, 1);
+        expect(openEdges(m)).toBe(0);
+        // A boss mirrored about the Top plane lands under the body.
+        const boss = await mesh(sharpBox([20, 4, 20]), [
+            { id: 'b', op: 'extrude', mode: 'add', distance: 5, sketch: { plane: 'top', offset: 2, profiles: [circle([0, 0], 3)] } },
+            { id: 'm', op: 'mirror', plane: 'top', features: ['b'] },
+        ]);
+        expect(volume(boss)).toBeCloseTo(20 * 4 * 20 + 2 * Math.PI * 9 * 5, -1);
+    }, SLOW);
+
+    it('mirrors the body about a base plane by its SolidWorks name, as the older spelling did', async () => {
+        const older = await mesh(sharpBox([10, 4, 6]), [{ id: 'm', op: 'mirror', plane: 'XY', offset: 10 }]);
+        const named = await mesh(sharpBox([10, 4, 6]), [{ id: 'm', op: 'mirror', plane: 'front', offset: 10 }]);
+        expect(volume(named)).toBeCloseTo(volume(older), 3);
+        await expect(mesh(sharpBox([20, 4, 20]), [
+            { id: 'f', name: 'Soft', op: 'fillet', radius: 1 },
+            { id: 'm', op: 'mirror', plane: 'right', features: ['f'] },
+        ])).rejects.toThrow(/cannot be mirrored/);
+    }, SLOW);
+});
+
 describe('combine', () => {
     const part = (id: string, shape: Shape, position: Vec3, rotation: Vec3 = [0, 0, 0], features?: Feature[]): Part => ({
         id, name: id, shape, position, rotation, features, material: { color: '#888888', metalness: 0, roughness: 0.5 },

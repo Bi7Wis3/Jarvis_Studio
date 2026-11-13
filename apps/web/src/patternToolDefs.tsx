@@ -6,7 +6,7 @@ import { useStudio } from './state';
 import { stepAtBar } from './historyOps';
 import {
     axisOptions, axisValue, CIRCULAR_DEFAULTS, circularFeature, circularValues, LINEAR_DEFAULTS, linearFeature, linearValues,
-    patternableSteps, withoutNulls,
+    MIRROR_DEFAULTS, mirrorFeature, mirrorValues, patternableSteps, planeOptions, withoutNulls,
 } from './patternForm';
 import { attempt, fullPart, saveFeature, type Ctx, type Field, type ToolDef } from './toolDefs';
 
@@ -117,6 +117,44 @@ export const circularPatternTool: ToolDef = {
     top: () => <p className="tb-note">The axis is the part's X, Y or Z axis or an axis step. Picking an edge or face in the view comes with selection boxes.</p>,
     extra: () => <p className="tb-note">Instance numbers from 1 (the seed): 3, 5.</p>,
     apply: (v, ctx) => attempt(() => save(ctx, circularFeature(v))),
+};
+
+/**
+ * Mirror (feature): about a base plane or a plane step, of chosen features (applied again mirrored) or of the whole
+ * body. Picking a flat face as the plane comes with selection boxes.
+ */
+export const mirrorTool: ToolDef = {
+    id: 'mirror-feature',
+    preview: true,
+    label: 'Mirror',
+    icon: 'mirror',
+    op: 'mirror',
+    hint: 'mirror features or the body about a plane',
+    needsPart: true,
+    width: 310,
+    fields: (ctx) => {
+        const { features, upto } = scope(ctx);
+        const chosen = (v: Record<string, unknown>) => v.what === 'features';
+        return [
+            { key: 'plane', label: 'Mirror plane', kind: 'select', options: planeOptions(features, upto), section: 'Mirror face/plane' },
+            { key: 'offset', label: 'Offset', kind: 'number', unit: 'mm', section: 'Mirror face/plane' },
+            {
+                key: 'what', label: 'Mirror', kind: 'select', section: 'What to mirror',
+                options: [{ value: 'features', label: 'Features to mirror' }, { value: 'body', label: 'The whole body' }],
+            },
+            { key: 'features', label: 'Features to mirror', kind: 'multi', options: featureOptions(ctx), show: chosen, section: 'What to mirror' },
+        ];
+    },
+    defaults: (ctx) => {
+        const f = ctx.edit?.feature?.op === 'mirror' ? ctx.edit.feature : null;
+        const last = lastStep(ctx);
+        return f ? mirrorValues(f) : { ...MIRROR_DEFAULTS, what: last.length ? 'features' : 'body', features: last };
+    },
+    top: () => <p className="tb-note">Picking a flat face as the plane comes with selection boxes.</p>,
+    extra: (api) => (api.values.what === 'body'
+        ? <p className="tb-note">If the mirror image does not touch the body, the part becomes two bodies, and later fillets, shells and drafts on it fail.</p>
+        : null),
+    apply: (v, ctx) => attempt(() => save(ctx, mirrorFeature(v))),
 };
 
 /** The editor for a pattern step. */

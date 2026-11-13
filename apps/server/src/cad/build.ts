@@ -874,7 +874,7 @@ function pickedEdges(shape: Shape3D, f: { at?: Vec3[]; faces?: FacePickRef[]; ta
     return edges.filter((edge, i) => edges.findIndex((other) => other.isSame(edge)) === i);
 }
 
-function applyToBody(shape: Shape3D, f: Extract<Feature, { op: 'fillet' | 'chamfer' | 'shell' | 'thread' | 'mirror' }>,
+function applyToBody(shape: Shape3D, f: Extract<Feature, { op: 'fillet' | 'chamfer' | 'shell' | 'thread' }>,
     print: PrintSettings): Shape3D {
     switch (f.op) {
         case 'fillet':
@@ -907,17 +907,53 @@ function applyToBody(shape: Shape3D, f: Extract<Feature, { op: 'fillet' | 'chamf
             return shell(shape, f.thickness, f.open ?? []);
         case 'thread':
             return threadFeature(shape, f, print);
-        case 'mirror': {
-            const offset = f.offset ?? 0;
-            const origin: Vec3 = f.plane === 'YZ' ? [offset, 0, 0] : f.plane === 'XY' ? [0, 0, offset] : [0, offset, 0];
-            if (f.plane !== 'YZ' && f.plane !== 'XY' && f.plane !== 'XZ') {
-                throw new Error('mirror plane must be YZ, XY or XZ');
-            }
-            // replicad's mirror consumes its input, so mirror a copy.
-            const image = shape.clone().mirror(f.plane, origin);
-            return f.keepOriginal === false ? image : asSolid(shape.fuse(image), 'mirror');
-        }
     }
+}
+
+/** The older part-frame plane names, as base planes. */
+const MIRROR_PLANES: Record<'YZ' | 'XY' | 'XZ', PlaneRef> = { YZ: 'right', XY: 'front', XZ: 'top' };
+
+/** A mirror step's plane: origin (moved by the offset along the normal) and normal. */
+function mirrorPlane(f: Extract<Feature, { op: 'mirror' }>, earlier: Feature[]): { origin: Vec3; normal: Vec3 } {
+    if (f.plane === undefined) {
+        throw new Error('a mirror needs a plane');
+    }
+    const ref = typeof f.plane === 'string' && f.plane in MIRROR_PLANES ? MIRROR_PLANES[f.plane as 'YZ'] : f.plane as PlaneRef;
+    const p = resolvePlane(ref, earlier, 'mirror plane');
+    const offset = f.offset ?? 0;
+    const origin: Vec3 = [p.origin[0] + p.normal[0] * offset, p.origin[1] + p.normal[1] * offset, p.origin[2] + p.normal[2] * offset];
+    return { origin, normal: p.normal };
+}
+
+/**
+ * Mirror: with `features`, those earlier steps' tools are added or cut again, mirrored (Features to mirror);
+ * else the body built so far is mirrored and joined (or replaced by its image when keepOriginal is false).
+ */
+function mirror(shape: Shape3D | null, f: Extract<Feature, { op: 'mirror' }>, state: BuildState): Shape3D {
+    const { origin, normal } = mirrorPlane(f, before(state));
+    if (!f.features?.length) {
+        const body = needBody(shape);
+        // replicad's mirror consumes its input, so mirror a copy.
+        const image = body.clone().mirror(normal, origin);
+        return f.keepOriginal === false ? image : asSolid(body.fuse(image), 'mirror');
+    }
+    let body = shape;
+    for (const id of f.features) {
+        const index = state.features.findIndex((g) => g.id === id);
+        if (index < 0 || index >= state.index) {
+            throw new Error(`step "${id}" not found (a mirror repeats earlier steps of this part)`);
+        }
+        const step = state.features[index];
+        if (step.suppressed) {
+            continue;
+        }
+        const made = stepTool(body, step, state, index);
+        if (!made) {
+            throw new Error(`step "${step.name ?? id}" (${step.op}) cannot be mirrored: only steps that add or cut material can`);
+        }
+        body = combine(body, made.tool.clone().mirror(normal, origin), made.mode, `mirror of "${step.name ?? id}"`);
+    }
+    return needBody(body);
 }
 
 /** Everything a step may need besides the body: earlier steps, resolved sketches and other parts. */
@@ -1326,8 +1362,9 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
         case 'chamfer':
         case 'shell':
         case 'thread':
-        case 'mirror':
             return applyToBody(needBody(shape), f, state.print);
+        case 'mirror':
+            return mirror(shape, f, state);
         default: {
             const made = stepTool(shape, f, state, state.index);
             if (!made) {

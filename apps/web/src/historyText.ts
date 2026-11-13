@@ -179,6 +179,12 @@ export function stepRefs(feature: Feature): string[] {
         case 'split':
             ids.push(...planeIds(feature.plane));
             break;
+        case 'mirror':
+            ids.push(...(feature.features ?? []));
+            if (typeof feature.plane === 'object') {
+                ids.push(...planeIds(feature.plane));
+            }
+            break;
         case 'draft':
             ids.push(...planeIds(feature.neutral));
             break;
@@ -299,9 +305,14 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
         }
         case 'revolve':
             return `Revolve ${mm(feature.angle ?? 360)}° about ${feature.axis} · ${feature.mode} · ${sourceText(feature, part)}`;
-        case 'mirror':
-            return `Mirror across ${feature.plane}${feature.offset ? ` +${mm(feature.offset)}` : ''}`
+        case 'mirror': {
+            const old = { YZ: 'right', XY: 'front', XZ: 'top' } as Record<string, PlaneRef>;
+            const plane = typeof feature.plane === 'string' && old[feature.plane] ? old[feature.plane] : feature.plane as PlaneRef;
+            const what = feature.features?.length
+                ? ` · ${feature.features.length} feature${feature.features.length === 1 ? '' : 's'}` : '';
+            return `Mirror about ${planeRefText(plane, part)}${feature.offset ? ` +${mm(feature.offset)}` : ''}${what}`
                 + (feature.keepOriginal === false ? ' · replace' : '');
+        }
         case 'sketch': {
             const { sketch } = feature;
             const count = sketch.profiles.length;

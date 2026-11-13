@@ -317,10 +317,12 @@ export type Feature = FeatureBase & (
      */
     | { op: 'loft'; sections: SketchSource[]; ruled?: boolean; mode: 'add' | 'cut' }
     /**
-     * Mirrors the body built so far across a plane of the part frame (through `offset` along its normal) and joins
-     * the copy; keepOriginal false replaces the body with its mirror image.
+     * Mirrors across a plane (moved `offset` along its normal): a base plane (front, top, right; the older
+     * YZ / XY / XZ spellings are right / front / top) or a plane step. With `features`, those earlier steps are
+     * applied again mirrored (Features to mirror); else the body built so far is mirrored and the copy joined
+     * (Bodies to mirror). keepOriginal false replaces the body with its mirror image (used by Mirror copy).
      */
-    | { op: 'mirror'; plane: 'YZ' | 'XY' | 'XZ'; offset?: number; keepOriginal?: boolean }
+    | { op: 'mirror'; plane: 'YZ' | 'XY' | 'XZ' | PlaneRef; offset?: number; keepOriginal?: boolean; features?: string[] }
     /** Construction plane (builds nothing); sketches and other steps use it by id. */
     | { op: 'plane'; definition: PlaneDefinition }
     /** Construction axis (builds nothing); revolves, coils and patterns use it by id. */

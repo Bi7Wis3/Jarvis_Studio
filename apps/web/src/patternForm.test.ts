@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Feature } from '@jarvis/core';
 import {
     axisFromValue, axisOptions, axisValue, CIRCULAR_DEFAULTS, circularFeature, circularValues, LINEAR_DEFAULTS, linearFeature,
-    linearValues, parseSkip, patternableSteps, skipText, withoutNulls,
+    linearValues, MIRROR_DEFAULTS, mirrorFeature, mirrorValues, parseSkip, patternableSteps, planeOptions, skipText, withoutNulls,
 } from './patternForm';
 
 const sketch = { plane: 'top' as const, profiles: [] };
@@ -62,6 +62,18 @@ describe('pattern form', () => {
         expect(() => linearFeature({ ...LINEAR_DEFAULTS, dir: '', features: ['h'] })).toThrow(/Pick a direction/);
         expect(() => linearFeature({ ...LINEAR_DEFAULTS, features: ['h'], skip: '9' })).toThrow(/not an instance of this pattern/);
         expect(() => circularFeature({ ...CIRCULAR_DEFAULTS, axis: '', features: ['h'] })).toThrow(/Pick an axis/);
+    });
+
+    it('mirrors about base planes by name or a plane step, of chosen features or the body', () => {
+        const withPlane: Feature[] = [{ id: 'pl', name: 'Plane1', op: 'plane', definition: { kind: 'offset', base: 'top', distance: 5 } }, ...history];
+        expect(planeOptions(withPlane).map((o) => o.label)).toEqual(['Front plane', 'Top plane', 'Right plane', 'Plane1']);
+        // The older names open as the plane they are.
+        expect(mirrorValues({ id: 'm', op: 'mirror', plane: 'YZ' })).toMatchObject({ plane: 'right', what: 'body' });
+        const features = mirrorFeature({ ...MIRROR_DEFAULTS, plane: 'ref:pl', what: 'features', features: ['h'] });
+        expect(features).toEqual({ op: 'mirror', plane: { planeRef: 'pl' }, offset: 0, features: ['h'] });
+        expect(mirrorFeature(mirrorValues({ id: 'm', ...features } as Extract<Feature, { op: 'mirror' }>))).toEqual(features);
+        expect(mirrorFeature({ ...MIRROR_DEFAULTS, plane: 'top', features: ['h'] })).toMatchObject({ plane: 'top', features: null });
+        expect(() => mirrorFeature({ ...MIRROR_DEFAULTS, what: 'features', features: [] })).toThrow(/features to mirror/);
     });
 
     it('round-trips a circular pattern with equal spacing or an angle between instances', () => {

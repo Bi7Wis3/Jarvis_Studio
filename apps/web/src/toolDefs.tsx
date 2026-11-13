@@ -18,7 +18,7 @@ import { evaluateTools } from './evaluateToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { stepAtBar } from './historyOps';
 import { designCopy } from './partCopy';
-import { circularPatternTool, linearPatternTool, patternEditor } from './patternToolDefs';
+import { circularPatternTool, linearPatternTool, mirrorTool, patternEditor } from './patternToolDefs';
 import { Icon } from './icons';
 import {
     choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, redoSketch, setTool,
@@ -1425,34 +1425,7 @@ const featureTools: Record<string, ToolDef> = {
             });
         }),
     },
-    mirror: {
-        id: 'mirror-feature',
-        preview: true,
-        label: 'Mirror',
-        icon: 'mirror',
-        op: 'mirror',
-        hint: 'mirror the body across a plane of the part',
-        needsPart: true,
-        fields: () => [
-            { key: 'plane', label: 'Plane', kind: 'select', options: opts(['YZ', 'YZ (left / right)'], ['XY', 'XY (front / back)'], ['XZ', 'XZ (up / down)']) },
-            { key: 'offset', label: 'Offset', kind: 'number', unit: 'mm' },
-            { key: 'keep', label: 'Keep original (join)', kind: 'check' },
-        ],
-        defaults: (ctx) => {
-            const f = edited(ctx, 'mirror');
-            return f ? { plane: f.plane, offset: fmt(f.offset ?? 0), keep: f.keepOriginal !== false } : { plane: 'YZ', offset: '0', keep: true };
-        },
-        apply: (v, ctx) => attempt(() => {
-            const offset = num(v, 'offset', 'Offset');
-            return saveFeature(ctx, {
-                op: 'mirror',
-                name: `Mirror across ${v.plane}${offset ? ` at ${fmt(offset)} mm` : ''}`,
-                plane: v.plane,
-                offset,
-                keepOriginal: !!v.keep,
-            });
-        }),
-    },
+    mirror: mirrorTool,
     thread: {
         id: 'thread',
         preview: true,
