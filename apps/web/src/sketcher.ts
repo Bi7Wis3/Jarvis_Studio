@@ -16,10 +16,11 @@ import {
     toggleConstruction, type ConstraintTool, type NewConstraint, type Pick, type PointRef,
 } from './sketchGeometry';
 import {
-    addCentreArc, addCentreRect, chamferCorner, circularPattern, cornerOf, curvePoints, extendAt, filletCorner, linearPattern, mirrorCurves, offsetChain,
+    addCentreArc, addCentreRect, chamferCorner, cornerOf, curvePoints, extendAt, filletCorner, mirrorCurves, offsetChain,
     offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type OffsetCap, type Transform,
 } from './sketchEdit';
 import { powerTrim, trimBetween, trimCorner, trimmable, type TrimMode } from './sketchTrim';
+import { circularSketchPattern, linearSketchPattern, type CircularPatternOptions, type LinearPatternOptions } from './sketchPattern';
 import { fixAll, fixProblem, fullyDefine, type Problem } from './sketchRepair';
 import { unmetConstraints } from './sketchCheck';
 import { dist, mid, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
@@ -1463,22 +1464,46 @@ export function patternCentre(): Pt {
     return p ? [p.u, p.v] : [0, 0];
 }
 
-/** Copies the selected curves `count` times in all, `step` apart. Returns an error to show, or null. */
-export function linearPatternSelected(count: number, step: Pt): string | null {
-    const r = linearPattern(get().geometry, selectedCurves(), Math.round(count), step);
-    if ('error' in r) {
-        return r.error;
-    }
-    return commit(r.g, { selection: [] }) ? null : get().message;
+/** A circular pattern's centre: the selected point when it is there, else the position. */
+function centreRef(centre: Pt): string | Pt {
+    const s = get();
+    const point = s.selection.find((x) => x.type === 'point' && pointOf(s.geometry, x.id) && dist(centre, [pointOf(s.geometry, x.id)!.u, pointOf(s.geometry, x.id)!.v]) < 1e-6);
+    return point ? point.id : centre;
 }
 
-/** Copies the selected curves `count` times in all about `centre`, over `angle` degrees. Returns an error to show, or null. */
-export function circularPatternSelected(count: number, angle: number, centre: Pt): string | null {
-    const r = circularPattern(get().geometry, selectedCurves(), Math.round(count), angle, centre);
+function patternOf(kind: 'linear' | 'circular', o: LinearPatternOptions | (Omit<CircularPatternOptions, 'centre'> & { centre: Pt })) {
+    const g = get().geometry;
+    return kind === 'linear' ? linearSketchPattern(g, selectedCurves(), o as LinearPatternOptions)
+        : circularSketchPattern(g, selectedCurves(), { ...(o as CircularPatternOptions), centre: centreRef((o as { centre: Pt }).centre) });
+}
+
+/** Linear sketch pattern of the selected curves, tied to them. Returns an error to show, or null. */
+export function linearPatternSelected(o: LinearPatternOptions): string | null {
+    const r = patternOf('linear', o);
     if ('error' in r) {
         return r.error;
     }
-    return commit(r.g, { selection: [] }) ? null : get().message;
+    return commit(r.g, { selection: [], editPreview: [] }) ? null : get().message;
+}
+
+/** Circular sketch pattern of the selected curves about `centre`, tied to them. Returns an error to show, or null. */
+export function circularPatternSelected(o: Omit<CircularPatternOptions, 'centre'> & { centre: Pt }): string | null {
+    const r = patternOf('circular', o);
+    if ('error' in r) {
+        return r.error;
+    }
+    return commit(r.g, { selection: [], editPreview: [] }) ? null : get().message;
+}
+
+/** Shows the instances a pattern form would make (empty options clear it). */
+export function previewPattern(kind: 'linear' | 'circular', o: LinearPatternOptions | (Omit<CircularPatternOptions, 'centre'> & { centre: Pt }) | null): void {
+    const r = o ? patternOf(kind, o) : null;
+    if (!r || 'error' in r) {
+        set({ editPreview: [] });
+        return;
+    }
+    const made = new Set(r.created);
+    set({ editPreview: geometryEntities(r.g).filter((e) => made.has(e.id)) as NewEntity[] });
 }
 
 // ---- Move, copy, rotate, scale ----------------------------------------------------------------------------

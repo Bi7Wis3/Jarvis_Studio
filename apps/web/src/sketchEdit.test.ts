@@ -3,7 +3,7 @@ import type { SketchCurve, SketchGeometry } from '@jarvis/core';
 import { AXIS_V, curveOf, curveRadius, loadSolver, pointOf, solveGeometry } from './solver';
 import { addCircle, addConstraint, addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import {
-    addCentreArc, addCentreRect, chamferCorner, circularPattern, cornerOf, extendAt, filletCorner, linearPattern, mirrorCurves,
+    addCentreArc, addCentreRect, chamferCorner, cornerOf, extendAt, filletCorner, mirrorCurves,
     offsetChain, sideDistance, transformEntities, trimAt,
 } from './sketchEdit';
 import { geometryProfiles } from './sketchGeometry';
@@ -290,34 +290,6 @@ describe('mirror', () => {
     });
 });
 
-describe('patterns', () => {
-    it('makes a linear pattern of a circle with its diameter', () => {
-        let c = addCircle(EMPTY_GEOMETRY, { at: [0, 0] }, 2);
-        const g = addConstraint(c.g, { kind: 'diameter', curve: c.id, value: 4 }).g;
-        const out = solved(ok(linearPattern(g, [c.id], 4, [10, 0])));
-        expect(out.curves).toHaveLength(4);
-        expect(out.constraints.filter((k) => k.kind === 'diameter')).toHaveLength(4);
-        expect(out.points.map((p) => p.u).sort((a, b) => a - b)).toEqual([0, 10, 20, 30]);
-        c = addCircle(EMPTY_GEOMETRY, { at: [0, 0] }, 2);
-        expect(linearPattern(c.g, [c.id], 1, [10, 0])).toMatchObject({ error: expect.any(String) });
-    });
-
-    it('makes a circular pattern of a line about a point', () => {
-        const g = addLine(EMPTY_GEOMETRY, { at: [10, 0] }, { at: [20, 0] }, 'horizontal').g;
-        const out = solved(ok(circularPattern(g, [g.curves[0].id], 6, 360, [0, 0])));
-        expect(out.curves).toHaveLength(6);
-        // The horizontal relation is not copied onto the turned copies.
-        expect(out.constraints.filter((k) => k.kind === 'horizontal')).toHaveLength(1);
-        const second = lines(out)[1];
-        expect(at(out, second.a)[0]).toBeCloseTo(5);
-        expect(at(out, second.a)[1]).toBeCloseTo(Math.sqrt(75));
-        // Over 90 degrees, 3 copies are 45 degrees apart.
-        const quarter = ok(circularPattern(g, [g.curves[0].id], 3, 90, [0, 0]));
-        const last = lines(quarter)[2];
-        expect(at(quarter, last.a)[0]).toBeCloseTo(0);
-        expect(at(quarter, last.a)[1]).toBeCloseTo(10);
-    });
-});
 
 describe('centre arc and centre rectangle', () => {
     it('draws an arc about its centre', () => {

@@ -272,12 +272,12 @@ describe('modify tools', () => {
         const c = addCircle(EMPTY_GEOMETRY, { at: [10, 0] }, 2);
         begin(c.g, 'select');
         useSketcher.setState({ selection: [{ type: 'curve', id: c.id }] });
-        expect(linearPatternSelected(3, [0, 10])).toBeNull();
-        expect(state().geometry.curves).toHaveLength(3);
-        expect(linearPatternSelected(3, [0, 10])).toMatch(/Select/);
+        expect(linearPatternSelected({ count: 3, spacing: 10, angle: 90 })).toBeNull();
+        expect(state().geometry.curves.filter((k) => !k.construction)).toHaveLength(3);
+        expect(linearPatternSelected({ count: 3, spacing: 10, angle: 90 })).toMatch(/Select/);
         useSketcher.setState({ selection: [{ type: 'curve', id: c.id }] });
-        expect(circularPatternSelected(4, 360, [0, 0])).toBeNull();
-        expect(state().geometry.curves).toHaveLength(6);
+        expect(circularPatternSelected({ count: 4, angle: 360, centre: [0, 0] })).toBeNull();
+        expect(state().geometry.curves.filter((k) => !k.construction)).toHaveLength(6);
         expect(state().geometry.points.some((p) => Math.abs(p.u + 10) < 1e-6 && Math.abs(p.v) < 1e-6)).toBe(true);
     });
 });
