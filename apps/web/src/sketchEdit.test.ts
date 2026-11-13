@@ -218,7 +218,7 @@ describe('offset', () => {
         const d = sideDistance(r.g, r.lines[0], [20, -5]);
         expect(d).toBeCloseTo(-5);
         const g = solved(ok(offsetChain(r.g, r.lines[0], d)));
-        expect(g.curves).toHaveLength(8);
+        expect(g.curves.filter((c) => !c.construction)).toHaveLength(8);
         const { profiles } = geometryProfiles(g);
         const areas = profiles.map((p) => Math.abs(area(profilePoints(p)))).sort((a, b) => a - b);
         expect(areas[areas.length - 1]).toBeCloseTo(50 * 30, 3);

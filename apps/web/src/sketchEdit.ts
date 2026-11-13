@@ -4,7 +4,7 @@
 
 import type { SketchConstraint, SketchCurve, SketchGeometry } from '@jarvis/core';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, pointOf } from './solver';
-import { addConstraint, addRect, constraintRefs, newId, placePoint, type NewConstraint, type PointRef } from './sketchGeometry';
+import { addConstraint, addRect, constraintRefs, geometryEntities, newId, placePoint, type NewConstraint, type PointRef } from './sketchGeometry';
 import { dist, type NewEntity, type Pt } from './sketchMath';
 import { intersections } from './snapping';
 
@@ -527,6 +527,8 @@ export function chamferCorner(g: SketchGeometry, corner: Corner, distance: numbe
 /** Cap ends of an open bi-directional offset: none, arcs or lines. */
 export type OffsetCap = 'none' | 'arcs' | 'lines';
 
+type NewCurve = SketchCurve extends infer C ? (C extends SketchCurve ? Omit<C, 'id'> : never) : never;
+
 /** One curve of a chain, in the direction the chain runs (from → to); a circle runs counter-clockwise. */
 export interface Segment {
     curve: SketchCurve;
@@ -535,7 +537,7 @@ export interface Segment {
 }
 
 /** The chain of lines and arcs joined end to end through `curveId` (a circle alone), and whether it closes. */
-export function chainOf(g: SketchGeometry, curveId: string): { segments: Segment[]; closed: boolean } {
+export function chainOf(g: SketchGeometry, curveId: string, allowed?: ReadonlySet<string>): { segments: Segment[]; closed: boolean } {
     const start = curveOf(g, curveId);
     if (!start) {
         return { segments: [], closed: false };
@@ -543,7 +545,7 @@ export function chainOf(g: SketchGeometry, curveId: string): { segments: Segment
     if (start.kind === 'circle') {
         return { segments: [{ curve: start, from: '', to: '' }], closed: true };
     }
-    const pool = g.curves.filter((c) => c.kind !== 'circle' && !!c.construction === !!start.construction);
+    const pool = g.curves.filter((c) => c.kind !== 'circle' && !!c.construction === !!start.construction && (!allowed || allowed.has(c.id)));
     const users = (point: string) => pool.filter((c) => endsOf(c).includes(point));
     const [a, b] = endsOf(start);
     const segments: Segment[] = [{ curve: start, from: a, to: b }];
@@ -585,8 +587,8 @@ type Moved =
     | { kind: 'circle'; c: Pt; r: number; a: Pt; b: Pt };
 
 /** Signed distance of p from the chain: positive on the left of the way it runs (inside a counter-clockwise loop). */
-export function sideDistance(g: SketchGeometry, curveId: string, p: Pt): number {
-    const { segments } = chainOf(g, curveId);
+export function sideDistance(g: SketchGeometry, curveId: string, p: Pt, allowed?: ReadonlySet<string>): number {
+    const { segments } = chainOf(g, curveId, allowed);
     let best: { d: number; signed: number } | null = null;
     for (const s of segments) {
         const shape = shapeOf(g, s.curve);
@@ -609,8 +611,8 @@ export function sideDistance(g: SketchGeometry, curveId: string, p: Pt): number 
 }
 
 /** The chain offset by d (left of its direction): its moved segments and the joints between them. */
-function offsetShapes(g: SketchGeometry, curveId: string, d: number): { segments: Segment[]; closed: boolean; moved: Moved[] } | { error: string } {
-    const { segments, closed } = chainOf(g, curveId);
+function offsetShapes(g: SketchGeometry, curveId: string, d: number, allowed?: ReadonlySet<string>): { segments: Segment[]; closed: boolean; moved: Moved[] } | { error: string } {
+    const { segments, closed } = chainOf(g, curveId, allowed);
     if (!segments.length) {
         return { error: 'Pick a line, arc or circle.' };
     }
@@ -670,87 +672,237 @@ function jointOf(x: Moved, y: Moved): Pt {
     return hits.length ? hits.reduce((best, p) => (dist(p, guess) < dist(best, guess) ? p : best)) : guess;
 }
 
-/** What the offset would draw, for the preview. */
-export function offsetPreview(g: SketchGeometry, curveId: string, d: number): NewEntity[] {
-    const r = offsetShapes(g, curveId, d);
-    if ('error' in r) {
-        return [];
+export interface OffsetOptions {
+    /** Positive to the left of the first picked curve's chain (see sideDistance), negative to the right. */
+    distance: number;
+    /** Select chain: every curve joined end to end with a picked one (default); off: only the picked curves. */
+    chain?: boolean;
+    /** Bi-directional: both sides. */
+    both?: boolean;
+    /** Cap ends of an open chain: with Bi-directional between the two sides, else between original and offset. */
+    cap?: OffsetCap;
+    /** Add dimensions: one offset dimension (default). */
+    dimension?: boolean;
+    /** Construction geometry: turn the originals (base) and / or the offsets into construction. */
+    baseConstruction?: boolean;
+    offsetConstruction?: boolean;
+}
+
+/** The chains to offset: one per picked curve, or only through picked curves when Select chain is off. */
+function chainsOf(g: SketchGeometry, curveIds: string[], chain: boolean): { segments: Segment[]; closed: boolean; first: string }[] {
+    const allowed = chain ? undefined : new Set(curveIds);
+    const seen = new Set<string>();
+    const out: { segments: Segment[]; closed: boolean; first: string }[] = [];
+    for (const id of curveIds) {
+        if (seen.has(id) || !curveOf(g, id)) {
+            continue;
+        }
+        const c = chainOf(g, id, allowed);
+        c.segments.forEach((s) => seen.add(s.curve.id));
+        out.push({ ...c, first: id });
     }
-    return r.moved.map((m, i): NewEntity => {
-        if (m.kind === 'line') {
-            return { kind: 'line', a: m.a, b: m.b };
-        }
-        const curve = r.segments[i].curve;
-        if (curve.kind === 'circle') {
-            return { kind: 'circle', c: m.c, r: m.r };
-        }
-        const ccw = r.segments[i].from === (curve as { start: string }).start;
-        const [s, e] = ccw ? [m.a, m.b] : [m.b, m.a];
-        const a0 = angleOf(m.c, s);
-        const sweep = norm(angleOf(m.c, e) - a0) || TAU;
-        return { kind: 'arc', a: s, b: e, m: polar(m.c, m.r, a0 + sweep / 2) };
-    });
+    return out;
 }
 
 /**
- * Offsets the chain through `curveId` by d (positive to the left of its direction, see sideDistance). Lines stay
- * parallel at a dimensioned distance and arcs and circles share the original centre. Smooth joints start tangent but
- * get no tangent constraint (degenerate in the solver where the curves share a point, see filletCorner).
+ * Offsets the picked curves (or their chains) by `o.distance`, tied to the originals as SolidWorks' offset relation
+ * does: lines stay parallel, arcs and circles share the original's centre, and a construction rib from each original
+ * to its offset keeps the distance, all ribs equal to the first, which carries the one offset dimension. Open chains
+ * also have their ends held square across from the original's ends.
  */
-export function offsetChain(g: SketchGeometry, curveId: string, d: number): EditResult {
-    if (Math.abs(d) < 1e-6) {
+export function offsetEntities(g: SketchGeometry, curveIds: string[], o: OffsetOptions): EditResult & { created?: string[] } {
+    if (Math.abs(o.distance) < 1e-6) {
         return { error: 'Type a distance above zero.' };
     }
-    const r = offsetShapes(g, curveId, d);
-    if ('error' in r) {
-        return r;
+    const chains = chainsOf(g, curveIds, o.chain !== false);
+    if (!chains.length) {
+        return { error: 'Pick a line, arc or circle.' };
     }
-    const { segments, closed, moved } = r;
     let out = g;
-    if (segments[0].curve.kind === 'circle') {
-        const circle = segments[0].curve;
-        const m = moved[0] as Extract<Moved, { kind: 'circle' }>;
+    const created: string[] = [];
+    const extra: NewConstraint[] = [];
+    let firstRib: string | null = null;
+    const point = (at: Pt) => {
+        const r = newPoint(out, at);
+        out = r.g;
+        return r.id;
+    };
+    const curve = (c: NewCurve, construction: boolean) => {
         const id = newId('c', out);
-        out = putCurve(out, { id, kind: 'circle', center: circle.center, radius: m.r, ...(circle.construction ? { construction: true } : {}) });
-        return { g: out };
-    }
-    // One point per joint (shared by neighbours), plus the two free ends of an open chain.
-    const starts: string[] = [];
-    const ends: string[] = [];
-    for (let i = 0; i < moved.length; i++) {
-        if (i === 0 && closed) {
+        out = putCurve(out, { ...c, id, ...(construction ? { construction: true } : {}) } as SketchCurve);
+        return id;
+    };
+    const rib = (a: string, b: string) => curve({ kind: 'line', a, b }, true);
+    /** The rib carries the offset: the first gets the dimension, the rest are equal to it. */
+    const tie = (id: string) => {
+        if (!firstRib) {
+            firstRib = id;
+            if (o.dimension !== false) {
+                extra.push({ kind: 'length', line: id, value: Math.abs(o.distance) });
+            }
+        } else {
+            extra.push({ kind: 'equal', a: id, b: firstRib });
+        }
+    };
+    /** Holds a rib square across the original segment: perpendicular to a line, through an arc's centre. */
+    const across = (ribId: string, s: Segment) => {
+        extra.push(s.curve.kind === 'line' ? { kind: 'perpendicular', a: ribId, b: s.curve.id }
+            : { kind: 'pointOnCurve', point: (s.curve as { center: string }).center, curve: ribId });
+    };
+    /** A cap arc between p and q bulging toward `outward`, its centre on `on` (the line between them). */
+    const capArc = (p: string, q: string, on: string, outward: Pt, construction: boolean) => {
+        const [pp, qq] = [P(out, p), P(out, q)];
+        const m: Pt = [(pp[0] + qq[0]) / 2, (pp[1] + qq[1]) / 2];
+        const c = point(m);
+        extra.push({ kind: 'pointOnCurve', point: c, curve: on });
+        // Counter-clockwise from start to end: the middle of the half circle is the start turned a quarter left.
+        const turned = (s: Pt): Pt => [-(s[1] - m[1]), s[0] - m[0]];
+        const pFirst = turned(pp)[0] * outward[0] + turned(pp)[1] * outward[1] > 0;
+        created.push(curve({ kind: 'arc', center: c, start: pFirst ? p : q, end: pFirst ? q : p }, construction));
+    };
+    const cap = o.cap ?? 'none';
+    for (const chain of chains) {
+        const { segments, closed } = chain;
+        const sides = o.both ? [o.distance, -o.distance] : [o.distance];
+        const ends: { start: string; end: string; startRib: string; endRib: string }[] = [];
+        for (const d of sides) {
+            const r = offsetShapes(g, chain.first, d, o.chain === false ? new Set(curveIds) : undefined);
+            if ('error' in r) {
+                return r;
+            }
+            const { moved } = r;
+            const construction = (c: SketchCurve) => !!c.construction || !!o.offsetConstruction;
+            if (segments[0].curve.kind === 'circle') {
+                const circle = segments[0].curve;
+                const m = moved[0] as Extract<Moved, { kind: 'circle' }>;
+                const id = curve({ kind: 'circle', center: circle.center, radius: m.r }, construction(circle));
+                created.push(id);
+                // A level rib through the centre from the original circle to the copy.
+                const c = P(g, circle.center);
+                const a = point([c[0] + circle.radius, c[1]]);
+                const b = point([c[0] + m.r, c[1]]);
+                const k = rib(a, b);
+                extra.push({ kind: 'pointOnCurve', point: a, curve: circle.id }, { kind: 'pointOnCurve', point: b, curve: id },
+                    { kind: 'pointOnCurve', point: circle.center, curve: k }, { kind: 'horizontal', line: k });
+                tie(k);
+                continue;
+            }
+            // One point per joint (shared by neighbours), plus the two free ends of an open chain.
+            const n = moved.length;
+            const starts: string[] = [];
+            const stops: string[] = [];
+            for (let i = 0; i < n; i++) {
+                if (i === 0 && closed) {
+                    continue;
+                }
+                starts[i] = point(moved[i].a);
+                if (i > 0) {
+                    stops[i - 1] = starts[i];
+                }
+            }
+            stops[n - 1] = point(moved[n - 1].b);
+            if (closed) {
+                starts[0] = stops[n - 1];
+            }
+            segments.forEach((s, i) => {
+                const flag = construction(s.curve);
+                if (s.curve.kind === 'line') {
+                    const id = curve({ kind: 'line', a: starts[i], b: stops[i] }, flag);
+                    created.push(id);
+                    extra.push({ kind: 'parallel', a: id, b: s.curve.id });
+                } else if (s.curve.kind === 'arc') {
+                    const ccw = s.from === s.curve.start;
+                    created.push(curve({ kind: 'arc', center: s.curve.center, start: ccw ? starts[i] : stops[i], end: ccw ? stops[i] : starts[i] }, flag));
+                }
+                // The rib: from the original's end for the first piece of an open chain, else from a point on it.
+                let from: string;
+                if (!closed && i === 0) {
+                    from = s.from;
+                } else {
+                    const at = P(out, starts[i]);
+                    const shape = shapeOf(g, s.curve);
+                    const foot: Pt = shape.kind === 'line'
+                        ? (() => {
+                            const t = paramOf(shape, at);
+                            return [shape.a[0] + (shape.b[0] - shape.a[0]) * t, shape.a[1] + (shape.b[1] - shape.a[1]) * t] as Pt;
+                        })()
+                        : polar(shape.c, shape.r, angleOf(shape.c, at));
+                    from = point(foot);
+                    extra.push({ kind: 'pointOnCurve', point: from, curve: s.curve.id });
+                }
+                const k = rib(from, starts[i]);
+                across(k, s);
+                tie(k);
+                if (!closed && i === 0) {
+                    ends.push({ start: starts[0], end: stops[n - 1], startRib: k, endRib: '' });
+                }
+            });
+            if (!closed) {
+                // The far end square across from the original's end.
+                const last = segments[n - 1];
+                const k = rib(last.to, stops[n - 1]);
+                across(k, last);
+                ends[ends.length - 1].endRib = k;
+            }
+        }
+        if (closed || cap === 'none' || !ends.length) {
             continue;
         }
-        const p = newPoint(out, moved[i].a);
-        out = p.g;
-        starts[i] = p.id;
-        if (i > 0) {
-            ends[i - 1] = p.id;
+        // Which way is out at each end of the chain: away from the curve it ends.
+        const away = (s: Segment, end: string, other: string): Pt => {
+            const shape = shapeOf(g, s.curve);
+            const inner = shape.kind === 'line' ? P(g, other) : (() => {
+                const mid = pieceOf(shape, 0, shape.sweep ?? TAU);
+                return mid.kind === 'arc' ? mid.m : P(g, other);
+            })();
+            return unit(inner, P(g, end));
+        };
+        const outStart = away(segments[0], segments[0].from, segments[0].to);
+        const outEnd = away(segments[segments.length - 1], segments[segments.length - 1].to, segments[segments.length - 1].from);
+        const flag = !!o.offsetConstruction;
+        if (o.both && ends.length === 2) {
+            const [p, q] = ends;
+            if (cap === 'lines') {
+                created.push(curve({ kind: 'line', a: p.start, b: q.start }, flag));
+                created.push(curve({ kind: 'line', a: p.end, b: q.end }, flag));
+            } else {
+                capArc(p.start, q.start, p.startRib, outStart, flag);
+                capArc(p.end, q.end, p.endRib, outEnd, flag);
+            }
+        } else {
+            // One side: the caps join the original's ends to the offset's.
+            const [p] = ends;
+            if (cap === 'lines') {
+                for (const k of [p.startRib, p.endRib]) {
+                    out = putCurve(out, { ...(curveOf(out, k) as SketchCurve), construction: flag || undefined } as SketchCurve);
+                    created.push(k);
+                }
+            } else {
+                capArc(segments[0].from, p.start, p.startRib, outStart, flag);
+                capArc(segments[segments.length - 1].to, p.end, p.endRib, outEnd, flag);
+            }
         }
     }
-    if (closed) {
-        const p = newPoint(out, moved[moved.length - 1].b);
-        out = p.g;
-        ends[moved.length - 1] = p.id;
-        starts[0] = p.id;
-    } else {
-        const p = newPoint(out, moved[moved.length - 1].b);
-        out = p.g;
-        ends[moved.length - 1] = p.id;
+    if (o.baseConstruction) {
+        const base = new Set(chains.flatMap((c) => c.segments.map((s) => s.curve.id)));
+        out = { ...out, curves: out.curves.map((c) => (base.has(c.id) ? { ...c, construction: true } : c)) };
     }
-    const extra: NewConstraint[] = [];
-    segments.forEach((s, i) => {
-        const id = newId('c', out);
-        const construction = s.curve.construction ? { construction: true } : {};
-        if (s.curve.kind === 'line') {
-            out = putCurve(out, { id, kind: 'line', a: starts[i], b: ends[i], ...construction });
-            extra.push({ kind: 'parallel', a: id, b: s.curve.id }, { kind: 'distance', a: starts[i], b: s.curve.id, value: Math.abs(d) });
-        } else if (s.curve.kind === 'arc') {
-            const ccw = s.from === s.curve.start;
-            out = putCurve(out, { id, kind: 'arc', center: s.curve.center, start: ccw ? starts[i] : ends[i], end: ccw ? ends[i] : starts[i], ...construction });
-        }
-    });
-    return { g: withConstraints(out, extra) };
+    return { g: withConstraints(out, extra), created };
+}
+
+/** What the offset would draw, for the preview. */
+export function offsetPreview(g: SketchGeometry, curveIds: string[], o: OffsetOptions): NewEntity[] {
+    const r = offsetEntities(g, curveIds, o);
+    if ('error' in r) {
+        return [];
+    }
+    const made = new Set(r.created);
+    return geometryEntities(r.g).filter((e) => made.has(e.id)) as NewEntity[];
+}
+
+/** Offsets the chain through `curveId` by d, with one offset dimension. */
+export function offsetChain(g: SketchGeometry, curveId: string, d: number): EditResult {
+    return offsetEntities(g, [curveId], { distance: d });
 }
 
 // ---- Mirror -------------------------------------------------------------------------------------------

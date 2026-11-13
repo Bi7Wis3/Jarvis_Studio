@@ -139,5 +139,37 @@ const extend = editTool({
     note: () => <p className="tb-note">Point near the end of a line or arc to see where it goes, then click to extend it to the next curve.</p>,
 });
 
+// ---- Offset -----------------------------------------------------------------------------------------------
+
+function OffsetNote() {
+    const picked = useSketcher((s) => (s.offsetCurve ? s.picks.length || 1 : 0));
+    return (
+        <p className="tb-note">
+            {picked
+                ? <><b>{picked}</b> picked. Click on the side where the offset goes (at the pointer's distance), or press OK for the distance below.</>
+                : 'Click a curve to offset (or select curves first), then click where the offset goes.'}
+        </p>
+    );
+}
+
+const offset = editTool({
+    id: 'offset',
+    label: 'Offset',
+    icon: 'offset',
+    hint: 'a copy of curves or a chain at a distance, tied to them',
+    shortcut: 'O',
+    fields: [
+        { key: 'offsetDistance', label: 'Offset distance', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Parameters' },
+        { key: 'offsetDimension', label: 'Add dimensions', kind: 'check', section: 'Parameters' },
+        { key: 'offsetReverse', label: 'Reverse', kind: 'check', section: 'Parameters' },
+        { key: 'offsetChain', label: 'Select chain', kind: 'check', section: 'Parameters' },
+        { key: 'offsetBoth', label: 'Bi-directional', kind: 'check', section: 'Parameters' },
+        { key: 'offsetCap', label: 'Cap ends', kind: 'select', options: opts(['none', 'None'], ['arcs', 'Arcs'], ['lines', 'Lines']), section: 'Parameters' },
+        { key: 'offsetBaseConstruction', label: 'Base geometry', kind: 'check', section: 'Construction geometry' },
+        { key: 'offsetConstruction', label: 'Offset geometry', kind: 'check', section: 'Construction geometry' },
+    ],
+    note: OffsetNote,
+});
+
 /** In the Modify group, in place of the plain click tools. */
-export const editToolForms: ToolDef[] = [trim, extend];
+export const editToolForms: ToolDef[] = [trim, extend, offset];

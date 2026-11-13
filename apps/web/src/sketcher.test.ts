@@ -238,14 +238,14 @@ describe('modify tools', () => {
         expect(state().editPreview).toHaveLength(4);
         expect(state().editText).toBe('5');
         sketchClick([20, -5], TOL);
-        expect(state().geometry.curves).toHaveLength(8);
+        expect(state().geometry.curves.filter((c) => !c.construction)).toHaveLength(8);
         expect(Math.min(...state().geometry.points.map((p) => p.v))).toBeCloseTo(-5);
         // Typed: 2 inside.
         sketchClick([20, 0.2], TOL);
         sketchMove([20, 1], TOL);
         typeKey('2');
         applyTyped();
-        expect(state().geometry.curves).toHaveLength(12);
+        expect(state().geometry.curves.filter((c) => !c.construction)).toHaveLength(12);
         expect(state().geometry.points.some((p) => Math.abs(p.u - 2) < 1e-6 && Math.abs(p.v - 2) < 1e-6)).toBe(true);
     });
 

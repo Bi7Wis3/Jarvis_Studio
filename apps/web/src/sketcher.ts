@@ -16,8 +16,8 @@ import {
     toggleConstruction, type ConstraintTool, type NewConstraint, type Pick, type PointRef,
 } from './sketchGeometry';
 import {
-    addCentreArc, addCentreRect, chamferCorner, cornerOf, curvePoints, extendAt, filletCorner, mirrorCurves, offsetChain,
-    offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type OffsetCap, type Transform,
+    addCentreArc, addCentreRect, chamferCorner, cornerOf, curvePoints, extendAt, filletCorner, mirrorCurves, offsetEntities,
+    offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type OffsetCap, type OffsetOptions, type Transform,
 } from './sketchEdit';
 import { powerTrim, trimBetween, trimCorner, trimmable, type TrimMode } from './sketchTrim';
 import { circularSketchPattern, linearSketchPattern, type CircularPatternOptions, type LinearPatternOptions } from './sketchPattern';
@@ -420,14 +420,27 @@ export function setTool(tool: SketchTool): void {
 
 /** An edit tool's form opened: the tool starts from the current selection where it can use it (pre-selection). */
 export function startEditTool(tool: EditTool): void {
+    const selected = get().selection;
     setTool(tool);
+    const curves = selected.filter((x): x is Pick => x.type === 'curve');
+    if (tool === 'offset' && curves.length) {
+        set({ offsetCurve: curves[0].id, picks: curves });
+    }
 }
 
 /**
  * The edit tool form's OK: applies what is waiting (an offset, the selected corners, a mirror) and returns an error
  * to show, or null to close the form.
  */
-export function finishEditTool(_tool: EditTool): string | null {
+export function finishEditTool(tool: EditTool): string | null {
+    const s = get();
+    if (tool === 'offset' && s.offsetCurve) {
+        // The form's distance, on the side the pointer was last (left of the chain without one), Reverse flips it.
+        const side = s.cursor ? Math.sign(sideDistance(s.geometry, s.offsetCurve, s.cursor, offsetAllowed(s))) || 1 : 1;
+        const o = s.editOptions;
+        applyOffset(side * (o.offsetReverse ? -1 : 1) * Math.abs(o.offsetDistance));
+        return get().offsetCurve ? get().message ?? 'The offset could not be applied.' : null;
+    }
     return null;
 }
 
@@ -907,7 +920,7 @@ export function applyTyped(): string | null {
         return null;
     }
     if (s.tool === 'offset') {
-        const d = s.cursor && s.offsetCurve ? sideDistance(s.geometry, s.offsetCurve, s.cursor) : 1;
+        const d = s.cursor && s.offsetCurve ? sideDistance(s.geometry, s.offsetCurve, s.cursor, offsetAllowed(s)) : 1;
         applyOffset((Math.sign(d) || 1) * Math.abs(nums[0]));
         return null;
     }
@@ -1238,9 +1251,29 @@ function cornerPick(g: SketchGeometry, raw: Pt, tolerance: number): Pick | null 
     return best ? { type: 'point', id: best.id } : drawnCurveAt(g, raw, tolerance);
 }
 
+/** The curves being offset: the picked one(s). */
+function offsetIds(s: SketcherState): string[] {
+    const ids = s.picks.filter((p) => p.type === 'curve').map((p) => p.id);
+    return s.offsetCurve && !ids.includes(s.offsetCurve) ? [s.offsetCurve, ...ids] : ids;
+}
+
+/** With Select chain off, the chain only runs through the picked curves. */
+function offsetAllowed(s: SketcherState): ReadonlySet<string> | undefined {
+    return s.editOptions.offsetChain ? undefined : new Set(offsetIds(s));
+}
+
+/** The offset's options from the form, at signed distance d. */
+function offsetOptions(s: SketcherState, d: number): OffsetOptions {
+    const o = s.editOptions;
+    return {
+        distance: d, chain: o.offsetChain, both: o.offsetBoth, cap: o.offsetCap, dimension: o.offsetDimension,
+        baseConstruction: o.offsetBaseConstruction, offsetConstruction: o.offsetConstruction,
+    };
+}
+
 /** Offset distance for the cursor: the typed value on the cursor's side, else the cursor's own distance. */
 function offsetDistance(s: SketcherState, raw: Pt): number {
-    const d = s.offsetCurve ? sideDistance(s.geometry, s.offsetCurve, raw) : 0;
+    const d = s.offsetCurve ? sideDistance(s.geometry, s.offsetCurve, raw, offsetAllowed(s)) : 0;
     const typed = s.typed ? evaluate(s.typed) : null;
     return typed !== null ? (Math.sign(d) || 1) * Math.abs(typed) : round(d, 0.01);
 }
@@ -1271,7 +1304,7 @@ function editHover(s: SketcherState, raw: Pt, tolerance: number): Partial<Sketch
         case 'offset': {
             if (s.offsetCurve) {
                 const d = offsetDistance(s, raw);
-                return { hover: null, editPreview: offsetPreview(g, s.offsetCurve, d), editText: s.typed ? null : `${round(Math.abs(d), 0.01)}` };
+                return { hover: null, editPreview: offsetPreview(g, offsetIds(s), offsetOptions(s, d)), editText: s.typed ? null : `${round(Math.abs(d), 0.01)}` };
             }
             return { hover: drawnCurveAt(g, raw, tolerance), editPreview: [], editText: null };
         }
@@ -1433,12 +1466,12 @@ function applyOffset(d: number): void {
     if (!s.offsetCurve) {
         return;
     }
-    const r = offsetChain(s.geometry, s.offsetCurve, d);
+    const r = offsetEntities(s.geometry, offsetIds(s), offsetOptions(s, d));
     if ('error' in r) {
         set({ typed: '', message: r.error });
         return;
     }
-    commit(r.g, { offsetCurve: null, picks: [], typed: '', editPreview: [], editText: null });
+    commit(r.g, { offsetCurve: null, picks: [], typed: '', editPreview: [], editText: null, selection: [] });
 }
 
 /** Enter in an edit tool: mirror moves on from picking curves to picking the line. False when it has no use for it. */

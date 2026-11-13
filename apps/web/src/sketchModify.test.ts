@@ -3,7 +3,7 @@ import type { SketchCurve, SketchGeometry } from '@jarvis/core';
 import { ORIGIN, curveOf, loadSolver, pointOf, solveGeometry } from './solver';
 import { addCircle, addConstraint, addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import { circularSketchPattern, linearSketchPattern } from './sketchPattern';
-import { extendAt, trimAt } from './sketchEdit';
+import { extendAt, offsetEntities, trimAt } from './sketchEdit';
 import { unmetConstraints } from './sketchCheck';
 import { powerTrim, trimBetween, trimCorner } from './sketchTrim';
 import type { Pt } from './sketchMath';
@@ -228,6 +228,123 @@ describe('sketch patterns tied to the original', () => {
         lines(out.geometry).filter((l) => !l.construction).forEach((l) => {
             expect(Math.hypot(...[0, 1].map((i) => at(out.geometry, l.a)[i] - at(out.geometry, l.b)[i]) as [number, number])).toBeCloseTo(15, 5);
         });
+    });
+});
+
+describe('offset tied to the original', () => {
+    const drawn = (g: SketchGeometry) => g.curves.filter((c) => !c.construction);
+    /** Solves and checks it is sound: no conflicts, nothing redundant, every relation met. */
+    const sound = (g: SketchGeometry) => {
+        const r = solveGeometry(g);
+        expect(r.ok).toBe(true);
+        expect(r.redundant).toEqual([]);
+        expect(unmetConstraints(r.geometry)).toEqual([]);
+        return r;
+    };
+    /** A 40 x 20 rectangle with its corner on the origin, fully defined. */
+    function definedRect() {
+        const rect = addRect(EMPTY_GEOMETRY, [0, 0], [40, 20]);
+        let g = addConstraint(rect.g, { kind: 'length', line: rect.lines[0], value: 40 }).g;
+        g = addConstraint(g, { kind: 'length', line: rect.lines[1], value: 20 }).g;
+        const corner = (curveOf(g, rect.lines[0]) as Extract<SketchCurve, { kind: 'line' }>).a;
+        g = addConstraint(g, { kind: 'coincident', a: corner, b: ORIGIN }).g;
+        expect(solveGeometry(g).dof).toBe(0);
+        return { g, lines: rect.lines };
+    }
+
+    it('ties an offset circle to the original: concentric, one dimension, follows its diameter', () => {
+        const c = addCircle(EMPTY_GEOMETRY, { at: [0, 0] }, 10);
+        let g = addConstraint(c.g, { kind: 'diameter', curve: c.id, value: 20 }).g;
+        g = addConstraint(g, { kind: 'coincident', a: c.center, b: ORIGIN }).g;
+        const r = offsetEntities(g, [c.id], { distance: -3 });
+        let out = sound((r as { g: SketchGeometry }).g);
+        expect(out.dof).toBe(0);
+        const copy = drawn(out.geometry).find((k) => k.id !== c.id) as Extract<SketchCurve, { kind: 'circle' }>;
+        expect(copy.center).toBe(c.center);
+        expect(copy.radius).toBeCloseTo(13, 5);
+        out = sound({ ...out.geometry, constraints: out.geometry.constraints.map((k) => (k.kind === 'diameter' ? { ...k, value: 30 } : k)) });
+        expect((curveOf(out.geometry, copy.id) as { radius: number }).radius).toBeCloseTo(18, 5);
+    });
+
+    it('gives a rectangle one offset dimension, and the offset stays fully defined and follows it', () => {
+        const s = definedRect();
+        const r = offsetEntities(s.g, [s.lines[0]], { distance: -5 });
+        let out = sound((r as { g: SketchGeometry }).g);
+        expect(out.dof).toBe(0);
+        expect(drawn(out.geometry)).toHaveLength(8);
+        const dims = out.geometry.constraints.filter((k) => k.kind === 'length' && !s.g.constraints.some((x) => x.id === k.id));
+        expect(dims).toHaveLength(1);
+        out = sound({ ...out.geometry, constraints: out.geometry.constraints.map((k) => (k.id === dims[0].id ? { ...k, value: 2 } : k)) });
+        const us = out.geometry.points.filter((p) => !s.g.points.some((q) => q.id === p.id)).map((p) => p.u);
+        expect(Math.min(...us)).toBeGreaterThanOrEqual(-2 - 1e-6);
+        // Without Add dimensions, only the distance is left free.
+        const free = solveGeometry((offsetEntities(s.g, [s.lines[0]], { distance: -5, dimension: false }) as { g: SketchGeometry }).g);
+        expect(free.dof).toBe(1);
+    });
+
+    it('offsets one side alone with Select chain off, and turns the originals or the offset into construction', () => {
+        const s = definedRect();
+        const r = offsetEntities(s.g, [s.lines[0]], { distance: -5, chain: false, baseConstruction: true });
+        const out = sound((r as { g: SketchGeometry }).g);
+        expect(out.dof).toBe(0);
+        expect(r.created).toHaveLength(1);
+        expect(curveOf(out.geometry, s.lines[0])?.construction).toBe(true);
+        const line = curveOf(out.geometry, r.created![0]) as Extract<SketchCurve, { kind: 'line' }>;
+        expect(at(out.geometry, line.a)[1]).toBeCloseTo(-5, 5);
+        expect(Math.abs(at(out.geometry, line.a)[0] - at(out.geometry, line.b)[0])).toBeCloseTo(40, 5);
+        const c = offsetEntities(s.g, [s.lines[0]], { distance: -5, chain: false, offsetConstruction: true });
+        expect(curveOf((c as { g: SketchGeometry }).g, c.created![0])?.construction).toBe(true);
+    });
+
+    it('offsets an open chain both ways with capped ends, fully defined', () => {
+        // An L of two lines, fully defined.
+        let g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [30, 0] }, 'horizontal').g;
+        const first = g.curves[0] as Extract<SketchCurve, { kind: 'line' }>;
+        const second = addLine(g, { at: [30, 0], point: first.b }, { at: [30, 20] }, 'vertical');
+        g = second.g;
+        g = addConstraint(g, { kind: 'length', line: first.id, value: 30 }).g;
+        g = addConstraint(g, { kind: 'length', line: second.id, value: 20 }).g;
+        g = addConstraint(g, { kind: 'coincident', a: first.a, b: ORIGIN }).g;
+        expect(solveGeometry(g).dof).toBe(0);
+        for (const cap of ['none', 'lines', 'arcs'] as const) {
+            const r = offsetEntities(g, [first.id], { distance: 4, both: true, cap });
+            const out = sound((r as { g: SketchGeometry }).g);
+            expect(out.dof).toBe(0);
+            expect(r.created).toHaveLength(cap === 'none' ? 4 : 6);
+            expect(out.geometry.constraints.filter((k) => k.kind === 'length')).toHaveLength(3);
+        }
+        // One side, capped: the caps join the original's ends.
+        for (const cap of ['lines', 'arcs'] as const) {
+            const r = offsetEntities(g, [first.id], { distance: 4, cap });
+            const out = sound((r as { g: SketchGeometry }).g);
+            expect(out.dof).toBe(0);
+            expect(r.created).toHaveLength(4);
+        }
+    });
+
+    it('offsets a lone line and a line-arc chain, the arc on the same centre, fully defined', () => {
+        let g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [30, 0] }, 'horizontal').g;
+        const line = g.curves[0] as Extract<SketchCurve, { kind: 'line' }>;
+        g = addConstraint(g, { kind: 'length', line: line.id, value: 30 }).g;
+        g = addConstraint(g, { kind: 'coincident', a: line.a, b: ORIGIN }).g;
+        const one = sound((offsetEntities(g, [line.id], { distance: 5 }) as { g: SketchGeometry }).g);
+        expect(one.dof).toBe(0);
+        const u: SketchGeometry = {
+            points: [
+                { id: 'a', u: 0, v: 20 }, { id: 'b', u: 0, v: 0 }, { id: 'c', u: 20, v: 0 }, { id: 'd', u: 20, v: 20 }, { id: 'm', u: 10, v: 0 },
+            ],
+            curves: [
+                { id: 'l1', kind: 'line', a: 'a', b: 'b' },
+                { id: 'arc', kind: 'arc', center: 'm', start: 'b', end: 'c' },
+                { id: 'l2', kind: 'line', a: 'c', b: 'd' },
+            ],
+            constraints: [],
+        };
+        const before = solveGeometry(u).dof;
+        const r = offsetEntities(u, ['l1'], { distance: 3 });
+        const out = sound((r as { g: SketchGeometry }).g);
+        // The offset adds nothing free but its one distance (held by the dimension).
+        expect(out.dof).toBe(before);
     });
 });
 

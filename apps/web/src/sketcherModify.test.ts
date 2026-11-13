@@ -1,9 +1,9 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SketchCurve, SketchGeometry } from '@jarvis/core';
 import { curveOf, loadSolver, pointOf } from './solver';
-import { addLine, EMPTY_GEOMETRY } from './sketchGeometry';
+import { addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import {
-    DEFAULT_EDIT_OPTIONS, setEditOptions, setTool, sketchClick, sketchDown, sketchMove, sketchUp, undoSketch, useSketcher,
+    DEFAULT_EDIT_OPTIONS, finishEditTool, setEditOptions, setTool, startEditTool, sketchClick, sketchDown, sketchMove, sketchUp, undoSketch, useSketcher,
 } from './sketcher';
 
 vi.mock('@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url', () => ({ default: '' }));
@@ -38,6 +38,29 @@ function comb() {
     const across = addLine(g, { at: [-10, 0] }, { at: [30, 0] });
     return { g: across.g, verticals: ids, across: across.id };
 }
+
+describe('offset form', () => {
+    it('starts from the selected curves and applies the form distance with OK, Reverse flipping the side', () => {
+        const rect = addRect(EMPTY_GEOMETRY, [0, 0], [40, 20]);
+        start(rect.g);
+        useSketcher.setState({ selection: [{ type: 'curve', id: rect.lines[0] }], cursor: null });
+        startEditTool('offset');
+        expect(state().offsetCurve).toBe(rect.lines[0]);
+        setEditOptions({ offsetDistance: 2 });
+        expect(finishEditTool('offset')).toBeNull();
+        // Left of a counter-clockwise rectangle: inside.
+        const vs = state().geometry.points.map((p) => p.v);
+        expect(vs.some((v) => Math.abs(v - 2) < 1e-6)).toBe(true);
+        expect(state().undo).toHaveLength(1);
+        // Reverse: outside; Select chain off: that side alone.
+        useSketcher.setState({ selection: [{ type: 'curve', id: rect.lines[0] }], cursor: null });
+        startEditTool('offset');
+        setEditOptions({ offsetReverse: true, offsetChain: false });
+        expect(finishEditTool('offset')).toBeNull();
+        expect(state().geometry.curves.filter((c) => !c.construction)).toHaveLength(9);
+        expect(state().geometry.points.some((p) => Math.abs(p.v + 2) < 1e-6)).toBe(true);
+    });
+});
 
 describe('trim tool', () => {
     let s: ReturnType<typeof comb>;
