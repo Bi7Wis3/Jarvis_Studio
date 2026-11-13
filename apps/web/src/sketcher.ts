@@ -11,7 +11,8 @@ import { useStudio } from './state';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, loadSolver, measure, pointOf, solveGeometry, solverReady } from './solver';
 import { regionsOf } from './regionPick';
 import {
-    EMPTY_GEOMETRY, PICKS_NEEDED, addArc, addCircle, addConstraint, addLine, addPolygon, addRect, addSlot, relationsFromPicks,
+    EMPTY_GEOMETRY, PICKS_NEEDED, addArc, addCircle, addConstraint, addLine, addPerimeterCircle, addPolygon, addRect, addRect3, addSlot, addTangentArc,
+    relationsFromPicks, tangentAt,
     curveAt, dimensionFromPicks, evaluate, geometryEntities, geometryProfiles, pickAt, placePoint, profilesToGeometry, removeItemsKeepingPoints,
     toggleConstruction, type ConstraintTool, type NewConstraint, type Pick, type PointRef,
 } from './sketchGeometry';
@@ -30,7 +31,8 @@ void loadSolver(wasmUrl);
 /** What the finish popup offers first: the operation the sketch was started for. */
 export type SketchIntent = 'extrude' | 'cut' | 'revolve' | 'sketch';
 
-export type DrawTool = 'line' | 'centerline' | 'point' | 'rect' | 'centerRect' | 'circle' | 'arc' | 'centerArc' | 'slot' | 'polygon';
+export type DrawTool = 'line' | 'centerline' | 'point' | 'rect' | 'centerRect' | 'circle' | 'arc' | 'centerArc' | 'slot' | 'polygon'
+    | 'tangentArc' | 'perimeterCircle' | 'rect3';
 /** Tools that change existing geometry. */
 export type EditTool = 'trim' | 'extend' | 'fillet' | 'chamfer' | 'offset' | 'mirror';
 /** xform: picking points for Move, Copy, Rotate or Scale while their form is open. */
@@ -736,6 +738,49 @@ function place(ref: PointRef, kind: SnapKind, typed?: number[]): void {
             commit(out, { draft: [], typed: '' });
             return;
         }
+        case 'tangentArc': {
+            if (!last) {
+                if (!ref.point || !tangentAt(g, ref.point)) {
+                    set({ message: 'Start a tangent arc on the end of a line or arc.' });
+                    return;
+                }
+                set({ draft: [ref], typed: '', message: null });
+                return;
+            }
+            const r = addTangentArc(g, last.point!, ref);
+            if ('error' in r) {
+                set({ message: r.error });
+                return;
+            }
+            // Goes on from the new end, tangent again, until Enter, Esc or a double-click.
+            const end = r.g.points.find((p) => p.id === r.end)!;
+            commit(r.g, { draft: [{ at: [end.u, end.v], point: r.end }], typed: '' });
+            return;
+        }
+        case 'perimeterCircle': {
+            if (draft.length < 2) {
+                set({ draft: [...draft, ref], typed: '' });
+                return;
+            }
+            const r = addPerimeterCircle(g, [...draft, ref]);
+            if (!r) {
+                set({ message: 'Those three points are in a line; no circle passes through them.' });
+                return;
+            }
+            commit(r.g, { draft: [], typed: '' });
+            return;
+        }
+        case 'rect3': {
+            if (draft.length < 2) {
+                set({ draft: [...draft, ref], typed: '' });
+                return;
+            }
+            const r = addRect3(g, draft[0], draft[1], ref.at);
+            if (r) {
+                commit(r.g, { draft: [], typed: '' });
+            }
+            return;
+        }
         case 'slot': {
             if (draft.length < 2) {
                 set({ draft: [...draft, ref], typed: '' });
@@ -815,7 +860,7 @@ export function enterKey(): 'done' | 'exit' {
         return 'done';
     }
     if (s.draft.length) {
-        if (s.tool === 'line' || s.tool === 'centerline') {
+        if (s.tool === 'line' || s.tool === 'centerline' || s.tool === 'tangentArc') {
             endChain();
         } else {
             set({ message: 'Finish the shape with a click, or press Esc to drop it.' });

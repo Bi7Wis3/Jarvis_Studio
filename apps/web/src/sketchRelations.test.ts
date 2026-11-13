@@ -413,3 +413,58 @@ describe('entity status', () => {
         expect(d.has(other.id)).toBe(false);
     });
 });
+
+describe('tangent arc, perimeter circle, 3 point rectangle', () => {
+    it('draws a tangent arc from the end of a line and goes on from its end', () => {
+        const g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [10, 0] }).g;
+        begin(g, 'tangentArc');
+        sketchClick([5, 5], TOL);
+        expect(state().message).toMatch(/end of a line or arc/);
+        sketchClick([10, 0], TOL);
+        sketchMove([20, 10], TOL);
+        sketchClick([20, 10], TOL);
+        let s = state().geometry;
+        const arc = s.curves.find((c) => c.kind === 'arc')!;
+        expect(s.constraints).toContainEqual(expect.objectContaining({ kind: 'tangent', b: arc.id }));
+        // Leaving (10, 0) along +u and ending at (20, 10): a quarter turn about (10, 10).
+        if (arc.kind === 'arc') {
+            expect(at(s, arc.center)[0]).toBeCloseTo(10, 4);
+            expect(at(s, arc.center)[1]).toBeCloseTo(10, 4);
+        }
+        expect(state().redundant).toEqual([]);
+        expect(state().draft).toHaveLength(1);
+        // Next one, tangent to the arc.
+        sketchClick([10, 20], TOL);
+        s = state().geometry;
+        expect(s.curves.filter((c) => c.kind === 'arc')).toHaveLength(2);
+        expect(s.constraints.filter((c) => c.kind === 'tangent')).toHaveLength(2);
+        enterKey();
+        expect(state().draft).toEqual([]);
+    });
+
+    it('draws a circle through three points, held on the points it snapped to', () => {
+        const g = { ...EMPTY_GEOMETRY, points: [{ id: 'px', u: 10, v: 0 }] };
+        begin(g, 'perimeterCircle');
+        sketchClick([10, 0], TOL);
+        sketchClick([0, 10], TOL);
+        sketchClick([-10, 0], TOL);
+        const s = state().geometry;
+        const circle = s.curves.find((c) => c.kind === 'circle')!;
+        expect(curveRadius(s, circle.id)).toBeCloseTo(10, 4);
+        expect(s.constraints).toContainEqual(expect.objectContaining({ kind: 'pointOnCurve', point: 'px', curve: circle.id }));
+    });
+
+    it('draws a rectangle at an angle from three points', () => {
+        begin(EMPTY_GEOMETRY, 'rect3');
+        sketchClick([0, 0], TOL);
+        sketchClick([8, 6], TOL);
+        sketchClick([2, 14], TOL);
+        const s = state().geometry;
+        const lines = s.curves.filter((c) => c.kind === 'line');
+        expect(lines).toHaveLength(4);
+        expect(lengthOf(s, lines[0].id)).toBeCloseTo(10, 4);
+        expect(lengthOf(s, lines[1].id)).toBeCloseTo(10, 4);
+        expect(s.constraints.map((c) => c.kind).sort()).toEqual(['parallel', 'parallel', 'perpendicular']);
+        expect(state().redundant).toEqual([]);
+    });
+});

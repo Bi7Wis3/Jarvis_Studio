@@ -8,7 +8,7 @@ import { DoubleSide, MathUtils, Plane, Raycaster, Vector2, Vector3, type Group, 
 import type { SketchConstraint, SketchGeometry } from '@jarvis/core';
 import type { CameraControlsImpl } from '@react-three/drei';
 import { AXIS_U, AXIS_V, curveOf, isDimension, measure, pointOf } from './solver';
-import { arcMiddle, constraintRefs, dimensionFromPicks, geometryEntities } from './sketchGeometry';
+import { arcMiddle, constraintRefs, dimensionFromPicks, geometryEntities, rectCorners3, tangentArcThrough, tangentAt } from './sketchGeometry';
 import { definedEntities } from './sketchStatus';
 import { circleThrough, dist, entityPoints, regularPolygon, type Entity, type NewEntity, type Pt } from './sketchMath';
 import {
@@ -81,6 +81,14 @@ function draftEntity(tool: string, draft: Pt[], cursor: Pt, sides: number, sweep
             return dist(a, cursor) > 0 ? { kind: 'polygon', points: regularPolygon(a, cursor, sides) } : null;
         case 'arc':
             return draft.length === 1 ? { kind: 'line', a, b: cursor } : { kind: 'arc', a, b, m: cursor };
+        case 'perimeterCircle': {
+            const c = draft.length === 2 ? circleThrough(a, b, cursor) : null;
+            return c ? { kind: 'circle', c: c.c, r: c.r } : { kind: 'line', a: draft[draft.length - 1], b: cursor };
+        }
+        case 'rect3': {
+            const corners = draft.length === 2 ? rectCorners3(a, b, cursor) : null;
+            return corners ? { kind: 'polygon', points: corners } : { kind: 'line', a: draft[draft.length - 1], b: cursor };
+        }
         case 'slot': {
             if (draft.length === 1) {
                 return { kind: 'line', a, b: cursor };
@@ -91,6 +99,16 @@ function draftEntity(tool: string, draft: Pt[], cursor: Pt, sides: number, sweep
         }
     }
     return null;
+}
+
+/** A tangent arc from the end of the curve at `start` to the cursor. */
+function tangentPreview(g: SketchGeometry, start: string | undefined, from: Pt, cursor: Pt): NewEntity | null {
+    const t = start ? tangentAt(g, start) : null;
+    const arc = t && tangentArcThrough(from, t.dir, cursor);
+    if (!arc) {
+        return { kind: 'line', a: from, b: cursor };
+    }
+    return arc.ccw ? { kind: 'arc', a: from, b: cursor, m: arc.m } : { kind: 'arc', a: cursor, b: from, m: arc.m };
 }
 
 /** Live size of the entity in progress. */
@@ -550,7 +568,7 @@ export function Drawing() {
     const conflictRefs = new Set(g.constraints.filter((c) => conflicting.includes(c.id)).flatMap((c) => Object.values(c).filter((v) => typeof v === 'string')));
     const at = draft.map((d) => d.at);
     const preview = cursor && draft.length && !['select', 'dimension'].includes(tool) && !tool.startsWith('c:') && !isEditTool(tool)
-        ? draftEntity(tool, at, cursor, sides, arcSweep) : null;
+        ? tool === 'tangentArc' ? tangentPreview(g, draft[0].point, at[0], cursor) : draftEntity(tool, at, cursor, sides, arcSweep) : null;
     const previewText = preview && draftText(preview);
     const last = at[at.length - 1];
     return (

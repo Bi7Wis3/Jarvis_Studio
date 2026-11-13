@@ -166,7 +166,11 @@ function translate(g: SketchGeometry, c: SketchConstraint, temporary = false): S
             if (joined) {
                 const [ca, cb] = [curveOf(g, c.a)!, curveOf(g, c.b)!];
                 if (ca.kind === 'arc' && cb.kind === 'arc') {
-                    return [{ ...base, type: 'point_on_line_ppp', p_id: pid(joined), lp1_id: pid(ca.center), lp2_id: pid(cb.center) }];
+                    if (ca.center === cb.center) {
+                        return [];
+                    }
+                    // Both centres on one line through the joint (still well posed when the centres meet).
+                    return [{ ...base, type: 'point_on_line_ppp', p_id: pid(cb.center), lp1_id: pid(ca.center), lp2_id: pid(joined) }];
                 }
                 const [line, arc] = ca.kind === 'line' ? [ca, cb] : [cb, ca];
                 if (line.kind === 'line' && arc.kind === 'arc') {

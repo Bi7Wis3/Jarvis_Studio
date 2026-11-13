@@ -267,6 +267,29 @@ const PATHS: Record<string, ReactNode> = {
             <circle cx="12" cy="12" r="1.4" fill="currentColor" />
         </>
     ),
+    'tangent-arc': (
+        <>
+            <path d="M3 17h8" />
+            <path d="M11 17a6 6 0 0 0 6-6V5" />
+            <circle cx="11" cy="17" r="1.4" fill="currentColor" />
+        </>
+    ),
+    'perimeter-circle': (
+        <>
+            <circle cx="12" cy="12" r="7.5" />
+            <circle cx="12" cy="4.5" r="1.4" fill="currentColor" />
+            <circle cx="5.5" cy="15.8" r="1.4" fill="currentColor" />
+            <circle cx="18.5" cy="15.8" r="1.4" fill="currentColor" />
+        </>
+    ),
+    'rect-3pt': (
+        <>
+            <path d="M4 15l9-9 7 7-9 9z" />
+            <circle cx="4" cy="15" r="1.4" fill="currentColor" />
+            <circle cx="13" cy="6" r="1.4" fill="currentColor" />
+            <circle cx="20" cy="13" r="1.4" fill="currentColor" />
+        </>
+    ),
     'center-arc': (
         <>
             <path d="M19 12a7 7 0 0 1-12.1 4.8" />

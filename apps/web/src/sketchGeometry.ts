@@ -3,7 +3,7 @@
 
 import type { SketchConstraint, SketchCurve, SketchGeometry, SketchPoint, SketchProfile } from '@jarvis/core';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, pointOf } from './solver';
-import { arcPoints, dist, entityDistance, mid, type Entity, type Pt } from './sketchMath';
+import { arcPoints, circleThrough, dist, entityDistance, mid, type Entity, type Pt } from './sketchMath';
 import { regionProfiles } from './sketchRegions';
 
 /** A constraint before it gets its id. */
@@ -341,6 +341,133 @@ export function addPolygon(g: SketchGeometry, center: PointRef, corner: Pt, side
         out = addConstraint(out, { kind: 'equal', a: lines[0], b: lines[i] }).g;
     }
     return { g: out, circle: circle.id };
+}
+
+/** Perimeter circle through three clicked points; those snapped to existing points stay on it. */
+export function addPerimeterCircle(g: SketchGeometry, refs: PointRef[]): { g: SketchGeometry; id: string } | null {
+    const [a, b, c] = refs.map((r) => r.at);
+    const circle = circleThrough(a, b, c);
+    if (!circle) {
+        return null;
+    }
+    const r = addCircle(g, { at: circle.c }, circle.r);
+    let out = r.g;
+    for (const ref of refs) {
+        if (ref.point) {
+            out = placePoint(out, ref).g;
+            out = addConstraint(out, { kind: 'pointOnCurve', point: ref.point, curve: r.id }).g;
+        }
+    }
+    return { g: out, id: r.id };
+}
+
+/** The four corners of a 3-point corner rectangle: the first side a→b, then as wide as `c` is from that side. */
+export function rectCorners3(a: Pt, b: Pt, c: Pt): [Pt, Pt, Pt, Pt] | null {
+    const l = dist(a, b);
+    if (l < 1e-9) {
+        return null;
+    }
+    const n: Pt = [-(b[1] - a[1]) / l, (b[0] - a[0]) / l];
+    const h = (c[0] - b[0]) * n[0] + (c[1] - b[1]) * n[1];
+    if (Math.abs(h) < 1e-9) {
+        return null;
+    }
+    return [a, b, [b[0] + n[0] * h, b[1] + n[1] * h], [a[0] + n[0] * h, a[1] + n[1] * h]];
+}
+
+/** 3-point corner rectangle at any angle: opposite sides parallel and one corner square. */
+export function addRect3(g: SketchGeometry, a: PointRef, b: PointRef, c: Pt): { g: SketchGeometry; lines: string[] } | null {
+    const corners = rectCorners3(a.at, b.at, c);
+    if (!corners) {
+        return null;
+    }
+    let r = placePoint(g, a);
+    const ids = [r.id];
+    r = placePoint(r.g, b);
+    ids.push(r.id);
+    for (const q of corners.slice(2)) {
+        r = placePoint(r.g, { at: q });
+        ids.push(r.id);
+    }
+    let out = r.g;
+    const lines: string[] = [];
+    for (let i = 0; i < 4; i++) {
+        const id = newId('c', out);
+        out = { ...out, curves: [...out.curves, { id, kind: 'line', a: ids[i], b: ids[(i + 1) % 4] }] };
+        lines.push(id);
+    }
+    out = addConstraint(out, { kind: 'parallel', a: lines[0], b: lines[2] }).g;
+    out = addConstraint(out, { kind: 'parallel', a: lines[1], b: lines[3] }).g;
+    out = addConstraint(out, { kind: 'perpendicular', a: lines[0], b: lines[1] }).g;
+    return { g: out, lines };
+}
+
+/** Direction leaving the end point `point` of a line or arc, along the curve (the way a tangent arc goes on). */
+export function tangentAt(g: SketchGeometry, point: string): { curve: string; dir: Pt } | null {
+    for (const c of [...g.curves].reverse()) {
+        const P = (id: string): Pt | null => {
+            const q = pointOf(g, id);
+            return q ? [q.u, q.v] : null;
+        };
+        let dir: Pt | null = null;
+        if (c.kind === 'line' && (c.a === point || c.b === point)) {
+            const [from, to] = c.b === point ? [P(c.a), P(c.b)] : [P(c.b), P(c.a)];
+            dir = from && to ? [to[0] - from[0], to[1] - from[1]] : null;
+        } else if (c.kind === 'arc' && (c.start === point || c.end === point)) {
+            const centre = P(c.center);
+            const end = P(point);
+            if (centre && end) {
+                const r: Pt = [end[0] - centre[0], end[1] - centre[1]];
+                // Counter-clockwise arcs leave their end turning left, and their start the other way.
+                dir = c.end === point ? [-r[1], r[0]] : [r[1], -r[0]];
+            }
+        }
+        const l = dir ? Math.hypot(dir[0], dir[1]) : 0;
+        if (dir && l > 1e-9) {
+            return { curve: c.id, dir: [dir[0] / l, dir[1] / l] };
+        }
+    }
+    return null;
+}
+
+/** The arc leaving `s` along `dir` and ending at `e`: its centre and whether it turns left (counter-clockwise). */
+export function tangentArcThrough(s: Pt, dir: Pt, e: Pt): { c: Pt; ccw: boolean; m: Pt } | null {
+    const n: Pt = [-dir[1], dir[0]];
+    const d: Pt = [e[0] - s[0], e[1] - s[1]];
+    const across = d[0] * n[0] + d[1] * n[1];
+    if (Math.abs(across) < 1e-9) {
+        return null;
+    }
+    // Signed radius: the centre is on the left of the direction when positive.
+    const r = (d[0] ** 2 + d[1] ** 2) / (2 * across);
+    const c: Pt = [s[0] + n[0] * r, s[1] + n[1] * r];
+    const ccw = r > 0;
+    const [from, to] = ccw ? [s, e] : [e, s];
+    return { c, ccw, m: arcMiddle(c, from, to) };
+}
+
+/** Tangent arc from the end of a line or arc (`start`, an existing point) to `end`, tangent to that curve. */
+export function addTangentArc(g: SketchGeometry, start: string, end: PointRef): { g: SketchGeometry; id: string; end: string } | { error: string } {
+    const from = tangentAt(g, start);
+    const s = pointOf(g, start);
+    if (!from || !s) {
+        return { error: 'Start a tangent arc on the end of a line or arc.' };
+    }
+    const arc = tangentArcThrough([s.u, s.v], from.dir, end.at);
+    if (!arc) {
+        return { error: 'That end is straight ahead: draw a line there instead.' };
+    }
+    const r = placePoint(g, end);
+    const eid = r.id;
+    if (eid === start) {
+        return { error: 'Pick an end away from the start.' };
+    }
+    const centre = newId('p', r.g);
+    let out: SketchGeometry = { ...r.g, points: [...r.g.points, { id: centre, u: arc.c[0], v: arc.c[1] }] };
+    const id = newId('c', out);
+    out = { ...out, curves: [...out.curves, { id, kind: 'arc', center: centre, start: arc.ccw ? start : eid, end: arc.ccw ? eid : start }] };
+    out = addConstraint(out, { kind: 'tangent', a: from.curve, b: id }).g;
+    return { g: out, id, end: eid };
 }
 
 // ---- Editing ------------------------------------------------------------------------------------------
