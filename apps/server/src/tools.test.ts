@@ -325,6 +325,33 @@ describe('feature history', () => {
         expect(store.get().parts[0].features?.map((f) => f.id)).toEqual(['fillet', 'hollow']);
     });
 
+    it('inserts new features at the rollback bar and moves the bar below them', () => {
+        addBody();
+        run('features_add', { partId: 'body', features: [{ op: 'fillet', radius: 1 }, { op: 'fillet', radius: 2 }] });
+        store.mutate((d) => {
+            d.view.rollback = { partId: 'body', count: 1 };
+        });
+        run('features_add', { partId: 'body', features: [{ op: 'chamfer', size: 1 }] });
+        expect(store.get().parts[0].features?.map((f) => f.id)).toEqual(['hollow', 'chamfer', 'fillet', 'fillet-2']);
+        expect(store.get().view.rollback).toEqual({ partId: 'body', count: 2 });
+        // An explicit `before` above the bar keeps the same steps built.
+        run('features_add', { partId: 'body', features: [{ op: 'fillet', radius: 3, name: 'First' }], before: 'hollow' });
+        expect(store.get().view.rollback).toEqual({ partId: 'body', count: 3 });
+        // Removing a built step takes the bar up with it.
+        run('features_remove', { partId: 'body', ids: ['first'] });
+        expect(store.get().view.rollback).toEqual({ partId: 'body', count: 2 });
+    });
+
+    it('appends at the end when the part is not rolled back', () => {
+        addBody();
+        store.mutate((d) => {
+            d.view.rollback = { partId: 'body', count: 1 };
+        });
+        run('features_add', { partId: 'body', features: [{ op: 'fillet', radius: 1 }] });
+        expect(store.get().parts[0].features?.map((f) => f.id)).toEqual(['hollow', 'fillet']);
+        expect(() => run('features_add', { partId: 'body', features: [{ op: 'fillet', radius: 1 }], before: 'nope' })).toThrow();
+    });
+
     it('updates, suppresses and removes features by id', () => {
         addBody();
         expect(run('features_update', { partId: 'body', updates: [{ id: 'hollow', thickness: 3, suppressed: true }] }))

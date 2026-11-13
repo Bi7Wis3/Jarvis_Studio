@@ -429,6 +429,38 @@ export function checkHistory(part: Pick<Part, 'id' | 'features'>): void {
     }
 }
 
+/** The rollback bar of a part when it is rolled back (fewer steps built than it has), else null. */
+function rollbackOf(project: Project, partId: string): { partId: string; count: number } | null {
+    const rollback = project.view.rollback;
+    const part = project.parts.find((p) => p.id === partId);
+    return rollback && rollback.partId === partId && rollback.count < (part?.features?.length ?? 0) ? rollback : null;
+}
+
+/**
+ * Where new steps go: before the step at `before` when given (>= 0), else at the rollback bar when the part is
+ * rolled back (as in SolidWorks), else at the end.
+ */
+export function insertIndex(length: number, before: number, rollback: { count: number } | null): number {
+    if (before >= 0) {
+        return before;
+    }
+    return rollback ? Math.max(0, Math.min(rollback.count, length)) : length;
+}
+
+/** Steps inserted at or above the rollback bar keep it below them (and below the steps it already had built). */
+function shiftRollback(project: Project, partId: string, at: number, added: number): void {
+    const rollback = project.view.rollback;
+    if (rollback && rollback.partId === partId && at <= rollback.count) {
+        const part = project.parts.find((p) => p.id === partId);
+        // Only while still rolled back: a bar at the end stays at the end.
+        if (rollback.count + added < (part?.features?.length ?? 0)) {
+            rollback.count += added;
+        } else {
+            project.view.rollback = null;
+        }
+    }
+}
+
 function withFeatureIds(part: Pick<Part, 'features'>, features: z.infer<typeof feature>[]): Feature[] {
     const used = new Set((part.features ?? []).map((f) => f.id));
     return features.map((f) => {
@@ -711,6 +743,7 @@ export function createTools(store: ProjectStore): StudioTool[] {
         {
             name: 'features_add',
             description: 'Appends features to a part\'s design history (or inserts them before the feature id `before`). '
+                + 'When the part is rolled back, new features go in at the rollback bar, which moves below them. '
                 + 'Returns the assigned feature ids.',
             schema: { partId: z.string(), features: z.array(feature).min(1), before: z.string().optional() },
             run: ({ partId, features, before }) => {
@@ -726,9 +759,14 @@ export function createTools(store: ProjectStore): StudioTool[] {
                     }
                     const added = withFeatureIds(part, features);
                     const list = part.features ?? [];
-                    const at = before ? list.findIndex((f) => f.id === before) : -1;
-                    list.splice(at < 0 ? list.length : at, 0, ...added);
+                    const index = before ? list.findIndex((f) => f.id === before) : -1;
+                    if (before && index < 0) {
+                        throw new Error(`No feature "${before}" in ${partId}`);
+                    }
+                    const at = insertIndex(list.length, index, rollbackOf(draft, partId));
+                    list.splice(at, 0, ...added);
                     part.features = list;
+                    shiftRollback(draft, partId, at, added.length);
                     checkHistory(part);
                     result = `Added ${added.length} feature(s) to ${partId}: ${added.map((f) => f.id).join(', ')}.`;
                 });
@@ -818,6 +856,12 @@ export function createTools(store: ProjectStore): StudioTool[] {
                     const part = draft.parts.find((p) => p.id === partId);
                     if (part) {
                         const before = part.features?.length ?? 0;
+                        // Removed steps above the rollback bar take the bar up with them.
+                        const rollback = rollbackOf(draft, partId);
+                        if (rollback) {
+                            const above = (part.features ?? []).slice(0, rollback.count).filter((f) => ids.includes(f.id)).length;
+                            rollback.count -= above;
+                        }
                         part.features = (part.features ?? []).filter((f) => !ids.includes(f.id));
                         removed = before - part.features.length;
                         checkHistory(part);

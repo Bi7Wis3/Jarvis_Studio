@@ -16,6 +16,7 @@ import { addPicture, PicturePicker } from './DecalPanel';
 import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchToolDefs';
 import { evaluateTools } from './evaluateToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
+import { stepAtBar } from './historyOps';
 import { Icon } from './icons';
 import {
     choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, redoSketch, setTool,
@@ -190,9 +191,13 @@ function saveFeature(ctx: Ctx, feature: Record<string, unknown>): Promise<Result
     if (!ctx.part) {
         return Promise.resolve({ text: 'Select a part first.', isError: true });
     }
-    // New steps are named the SolidWorks way (Boss-Extrude1, Fillet2); what they do is in their tooltip.
-    const name = nextFeatureName(ctx.part.features, feature as unknown as Nameable);
-    return runTool('features_add', { partId: ctx.part.id, features: [{ ...feature, name }] });
+    // New steps are named the SolidWorks way (Boss-Extrude1, Fillet2); what they do is in their tooltip. Names
+    // count steps below the rollback bar too (the viewport copy of the part leaves them out).
+    const all = fullPart(ctx.part.id)?.features ?? ctx.part.features;
+    const name = nextFeatureName(all, feature as unknown as Nameable);
+    // While the part is rolled back the step goes in at the bar, which then moves below it (as in SolidWorks).
+    const before = stepAtBar(useStudio.getState().history, ctx.part.id);
+    return runTool('features_add', { partId: ctx.part.id, features: [{ ...feature, name }], ...(before ? { before } : {}) });
 }
 
 /** The edited feature, when it has this op. */
