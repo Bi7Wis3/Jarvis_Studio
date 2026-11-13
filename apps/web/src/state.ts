@@ -31,8 +31,9 @@ interface StudioState {
     /** The part being edited in the part workspace. */
     activePart: string | null;
     /**
-     * How the part workspace shows the active part. isolated: the part alone at its own origin (part studio);
-     * inContext: at its place in the assembly with the other parts ghosted (edit in place).
+     * How the part workspace shows the active part (see partView.ts). isolated: the part alone (Edit part);
+     * inContext: the other parts of the assembly drawn faintly around it (Edit in place). The toolbar's
+     * "Show other parts" switches this too.
      */
     partView: 'isolated' | 'inContext';
     /**

@@ -20,6 +20,10 @@ import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchTool
 import { evaluateTools } from './evaluateToolDefs';
 import { referenceEditor, referenceTools } from './referenceToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
+import { stepAtBar } from './historyOps';
+import { designCopy } from './partCopy';
+import { BOX_DEFAULTS, boxShape, boxValues, CYLINDER_DEFAULTS, cylinderShape, cylinderValues } from './primitiveForm';
+import { circularPatternTool, combineTool, linearPatternTool, mirrorTool, patternEditor, splitTool } from './patternToolDefs';
 import { Icon } from './icons';
 import {
     choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, redoSketch, setTool,
@@ -171,7 +175,7 @@ function vecValues(key: string, value: Vec3): Values {
 const opts = (...pairs: [string, string][]) => pairs.map(([value, label]) => ({ value, label }));
 
 /** Wraps validation errors in the same shape as a server error, so the popup shows them inline. */
-async function attempt(build: () => Promise<Result>): Promise<Result> {
+export async function attempt(build: () => Promise<Result>): Promise<Result> {
     try {
         return await build();
     } catch (e) {
@@ -197,7 +201,7 @@ function partBox(part: Part | null): { centre: Vec3; half: Vec3 } {
 }
 
 /** The full part from the history (the viewport copy may be cut back by the timeline). */
-function fullPart(id: string): Part | undefined {
+export function fullPart(id: string): Part | undefined {
     return useStudio.getState().history?.parts.find((p) => p.id === id);
 }
 
@@ -216,7 +220,7 @@ async function addPart(part: Record<string, unknown>): Promise<Result & { id?: s
 }
 
 /** Adds a feature, or updates the edited one in place (keeping its id and name). */
-function saveFeature(ctx: Ctx, feature: Record<string, unknown>): Promise<Result> {
+export function saveFeature(ctx: Ctx, feature: Record<string, unknown>): Promise<Result> {
     if (ctx.edit?.feature) {
         const { name: _name, op: _op, ...fields } = feature;
         return runTool('features_update', { partId: ctx.edit.partId, updates: [{ id: ctx.edit.feature.id, ...fields }] });
@@ -224,9 +228,13 @@ function saveFeature(ctx: Ctx, feature: Record<string, unknown>): Promise<Result
     if (!ctx.part) {
         return Promise.resolve({ text: 'Select a part first.', isError: true });
     }
-    // New steps are named the SolidWorks way (Boss-Extrude1, Fillet2); what they do is in their tooltip.
-    const name = nextFeatureName(ctx.part.features, feature as unknown as Nameable);
-    return runTool('features_add', { partId: ctx.part.id, features: [{ ...feature, name }] });
+    // New steps are named the SolidWorks way (Boss-Extrude1, Fillet2); what they do is in their tooltip. Names
+    // count steps below the rollback bar too (the viewport copy of the part leaves them out).
+    const all = fullPart(ctx.part.id)?.features ?? ctx.part.features;
+    const name = nextFeatureName(all, feature as unknown as Nameable);
+    // While the part is rolled back the step goes in at the bar, which then moves below it (as in SolidWorks).
+    const before = stepAtBar(useStudio.getState().history, ctx.part.id);
+    return runTool('features_add', { partId: ctx.part.id, features: [{ ...feature, name }], ...(before ? { before } : {}) });
 }
 
 /** The edited feature, when it has this op. */
@@ -366,25 +374,26 @@ const primitiveTools: ToolDef[] = [
         { key: 'w', label: 'Width X', kind: 'number', unit: 'mm', min: 0 },
         { key: 'h', label: 'Height Y', kind: 'number', unit: 'mm', min: 0 },
         { key: 'd', label: 'Depth Z', kind: 'number', unit: 'mm', min: 0 },
-        { key: 'r', label: 'Edge round', kind: 'number', unit: 'mm', min: 0, step: 0.5 },
-    ], { w: '40', h: '20', d: '30', r: '0.5' },
-    (s) => (s.kind === 'box' ? { w: fmt(s.size[0]), h: fmt(s.size[1]), d: fmt(s.size[2]), r: fmt(s.radius ?? 0) } : null),
+        { key: 'autoR', label: 'Automatic edge round', kind: 'check' },
+        { key: 'r', label: 'Edge round', kind: 'number', unit: 'mm', min: 0, step: 0.5, show: (v) => !v.autoR },
+    ], BOX_DEFAULTS,
+    (s) => (s.kind === 'box' ? boxValues(s) : null),
     (v) => {
-        const h = num(v, 'h', 'Height', { positive: true });
-        return {
-            shape: { kind: 'box', size: [num(v, 'w', 'Width', { positive: true }), h, num(v, 'd', 'Depth', { positive: true })],
-                radius: num(v, 'r', 'Edge round', { min: 0 }) },
-            halfHeight: h / 2,
-        };
+        const shape = boxShape(v);
+        return { shape, halfHeight: shape.size[1] / 2 };
     }),
     createTool('cylinder', 'Cylinder', [
         { key: 'r', label: 'Radius', kind: 'number', unit: 'mm', min: 0 },
+        { key: 'taper', label: 'Taper', kind: 'check' },
+        { key: 'rt', label: 'Top radius', kind: 'number', unit: 'mm', min: 0, show: (v) => !!v.taper },
         { key: 'h', label: 'Height', kind: 'number', unit: 'mm', min: 0 },
-    ], { r: '15', h: '30' },
-    (s) => (s.kind === 'cylinder' ? { r: fmt(s.radius), h: fmt(s.height) } : null),
+        { key: 'autoBevel', label: 'Automatic edge bevel', kind: 'check' },
+        { key: 'bevel', label: 'Edge bevel', kind: 'number', unit: 'mm', min: 0, step: 0.5, show: (v) => !v.autoBevel },
+    ], CYLINDER_DEFAULTS,
+    (s) => (s.kind === 'cylinder' ? cylinderValues(s) : null),
     (v) => {
-        const h = num(v, 'h', 'Height', { positive: true });
-        return { shape: { kind: 'cylinder', radius: num(v, 'r', 'Radius', { positive: true }), height: h }, halfHeight: h / 2 };
+        const shape = cylinderShape(v);
+        return { shape, halfHeight: shape.height / 2 };
     }),
     createTool('sphere', 'Sphere', [
         { key: 'r', label: 'Radius', kind: 'number', unit: 'mm', min: 0 },
@@ -1816,34 +1825,7 @@ const featureTools: Record<string, ToolDef> = {
             });
         }),
     },
-    mirror: {
-        id: 'mirror-feature',
-        preview: true,
-        label: 'Mirror',
-        icon: 'mirror',
-        op: 'mirror',
-        hint: 'mirror the body across a plane of the part',
-        needsPart: true,
-        fields: () => [
-            { key: 'plane', label: 'Plane', kind: 'select', options: opts(['YZ', 'YZ (left / right)'], ['XY', 'XY (front / back)'], ['XZ', 'XZ (up / down)']) },
-            { key: 'offset', label: 'Offset', kind: 'number', unit: 'mm' },
-            { key: 'keep', label: 'Keep original (join)', kind: 'check' },
-        ],
-        defaults: (ctx) => {
-            const f = edited(ctx, 'mirror');
-            return f ? { plane: f.plane, offset: fmt(f.offset ?? 0), keep: f.keepOriginal !== false } : { plane: 'YZ', offset: '0', keep: true };
-        },
-        apply: (v, ctx) => attempt(() => {
-            const offset = num(v, 'offset', 'Offset');
-            return saveFeature(ctx, {
-                op: 'mirror',
-                name: `Mirror across ${v.plane}${offset ? ` at ${fmt(offset)} mm` : ''}`,
-                plane: v.plane,
-                offset,
-                keepOriginal: !!v.keep,
-            });
-        }),
-    },
+    mirror: mirrorTool,
     thread: {
         id: 'thread',
         preview: true,
@@ -1994,16 +1976,19 @@ const solidTools: ToolDef[] = [
     featureTools.hole,
     featureTools.pocket,
     featureTools.thread,
+    combineTool,
+    splitTool,
 ];
 
 // ---- Pattern, transform, material ---------------------------------------------------------------------
 
+/** Assembly: copies of the whole part (SolidWorks component pattern). Feature patterns are in patternToolDefs.tsx. */
 const patternTool: ToolDef = {
     id: 'pattern',
     preview: true,
-    label: 'Pattern',
+    label: 'Component pattern',
     icon: 'pattern',
-    hint: 'copies of the whole part',
+    hint: 'copies of the whole part in the assembly',
     needsPart: true,
     width: 300,
     panel: true,
@@ -2022,8 +2007,7 @@ const patternTool: ToolDef = {
 };
 
 function copyOf(part: Part, patch: Partial<Part>): Record<string, unknown> {
-    const { id: _id, ...rest } = part;
-    return { ...rest, ...patch };
+    return designCopy(part, patch, useStudio.getState().history?.parts ?? []);
 }
 
 const transformTools: ToolDef[] = [
@@ -2138,11 +2122,16 @@ const transformTools: ToolDef[] = [
                 ? { position: [-x, y, z] as Vec3, rotation: [rx, -ry, -rz] as Vec3 }
                 : { position: [x, y, -z] as Vec3, rotation: [-rx, -ry, rz] as Vec3 };
             const flip = { id: 'mirror-image', op: 'mirror', name: `Mirror image (${v.plane})`, plane: v.plane, keepOriginal: false };
-            const features = [...(full.features ?? []), flip];
             if (v.copy) {
-                return addPart(copyOf(full, { ...patch, name: `${full.name} mirrored`, features: features as Feature[] }));
+                const design = copyOf(full, {});
+                const features = [...((design.features as Feature[] | undefined) ?? []), flip];
+                return addPart({ ...design, ...patch, name: `${full.name} mirrored`, features });
             }
-            return runTool('parts_update', { updates: [{ id: full.id, ...patch, features }] });
+            if (full.instanceOf) {
+                // An instance shares its source's design, so its own shape cannot be flipped on its own.
+                throw new Error(`${full.name} is an instance of another part: turn on Keep original to make a mirrored copy.`);
+            }
+            return runTool('parts_update', { updates: [{ id: full.id, ...patch, features: [...(full.features ?? []), flip] }] });
         }),
     },
     {
@@ -2312,8 +2301,9 @@ const othersTool: ToolDef = {
     id: 'others',
     label: 'Show other parts',
     icon: 'ghost',
-    hint: 'as faint ghosts',
-    instant: () => useSketcher.setState((s) => ({ showOthers: !s.showOthers })),
+    hint: 'in context: the rest of the assembly as faint ghosts',
+    // The same switch as Isolated / In context above the tree.
+    instant: () => useStudio.setState((s) => ({ partView: s.partView === 'inContext' ? 'isolated' : 'inContext' })),
     active: (_, s) => s.showOthers,
 };
 const sketchesTool: ToolDef = {
@@ -2473,7 +2463,7 @@ export const PART_GROUPS: ToolGroup[] = [
     { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchStartTools },
     { id: 'solid', label: 'Solid', icon: 'extrude', collapse: 4, tools: solidTools },
     { id: 'reference', label: 'Reference geometry', icon: 'ref-plane', collapse: 2, tools: referenceTools },
-    { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool] },
+    { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [linearPatternTool, circularPatternTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
     { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, othersTool, sketchesTool, sketchVisibilityTool] },
     { id: 'inspect', label: 'Inspect', icon: 'check', collapse: 1, tools: [checkTool, ...evaluateTools] },
@@ -2509,6 +2499,12 @@ export const ALL_TOOLS: ToolDef[] = [
 export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketch' {
     if (feature && (feature.op === 'extrude' || feature.op === 'revolve') && feature.sketchRef) {
         return solidTools.find((t) => t.id === (feature.op === 'revolve' ? 'revolve' : feature.mode === 'cut' ? 'cut' : 'extrude'))!;
+    }
+    if (feature?.op === 'pattern') {
+        return patternEditor(feature);
+    }
+    if (feature?.op === 'combine' || feature?.op === 'split') {
+        return feature.op === 'combine' ? combineTool : splitTool;
     }
     if (feature?.op === 'loft') {
         return feature.sections.every((s) => s.sketchRef) ? loftTool : noEditTool;

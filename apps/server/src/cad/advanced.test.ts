@@ -243,6 +243,47 @@ describe('pattern', () => {
         expect(openEdges(half)).toBe(0);
     }, SLOW);
 
+    it('makes grids in two directions, skips instances and spaces circular copies by angle', async () => {
+        const plain = volume(await mesh(sharpBox([60, 4, 60])));
+        const hole = holeArea(3) * 4;
+        // 3 x 2 grid with one instance skipped: 5 holes.
+        const grid = await mesh(sharpBox([60, 4, 60]), [
+            plainHole('h', [-20, 2, -10]),
+            {
+                id: 'p', op: 'pattern', kind: 'linear', features: ['h'], direction: 'x', count: 3, spacing: 20,
+                direction2: 'z', count2: 2, spacing2: 20, skip: [[3, 2]],
+            },
+        ]);
+        expect((plain - volume(grid)) / (5 * hole)).toBeCloseTo(1, 1);
+        // Seed only along direction 2, and direction 1 reversed from the right-hand side.
+        const seedOnly = await mesh(sharpBox([60, 4, 60]), [
+            plainHole('h', [20, 2, -10]),
+            {
+                id: 'p', op: 'pattern', kind: 'linear', features: ['h'], direction: 'x', count: 3, spacing: 20, reverse: true,
+                direction2: 'z', count2: 2, spacing2: 20, seedOnly2: true,
+            },
+        ]);
+        expect((plain - volume(seedOnly)) / (4 * hole)).toBeCloseTo(1, 1);
+        expect(openEdges(seedOnly)).toBe(0);
+        // 4 instances 30 degrees apart (not shared over 360).
+        const fan = await mesh(sharpBox([60, 4, 60]), [
+            plainHole('h', [20, 2, 0]),
+            { id: 'p', op: 'pattern', kind: 'circular', features: ['h'], axis: 'y', count: 4, angle: 30, equal: false },
+        ]);
+        expect((plain - volume(fan)) / (4 * hole)).toBeCloseTo(1, 1);
+    }, SLOW);
+
+    it('says what is missing instead of failing with a type error', async () => {
+        await expect(mesh(sharpBox([20, 4, 20]), [
+            plainHole('h', [0, 2, 0]),
+            { id: 'p', op: 'pattern', kind: 'linear', features: ['h'], count: 2, spacing: 5 } as unknown as Feature,
+        ])).rejects.toThrow(/a linear pattern needs direction 1/);
+        await expect(mesh(sharpBox([20, 4, 20]), [
+            plainHole('h', [0, 2, 0]),
+            { id: 'p', op: 'pattern', kind: 'circular', features: ['h'], count: 2 } as unknown as Feature,
+        ])).rejects.toThrow(/a circular pattern needs an axis/);
+    }, SLOW);
+
     it('repeats sketch extrusions and rejects steps without a tool', async () => {
         const bosses = await mesh(sharpBox([60, 4, 20]), [
             { id: 'b', op: 'extrude', mode: 'add', distance: 5, sketch: { plane: 'top', offset: 2, profiles: [circle([-20, 0], 3)] } },
@@ -256,6 +297,38 @@ describe('pattern', () => {
         await expect(mesh(sharpBox([20, 4, 20]), [
             { id: 'p', op: 'pattern', kind: 'linear', features: ['nope'], direction: 'x', count: 2, spacing: 5 },
         ])).rejects.toThrow(/step "nope" not found/);
+    }, SLOW);
+});
+
+describe('mirror features', () => {
+    it('mirrors chosen features about a plane step, leaving the rest of the body alone', async () => {
+        const plain = volume(await mesh(sharpBox([60, 4, 60])));
+        const hole = holeArea(3) * 4;
+        // Plane x = 5; a hole at x = 15 mirrors to x = -5. A hole not chosen is not mirrored.
+        const m = await mesh(sharpBox([60, 4, 60]), [
+            { id: 'pl', op: 'plane', definition: { kind: 'offset', base: 'right', distance: 5 } },
+            plainHole('h', [15, 2, 0]),
+            plainHole('other', [0, 2, 20]),
+            { id: 'm', op: 'mirror', plane: { planeRef: 'pl' }, features: ['h'] },
+        ]);
+        expect((plain - volume(m)) / (3 * hole)).toBeCloseTo(1, 1);
+        expect(openEdges(m)).toBe(0);
+        // A boss mirrored about the Top plane lands under the body.
+        const boss = await mesh(sharpBox([20, 4, 20]), [
+            { id: 'b', op: 'extrude', mode: 'add', distance: 5, sketch: { plane: 'top', offset: 2, profiles: [circle([0, 0], 3)] } },
+            { id: 'm', op: 'mirror', plane: 'top', features: ['b'] },
+        ]);
+        expect(volume(boss)).toBeCloseTo(20 * 4 * 20 + 2 * Math.PI * 9 * 5, -1);
+    }, SLOW);
+
+    it('mirrors the body about a base plane by its SolidWorks name, as the older spelling did', async () => {
+        const older = await mesh(sharpBox([10, 4, 6]), [{ id: 'm', op: 'mirror', plane: 'XY', offset: 10 }]);
+        const named = await mesh(sharpBox([10, 4, 6]), [{ id: 'm', op: 'mirror', plane: 'front', offset: 10 }]);
+        expect(volume(named)).toBeCloseTo(volume(older), 3);
+        await expect(mesh(sharpBox([20, 4, 20]), [
+            { id: 'f', name: 'Soft', op: 'fillet', radius: 1 },
+            { id: 'm', op: 'mirror', plane: 'right', features: ['f'] },
+        ])).rejects.toThrow(/cannot be mirrored/);
     }, SLOW);
 });
 

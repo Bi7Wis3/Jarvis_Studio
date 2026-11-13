@@ -303,9 +303,12 @@ const feature = z.discriminatedUnion('op', [
     z.object({
         ...featureBase,
         op: z.literal('mirror'),
-        plane: z.enum(['YZ', 'XY', 'XZ']).describe('Part-frame plane: YZ mirrors left/right, XY front/back, XZ up/down'),
+        plane: z.union([z.enum(['YZ', 'XY', 'XZ']), planeRef])
+            .describe('right (= YZ) mirrors left/right, front (= XY) front/back, top (= XZ) up/down; or { planeRef }'),
         offset: z.number().optional().describe('Moves the plane along its normal'),
         keepOriginal: z.boolean().optional().describe('Default true: join the mirror image to the body'),
+        features: z.array(z.string()).min(1).optional()
+            .describe('Features to mirror: earlier steps that add or cut material, applied again mirrored; omit to mirror the whole body'),
     }),
     z.object({
         ...featureBase,
@@ -364,11 +367,20 @@ const feature = z.discriminatedUnion('op', [
         op: z.literal('pattern'),
         features: z.array(z.string()).min(1).describe('Ids of earlier steps to repeat (holes, cuts, bosses)'),
         kind: z.enum(['linear', 'circular']),
-        count: z.number().int().min(2).max(200),
-        direction: z.union([axisRef, vec3]).optional().describe('linear: the direction'),
-        spacing: z.number().optional().describe('linear: distance between copies'),
-        axis: axisRef.optional().describe('circular: the axis'),
-        angle: z.number().optional().describe('circular: total sweep in degrees; default 360'),
+        count: z.number().int().min(2).max(200).describe('Number of instances, the seed included'),
+        direction: z.union([axisRef, vec3]).optional().describe('linear (required): the direction'),
+        spacing: z.number().optional().describe('linear (required): distance between instances'),
+        reverse: z.boolean().optional().describe('Reverse direction 1 (circular: turn the other way)'),
+        direction2: z.union([axisRef, vec3]).optional().describe('linear: a second direction (a grid)'),
+        count2: z.number().int().min(2).max(200).optional().describe('linear: instances along direction 2'),
+        spacing2: z.number().optional().describe('linear: spacing along direction 2'),
+        reverse2: z.boolean().optional(),
+        seedOnly2: z.boolean().optional().describe('linear: repeat only the seed along direction 2'),
+        axis: axisRef.optional().describe('circular (required): the axis'),
+        angle: z.number().optional().describe('circular: total angle in degrees (default 360), or with equal false the angle between instances'),
+        equal: z.boolean().optional().describe('circular: default true, equal spacing over the total angle'),
+        skip: z.array(z.tuple([z.number().int().min(1), z.number().int().min(1)])).optional()
+            .describe('Instances to leave out, as [n along direction 1, n along direction 2 (1 if none)]; the seed is [1, 1]'),
     }),
     z.object({
         ...featureBase,
@@ -463,10 +475,72 @@ export function checkHistory(part: Pick<Part, 'id' | 'features'>): void {
                     throw new Error(`${where}: step "${id}" is not an earlier step of ${part.id}`);
                 }
             }
+            checkPattern(where, f);
+        } else if (f.op === 'mirror') {
+            for (const id of f.features ?? []) {
+                if (!seen.has(id)) {
+                    throw new Error(`${where}: step "${id}" is not an earlier step of ${part.id}`);
+                }
+            }
         }
         const { id: _id, name: _name, suppressed: _s, ...body } = f;
         scan(where, body);
         seen.set(f.id, f.op);
+    }
+}
+
+/** A pattern's fields per kind: the schema leaves them optional, since one object covers both kinds. */
+function checkPattern(where: string, f: Extract<Feature, { op: 'pattern' }>): void {
+    const g = f as unknown as Partial<Extract<Feature, { op: 'pattern'; kind: 'linear' }>> & Partial<Extract<Feature, { op: 'pattern'; kind: 'circular' }>>;
+    if (f.kind === 'linear') {
+        if (g.direction === undefined) {
+            throw new Error(`${where}: a linear pattern needs a direction (an axis or a vector)`);
+        }
+        if (g.spacing === undefined) {
+            throw new Error(`${where}: a linear pattern needs a spacing`);
+        }
+        if (g.direction2 !== undefined && (g.count2 === undefined || g.spacing2 === undefined)) {
+            throw new Error(`${where}: direction 2 needs count2 and spacing2`);
+        }
+    } else if (g.axis === undefined) {
+        throw new Error(`${where}: a circular pattern needs an axis`);
+    } else if (g.equal === false && g.angle === undefined) {
+        throw new Error(`${where}: without equal spacing give the angle between instances`);
+    }
+    if (g.skip?.some(([i, j]) => i === 1 && j === 1)) {
+        throw new Error(`${where}: the seed (instance [1, 1]) cannot be skipped`);
+    }
+}
+
+/** The rollback bar of a part when it is rolled back (fewer steps built than it has), else null. */
+function rollbackOf(project: Project, partId: string): { partId: string; count: number } | null {
+    const rollback = project.view.rollback;
+    const part = project.parts.find((p) => p.id === partId);
+    return rollback && rollback.partId === partId && rollback.count < (part?.features?.length ?? 0) ? rollback : null;
+}
+
+/**
+ * Where new steps go: before the step at `before` when given (>= 0), else at the rollback bar when the part is
+ * rolled back (as in SolidWorks), else at the end.
+ */
+export function insertIndex(length: number, before: number, rollback: { count: number } | null): number {
+    if (before >= 0) {
+        return before;
+    }
+    return rollback ? Math.max(0, Math.min(rollback.count, length)) : length;
+}
+
+/** Steps inserted at or above the rollback bar keep it below them (and below the steps it already had built). */
+function shiftRollback(project: Project, partId: string, at: number, added: number): void {
+    const rollback = project.view.rollback;
+    if (rollback && rollback.partId === partId && at <= rollback.count) {
+        const part = project.parts.find((p) => p.id === partId);
+        // Only while still rolled back: a bar at the end stays at the end.
+        if (rollback.count + added < (part?.features?.length ?? 0)) {
+            rollback.count += added;
+        } else {
+            project.view.rollback = null;
+        }
     }
 }
 
@@ -752,6 +826,7 @@ export function createTools(store: ProjectStore): StudioTool[] {
         {
             name: 'features_add',
             description: 'Appends features to a part\'s design history (or inserts them before the feature id `before`). '
+                + 'When the part is rolled back, new features go in at the rollback bar, which moves below them. '
                 + 'Returns the assigned feature ids.',
             schema: { partId: z.string(), features: z.array(feature).min(1), before: z.string().optional() },
             run: ({ partId, features, before }) => {
@@ -767,9 +842,14 @@ export function createTools(store: ProjectStore): StudioTool[] {
                     }
                     const added = withFeatureIds(part, features);
                     const list = part.features ?? [];
-                    const at = before ? list.findIndex((f) => f.id === before) : -1;
-                    list.splice(at < 0 ? list.length : at, 0, ...added);
+                    const index = before ? list.findIndex((f) => f.id === before) : -1;
+                    if (before && index < 0) {
+                        throw new Error(`No feature "${before}" in ${partId}`);
+                    }
+                    const at = insertIndex(list.length, index, rollbackOf(draft, partId));
+                    list.splice(at, 0, ...added);
                     part.features = list;
+                    shiftRollback(draft, partId, at, added.length);
                     checkHistory(part);
                     result = `Added ${added.length} feature(s) to ${partId}: ${added.map((f) => f.id).join(', ')}.`;
                 });
@@ -816,7 +896,7 @@ export function createTools(store: ProjectStore): StudioTool[] {
                         if (!parsed.success) {
                             throw new Error(`feature ${f.id}: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
                         }
-                        return merged as Feature;
+                        return merged as unknown as Feature;
                     });
                     for (const u of updates) {
                         if (!part.features.some((f) => f.id === u.id)) {
@@ -865,6 +945,12 @@ export function createTools(store: ProjectStore): StudioTool[] {
                     const part = draft.parts.find((p) => p.id === partId);
                     if (part) {
                         const before = part.features?.length ?? 0;
+                        // Removed steps above the rollback bar take the bar up with them.
+                        const rollback = rollbackOf(draft, partId);
+                        if (rollback) {
+                            const above = (part.features ?? []).slice(0, rollback.count).filter((f) => ids.includes(f.id)).length;
+                            rollback.count -= above;
+                        }
                         part.features = (part.features ?? []).filter((f) => !ids.includes(f.id));
                         removed = before - part.features.length;
                         checkHistory(part);

@@ -198,9 +198,18 @@ export function stepRefs(feature: Feature): string[] {
         case 'pattern':
             ids.push(...feature.features);
             ids.push(...axisIds(feature.kind === 'circular' ? feature.axis : feature.direction));
+            if (feature.kind === 'linear') {
+                ids.push(...axisIds(feature.direction2));
+            }
             break;
         case 'split':
             ids.push(...planeIds(feature.plane));
+            break;
+        case 'mirror':
+            ids.push(...(feature.features ?? []));
+            if (typeof feature.plane === 'object') {
+                ids.push(...planeIds(feature.plane));
+            }
             break;
         case 'draft':
             ids.push(...planeIds(feature.neutral));
@@ -348,9 +357,14 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
             const second = feature.type !== 'midPlane' && feature.angle2 ? [`2nd ${mm(feature.angle2)}°`] : [];
             return [`Revolve ${angle} about ${axis}`, ...second, feature.mode, sourceText(feature, part)].join(' · ');
         }
-        case 'mirror':
-            return `Mirror across ${feature.plane}${feature.offset ? ` +${mm(feature.offset)}` : ''}`
+        case 'mirror': {
+            const old = { YZ: 'right', XY: 'front', XZ: 'top' } as Record<string, PlaneRef>;
+            const plane = typeof feature.plane === 'string' && old[feature.plane] ? old[feature.plane] : feature.plane as PlaneRef;
+            const what = feature.features?.length
+                ? ` · ${feature.features.length} feature${feature.features.length === 1 ? '' : 's'}` : '';
+            return `Mirror about ${planeRefText(plane, part)}${feature.offset ? ` +${mm(feature.offset)}` : ''}${what}`
                 + (feature.keepOriginal === false ? ' · replace' : '');
+        }
         case 'sketch': {
             const { sketch } = feature;
             const count = sketch.profiles.length;
@@ -414,9 +428,15 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
         }
         case 'pattern': {
             const steps = `${feature.features.length} step${feature.features.length === 1 ? '' : 's'}`;
-            return feature.kind === 'circular'
-                ? `Circular pattern · ${feature.count} ×${feature.angle != null && feature.angle !== 360 ? ` in ${mm(feature.angle)}°` : ''} · ${steps}`
-                : `Linear pattern · ${feature.count} × ${mm(feature.spacing)} mm · ${steps}`;
+            const skipped = feature.skip?.length ? ` · ${feature.skip.length} skipped` : '';
+            if (feature.kind === 'circular') {
+                const angle = feature.equal === false ? ` · ${mm(feature.angle ?? 0)}° apart`
+                    : feature.angle != null && feature.angle !== 360 ? ` in ${mm(feature.angle)}°` : '';
+                return `Circular pattern · ${feature.count} ×${angle} · ${steps}${skipped}`;
+            }
+            const second = feature.direction2 !== undefined && feature.count2 !== undefined && feature.spacing2 !== undefined
+                ? ` by ${feature.count2} × ${mm(feature.spacing2)} mm` : '';
+            return `Linear pattern · ${feature.count} × ${mm(feature.spacing)} mm${second} · ${steps}${skipped}`;
         }
         case 'combine': {
             const other = parts?.find((p) => p.id === feature.part)?.name ?? feature.part;

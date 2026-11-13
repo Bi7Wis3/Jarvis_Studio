@@ -23,7 +23,8 @@ import { choosePlane, pickSketch, useSketcher } from './sketcher';
 import { Catcher, Drawing, Label, v3 } from './SketchDrawing';
 import { geometryProfiles } from './sketchGeometry';
 import { sketchToEntities } from './sketchMath';
-import { setSketchHidden, useStudio } from './state';
+import { editItem, setSketchHidden, useStudio } from './state';
+import { ContextMenu } from './menus';
 import { pickedRegions, regionsOf, toggleRegion, useRegionPick } from './regionPick';
 
 export { regionsOf, useRegionPick } from './regionPick';
@@ -309,6 +310,7 @@ export function sketchView(part: Part | null): { centre: Vector3; normal: Vector
 function SketchStep({ partId, id, sketch, used, before }: { partId: string; id: string; sketch: Sketch; used: boolean; before: Feature[] }) {
     const picked = useSketcher((s) => s.picked?.id === id);
     const [hover, setHover] = useState(false);
+    const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
     const lines = useMemo(() => sketchToEntities(sketch).map((e) => entityPoints(e).map((p) => v3(p))), [sketch]);
     const matrix = useMemo(() => planeMatrix(sketch.plane, sketch.offset ?? 0, before), [sketch.plane, sketch.offset, before]);
     const color = picked || hover ? '#c48bff' : used ? '#5d6b80' : '#35e0ff';
@@ -342,13 +344,27 @@ function SketchStep({ partId, id, sketch, used, before }: { partId: string; id: 
                         }
                     }}
                     onContextMenu={(e) => {
-                        // Right-click hides the sketch (the history panel's eye shows it again).
+                        // Right-click opens a small menu, as everywhere in SolidWorks (hiding at once was too easy to do by accident).
                         e.stopPropagation();
                         e.nativeEvent.preventDefault();
-                        setSketchHidden(partId, id, true);
+                        setMenu({ x: e.nativeEvent.clientX, y: e.nativeEvent.clientY });
                     }}
                 />
             ))}
+            {menu && (
+                // The menu itself is drawn on the page (a portal); Html only hosts it from inside the 3D view.
+                <Html>
+                    <ContextMenu
+                        x={menu.x}
+                        y={menu.y}
+                        onClose={() => setMenu(null)}
+                        items={[
+                            { label: 'Edit sketch', onSelect: () => editItem(partId, id) },
+                            { label: 'Hide', onSelect: () => setSketchHidden(partId, id, true) },
+                        ]}
+                    />
+                </Html>
+            )}
         </group>
     );
 }

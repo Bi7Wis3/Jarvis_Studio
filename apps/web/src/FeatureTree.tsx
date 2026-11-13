@@ -8,7 +8,8 @@ import type { Feature, Part, SketchPlaneName } from '@jarvis/core';
 import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { Icon } from './icons';
 import { ContextMenu, InlineInput, showError, tool, type MenuEntry } from './menus';
-import { editItem, runTool, setRollback, setSketchHidden, setSuppressed, setWorkspace, useStudio } from './state';
+import { editItem, runTool, setRollback, setSketchHidden, setWorkspace, useStudio } from './state';
+import { deletionIds, dependants, suppressUpdates, unsuppressUpdates } from './historyOps';
 import {
     errorText, failingFeature, featureIcon, featureName, featureSummary, shapeIcon, shapeSummary, sketchEdits, REFERENCE_OPS, stepRefs,
     stepUsers,
@@ -19,7 +20,7 @@ import { choosePlane, startSketch, useSketcher } from './sketcher';
 import { loadSolver, solverReady } from './solver';
 import { definitionMark, updateRecent, type RecentSteps } from './sketchState';
 import {
-    blockIds, buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, nodeSketch, reorderIds, treeGuides, type TreeNode,
+    buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, nodeSketch, reorderIds, treeGuides, type TreeNode,
 } from './featureTree';
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
 
@@ -319,19 +320,18 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     };
     const focusList = () => list.current?.focus();
 
-    // A step that later steps build from cannot go; the server refuses it too.
+    // The confirm row lists the steps built on it, which go with it (SolidWorks: Delete child features).
     const askDelete = (node: TreeNode) => {
-        const feature = node.stepId ? byId.get(node.stepId) : undefined;
-        if (!feature) {
-            return;
+        if (node.stepId && byId.has(node.stepId)) {
+            setConfirming(node.key);
         }
-        const users = stepUsers(part, feature.id);
-        if (users.length) {
-            showError(`${featureName(feature)} is used by ${users.map(featureName).join(', ')}. `
-                + 'Delete those steps or point them at something else first.');
-            return;
+    };
+    /** Suppress cascades to the steps built on it; unsuppress brings back the steps it needs, and on request its children. */
+    const suppress = (feature: Feature, on: boolean, withDependants = false) => {
+        const updates = on ? suppressUpdates(features, feature.id) : unsuppressUpdates(features, feature.id, withDependants);
+        if (updates.length) {
+            void tool('features_update', { partId: part.id, updates });
         }
-        setConfirming(node.key);
     };
     const remove = (ids: string[]) => {
         setConfirming(null);
@@ -402,10 +402,14 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         return [
             ...(feature.op === 'sketch' ? [] : [{ label: 'Edit feature', onSelect: () => editItem(part.id, feature.id) }]),
             ...edits.map((e) => ({ label: e.label, onSelect: () => editItem(part.id, e.id) })),
-            {
-                label: feature.suppressed ? 'Unsuppress' : 'Suppress',
-                onSelect: () => setSuppressed(part.id, feature.id, !feature.suppressed),
-            },
+            ...(feature.suppressed ? [
+                { label: 'Unsuppress', onSelect: () => suppress(feature, false) },
+                {
+                    label: 'Unsuppress with dependents',
+                    onSelect: () => suppress(feature, false, true),
+                    disabled: !dependants(features, feature.id).some((f) => f.suppressed),
+                },
+            ] : [{ label: 'Suppress', onSelect: () => suppress(feature, true) }]),
             'separator',
             ...rollEntries(node.index),
             'separator',
@@ -620,7 +624,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         }
         const mark = markOf(node, feature);
         if (mark) {
-            lines.push(mark === '(-) ' ? 'Under defined: some geometry can still move' : 'Over defined: constraints conflict');
+            lines.push(mark === '(-) ' ? 'Under defined: some geometry can still move'
+                : mark === '(?) ' ? 'Cannot be solved: the constraints cannot all be met' : 'Over defined: constraints conflict');
         }
         if (isRolled(node, shownCount)) {
             lines.push('Below the rollback bar: not built');
@@ -836,18 +841,37 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                 const isSketch = !feature || feature.op === 'sketch';
                 const shared = feature?.op === 'sketch' && node.users > 1;
                 if (confirming === node.key && feature) {
-                    const withSketch = blockIds(node).length > 1;
+                    const children = dependants(features, feature.id);
+                    const plain = deletionIds(features, feature.id, false);
+                    const withAbsorbed = deletionIds(features, feature.id, true);
+                    const names = children.map(featureName);
                     return (
-                        <li key={node.key} className="br-row confirm ft-confirm" style={{ '--depth': entry.depth } as CSSProperties}>
+                        <li
+                            key={node.key}
+                            className="br-row confirm ft-confirm"
+                            style={{ '--depth': entry.depth } as CSSProperties}
+                            title={children.length ? `Built on it, deleted with it: ${names.join(', ')}` : undefined}
+                        >
                             {lines(i, entry.depth)}
-                            <span className="br-confirm-text">Delete {featureName(feature)}?</span>
-                            <button type="button" className="danger" autoFocus onClick={() => remove([feature.id])}>Delete</button>
-                            {withSketch && (
+                            <span className="br-confirm-text">
+                                Delete {featureName(feature)}
+                                {children.length ? ` and ${children.length === 1 ? names[0] : `${children.length} steps built on it (${names.join(', ')})`}` : ''}?
+                            </span>
+                            <button
+                                type="button"
+                                className="danger"
+                                autoFocus
+                                onClick={() => remove(plain)}
+                                title={children.length ? 'Also deletes the steps built on it' : undefined}
+                            >
+                                Delete
+                            </button>
+                            {withAbsorbed.length > plain.length && (
                                 <button
                                     type="button"
                                     className="danger"
-                                    onClick={() => remove(blockIds(node))}
-                                    title="Also delete the sketches nested under it"
+                                    onClick={() => remove(withAbsorbed)}
+                                    title="Also delete the sketches only these steps use"
                                 >
                                     With sketch
                                 </button>

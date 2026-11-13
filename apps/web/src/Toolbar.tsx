@@ -222,7 +222,7 @@ export function Toolbar() {
     const sketchActive = useSketcher((s) => s.active);
     const sketchStage = useSketcher((s) => s.stage);
     const sketchTool = useSketcher((s) => s.tool);
-    const showOthers = useSketcher((s) => s.showOthers);
+    const showOthers = useStudio((s) => s.partView === 'inContext');
     const groups = sketchActive ? SKETCH_GROUPS : workspace === 'part' ? PART_GROUPS : ASSEMBLY_GROUPS;
     const [band, setBand] = useState(() => measureRoom());
     const layout = computeLayout(groups, band.room);
