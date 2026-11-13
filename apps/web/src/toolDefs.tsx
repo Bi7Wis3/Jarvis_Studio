@@ -17,6 +17,7 @@ import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchTool
 import { evaluateTools } from './evaluateToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { stepAtBar } from './historyOps';
+import { designCopy } from './partCopy';
 import { Icon } from './icons';
 import {
     choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, redoSketch, setTool,
@@ -1540,8 +1541,7 @@ const patternTool: ToolDef = {
 };
 
 function copyOf(part: Part, patch: Partial<Part>): Record<string, unknown> {
-    const { id: _id, ...rest } = part;
-    return { ...rest, ...patch };
+    return designCopy(part, patch, useStudio.getState().history?.parts ?? []);
 }
 
 const transformTools: ToolDef[] = [
@@ -1656,11 +1656,16 @@ const transformTools: ToolDef[] = [
                 ? { position: [-x, y, z] as Vec3, rotation: [rx, -ry, -rz] as Vec3 }
                 : { position: [x, y, -z] as Vec3, rotation: [-rx, -ry, rz] as Vec3 };
             const flip = { id: 'mirror-image', op: 'mirror', name: `Mirror image (${v.plane})`, plane: v.plane, keepOriginal: false };
-            const features = [...(full.features ?? []), flip];
             if (v.copy) {
-                return addPart(copyOf(full, { ...patch, name: `${full.name} mirrored`, features: features as Feature[] }));
+                const design = copyOf(full, {});
+                const features = [...((design.features as Feature[] | undefined) ?? []), flip];
+                return addPart({ ...design, ...patch, name: `${full.name} mirrored`, features });
             }
-            return runTool('parts_update', { updates: [{ id: full.id, ...patch, features }] });
+            if (full.instanceOf) {
+                // An instance shares its source's design, so its own shape cannot be flipped on its own.
+                throw new Error(`${full.name} is an instance of another part: turn on Keep original to make a mirrored copy.`);
+            }
+            return runTool('parts_update', { updates: [{ id: full.id, ...patch, features: [...(full.features ?? []), flip] }] });
         }),
     },
     {
