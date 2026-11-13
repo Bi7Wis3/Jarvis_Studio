@@ -6,6 +6,7 @@ import { useRegionPick } from './regionPick';
 import { captureToolCalls, clearPreview, setPreview } from './state';
 import type { Ctx, Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
 import { clearToolSession, publishToolSession } from './toolSession';
+import { PickList, PositionTarget, usePickBoxes } from './PickList';
 
 const PREVIEW_DELAY_MS = 250;
 
@@ -131,6 +132,7 @@ export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
         setValues({ ...next, ...(tool.onChange?.(key, next, ctx) ?? {}) });
     };
     useToolSessionPublish(tool, ctx, values, setValues);
+    usePickBoxes(tool, ctx, fields, values, setValues);
     const run = (call: () => Promise<Result>, close = true) => {
         preview.hold();
         setBusy(true);
@@ -170,6 +172,8 @@ export function FieldInput(props: { field: Field; values: Values; change: (key: 
     const value = values[field.key];
     const unit = field.unit && <em>{field.unit}</em>;
     switch (field.kind) {
+        case 'pick':
+            return <PickList field={field} values={values} change={change} />;
         case 'check':
             return (
                 <label className="tb-check">
@@ -246,7 +250,7 @@ export function FieldInput(props: { field: Field; values: Values; change: (key: 
             );
         case 'vec': {
             const axes = field.axes ?? ['X', 'Y', 'Z'];
-            return (
+            const inputs = (
                 <div className="tb-field">
                     <span>{field.label}{field.unit && <i>{field.unit}</i>}</span>
                     <span className="tb-vec">
@@ -265,6 +269,7 @@ export function FieldInput(props: { field: Field; values: Values; change: (key: 
                     </span>
                 </div>
             );
+            return field.pickable ? <PositionTarget field={field}>{inputs}</PositionTarget> : inputs;
         }
         default: {
             const number = field.kind !== 'text';

@@ -336,6 +336,16 @@ describe('feature history', () => {
         expect(store.get().parts[0].features).toEqual([]);
     });
 
+    it('removes optional fields set to null in an update', () => {
+        addBody();
+        run('features_add', { partId: 'body', features: [{ op: 'chamfer', size: 1, angle: 30, at: [[0, 20, 20]] }] });
+        expect(run('features_update', { partId: 'body', updates: [{ id: 'chamfer', angle: null, at: [], distance2: 2 }] }))
+            .toBe('Updated.');
+        const chamfer = store.get().parts[0].features?.[1];
+        expect(chamfer).toMatchObject({ op: 'chamfer', size: 1, at: [], distance2: 2 });
+        expect(chamfer).not.toHaveProperty('angle');
+    });
+
     it('rejects an update that breaks the feature', () => {
         addBody();
         expect(() => run('features_update', { partId: 'body', updates: [{ id: 'hollow', thickness: -1 }] })).toThrow();

@@ -521,5 +521,28 @@ describe('picked edges and faces', () => {
         const wedge = (10 * 10 * Math.tan((5 * Math.PI) / 180) / 2) * 20;
         expect(Math.abs(Math.abs(volume(drafted) - 8000) - 2 * wedge)).toBeLessThan(2);
     }, SLOW);
+
+    it('drafts in a fixed direction: away from a picked neutral face the faces lean out, Reverse leans them in', async () => {
+        const ends = [{ at: [20, 5, 0] as Vec3, normal: [1, 0, 0] as Vec3 }, { at: [-20, 5, 0] as Vec3, normal: [-1, 0, 0] as Vec3 }];
+        const bottom = { at: [0, 0, 0] as Vec3, normal: [0, -1, 0] as Vec3 };
+        const wedge = (10 * 10 * Math.tan((5 * Math.PI) / 180) / 2) * 20;
+        // Pull direction = the neutral face's outward normal (down here): the part narrows towards it, so the bottom
+        // keeps its size and the top grows by 10·tan(5°) on each end.
+        const out = await mesh(empty, [block, { id: 'd', op: 'draft', angle: 5, neutralFace: bottom, picked: ends }]);
+        expect(volume(out)).toBeCloseTo(8000 + 2 * wedge, 0);
+        expect(bounds(out).max[0]).toBeCloseTo(20 + 10 * Math.tan((5 * Math.PI) / 180), 2);
+        const reversed = await mesh(empty, [block, { id: 'd', op: 'draft', angle: 5, neutralFace: bottom, picked: ends, flip: true }]);
+        expect(volume(reversed)).toBeCloseTo(8000 - 2 * wedge, 0);
+        expect(bounds(reversed).max[0]).toBeCloseTo(20, 2);
+    }, SLOW);
+
+    it('puts a chamfer\'s first distance on the face given by side, and on the other face when it is reversed', async () => {
+        // The top edge along x at z = 10, between the top face (+y) and the front face (+z).
+        const chamfer = (side: Vec3) => mesh(empty, [block, { id: 'c', op: 'chamfer', size: 1, distance2: 3, at: [[0, 10, 10]], side }]);
+        const topZ = (m: MeshData) => Math.max(...Array.from({ length: m.positions.length / 3 }, (_, i) => i)
+            .filter((i) => Math.abs(m.positions[i * 3 + 1] - 10) < 1e-3).map((i) => m.positions[i * 3 + 2]));
+        expect(topZ(await chamfer([0, 1, 0]))).toBeCloseTo(9, 2);
+        expect(topZ(await chamfer([0, -1, 0]))).toBeCloseTo(7, 2);
+    }, SLOW);
 });
 

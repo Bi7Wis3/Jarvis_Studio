@@ -55,6 +55,19 @@ const EDGES: Record<EdgeSelect, string> = {
     horizontal: 'horizontal edges',
 };
 
+const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** What a fillet or chamfer rounds: its picks ("3 edges, 1 face", "tangent"), else its edge group. */
+function itemsText(f: { edges?: EdgeSelect; at?: unknown[]; faces?: unknown[]; tangent?: boolean }): string {
+    const edges = f.at?.length ?? 0;
+    const faces = f.faces?.length ?? 0;
+    if (!edges && !faces) {
+        return EDGES[f.edges ?? 'all'];
+    }
+    const picks = [edges ? plural(edges, 'edge') : '', faces ? plural(faces, 'face') : ''].filter(Boolean).join(', ');
+    return f.tangent ? `${picks}, tangent` : picks;
+}
+
 /** Icon name (see icons.tsx) for a base body. */
 export function shapeIcon(shape: Shape): string {
     switch (shape.kind) {
@@ -263,11 +276,14 @@ export function shapeSummary(shape: Shape): string {
 export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): string {
     switch (feature.op) {
         case 'fillet':
-            return `r ${mm(feature.radius)} · ${EDGES[feature.edges ?? 'all']}`;
+            return `r ${mm(feature.radius)}${feature.radius2 !== undefined ? ` to ${mm(feature.radius2)}` : ''} · ${itemsText(feature)}`;
         case 'chamfer':
-            return `${mm(feature.size)} mm · ${EDGES[feature.edges ?? 'all']}`;
-        case 'shell':
-            return `Wall ${mm(feature.thickness)} mm · ${feature.open?.length ? `open ${feature.open.join(', ')}` : 'closed'}`;
+            return `${feature.angle !== undefined ? `${mm(feature.size)} mm × ${mm(feature.angle)}°`
+                : feature.distance2 !== undefined ? `${mm(feature.size)} × ${mm(feature.distance2)} mm` : `${mm(feature.size)} mm`} · ${itemsText(feature)}`;
+        case 'shell': {
+            const removed = [...(feature.open ?? []), ...(feature.remove?.length ? [plural(feature.remove.length, 'picked face')] : [])];
+            return `Wall ${mm(feature.thickness)} mm${feature.outward ? ' outward' : ''} · ${removed.length ? `open ${removed.join(', ')}` : 'closed'}`;
+        }
         case 'add':
         case 'cut':
             return `${shapeSummary(feature.shape)}${repeatText(feature.repeat)}`;
@@ -354,7 +370,7 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
             return `By ${planeRefText(feature.plane, part)} · keep ${feature.keep}`;
         case 'draft':
             return [
-                `${mm(feature.angle)}°`,
+                `${mm(feature.angle)}°${feature.flip ? ' reversed' : ''}`,
                 [...(feature.faces ?? []), ...(feature.picked?.length ? [`${feature.picked.length} picked face${feature.picked.length === 1 ? '' : 's'}`] : [])].join(', '),
                 `from ${feature.neutralFace ? 'a picked face' : feature.neutral ? planeRefText(feature.neutral, part) : 'no plane'}`,
             ].join(' · ');

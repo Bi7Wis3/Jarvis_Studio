@@ -79,6 +79,13 @@ const PATHS: Record<string, ReactNode> = {
             <path d="M4 20h16" opacity="0.5" />
         </>
     ),
+    draft: (
+        <>
+            <path d="M7 19l2.5-14h5L17 19" />
+            <path d="M3 19h18" opacity="0.5" />
+            <path d="M12 3v16" opacity="0.5" strokeDasharray="2 2" />
+        </>
+    ),
     shell: (
         <>
             <path d="M3 6v13h18V6" />
