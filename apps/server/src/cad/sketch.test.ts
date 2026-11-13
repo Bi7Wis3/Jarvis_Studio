@@ -618,3 +618,19 @@ describe('picked edges and faces', () => {
     }, SLOW);
 });
 
+
+describe('fillet order', () => {
+    const empty: Shape = { kind: 'empty' };
+    const block: Feature = { id: 'b', op: 'extrude', mode: 'add', distance: 14, sketch: { plane: 'top', profiles: [rect([0, 0], 60, 60)] } };
+    // Top edges (y = 14) and the four upright corner edges.
+    const top: Feature = { id: 'top', name: 'Fillet1', op: 'fillet', radius: 3, at: [[0, 14, 30]], tangent: true };
+    const corners = (radius: number): Feature => ({
+        id: 'corners', name: 'Fillet2', op: 'fillet', radius, at: [[30, 5, 30], [-30, 5, 30], [30, 5, -30], [-30, 5, -30]],
+    });
+
+    it('rounds corners generously when they come first, and says so when they come after the edges around them', async () => {
+        const first = await mesh(empty, [block, corners(15), top]);
+        expect(volume(first)).toBeLessThan(14 * 60 * 60 - 4 * (15 * 15 - (Math.PI * 15 * 15) / 4) * 11);
+        await expect(mesh(empty, [block, top, corners(15)])).rejects.toThrow(/drag it above that step/);
+    }, SLOW);
+});

@@ -1528,6 +1528,19 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
             return draft(needBody(shape), f, state);
         case 'fillet':
         case 'chamfer':
+            try {
+                return applyToBody(needBody(shape), f, state.print);
+            } catch (e) {
+                // Rounding an edge that ends on an earlier fillet or chamfer only works up to about that one's size:
+                // the usual cure is to do this step first.
+                const earlier = before(state).filter((s) => !s.suppressed && (s.op === 'fillet' || s.op === 'chamfer'));
+                if (earlier.length && e instanceof Error && /failed on|not done|could not/i.test(e.message)) {
+                    const names = earlier.map((s) => s.name ?? s.id).join(', ');
+                    throw new Error(`${e.message}. If these edges end on ${names}, this step is limited to about that size: `
+                        + 'drag it above that step in the feature tree (corners first, then the edges that run around them)');
+                }
+                throw e;
+            }
         case 'shell':
         case 'thread':
             return applyToBody(needBody(shape), f, state.print);
