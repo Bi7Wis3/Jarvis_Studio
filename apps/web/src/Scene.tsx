@@ -18,6 +18,7 @@ import { chooseFace, useSketcher } from './sketcher';
 import { planePickerSize, SketchLayer, SketchSteps, sketchView } from './SketchLayer';
 import { PartDecals } from './Decals';
 import { Manipulators } from './Manipulators';
+import { usePartPicks } from './pickView';
 
 /** Animated values shared between the scene and the label overlay. */
 export const anim = { explode: 0, settleAt: 0 };
@@ -27,6 +28,8 @@ const DEFAULT_AZIMUTH = 28;
 const DEFAULT_ELEVATION = 16;
 const SELECT_COLOR = '#c48bff';
 const CLICK_SLOP_PX = 4;
+/** The entity of a selection box row under the pointer (SolidWorks highlights it in the view). */
+const ROW_HOVER_COLOR = '#ff6fcf';
 /** Colour of the ghost that shows what an open tool form would make. */
 const GHOST_COLOR = '#ffd34d';
 const NO_OFFSET: Vec3 = [0, 0, 0];
@@ -222,9 +225,14 @@ type Entity = Pick<PickedEntity, 'kind' | 'index'>;
  * The face or edge of a kernel mesh under a pointer event: the edge nearest the hit point if it is within
  * EDGE_PICK_PX on screen, else the face of the hit triangle.
  */
-function entityAt(event: ThreeEvent<PointerEvent | MouseEvent>, kernel: KernelMesh, viewportHeight: number): Entity | null {
+function entityAt(event: ThreeEvent<PointerEvent | MouseEvent>, kernel: KernelMesh, viewportHeight: number,
+    allow: readonly string[] = ['edge', 'face']): Entity | null {
     if (event.faceIndex === undefined || event.faceIndex === null) {
         return null;
+    }
+    if (!allow.includes('edge')) {
+        const face = allow.includes('face') ? kernel.triFace[event.faceIndex] : undefined;
+        return face === undefined ? null : { kind: 'face', index: face };
     }
     const camera = event.camera as typeof event.camera & { isPerspectiveCamera?: boolean; isOrthographicCamera?: boolean;
         fov: number; zoom: number; top: number; bottom: number };
@@ -239,7 +247,7 @@ function entityAt(event: ThreeEvent<PointerEvent | MouseEvent>, kernel: KernelMe
     if (edge !== null) {
         return { kind: 'edge', index: edge };
     }
-    const face = kernel.triFace[event.faceIndex];
+    const face = allow.includes('face') ? kernel.triFace[event.faceIndex] : undefined;
     return face === undefined ? null : { kind: 'face', index: face };
 }
 
@@ -276,13 +284,15 @@ function edgesPoints(kernel: KernelMesh, edges: number[]): P3[] | null {
 }
 
 /** Highlight of picked or hovered faces and edges, drawn over the part in its own frame. */
-function PickOverlay({ faces, edges, strong }: { faces: BufferGeometry | null; edges: P3[] | null; strong: boolean }) {
+function PickOverlay({ faces, edges, strong, color = SELECT_COLOR }: {
+    faces: BufferGeometry | null; edges: P3[] | null; strong: boolean; color?: string;
+}) {
     return (
         <>
             {faces && (
                 <mesh geometry={faces} raycast={noRaycast} renderOrder={3}>
                     <meshBasicMaterial
-                        color={SELECT_COLOR}
+                        color={color}
                         transparent
                         opacity={strong ? 0.45 : 0.22}
                         depthWrite={false}
@@ -298,7 +308,7 @@ function PickOverlay({ faces, edges, strong }: { faces: BufferGeometry | null; e
                 <Line
                     points={edges}
                     segments
-                    color={SELECT_COLOR}
+                    color={color}
                     lineWidth={strong ? 4 : 3}
                     transparent={!strong}
                     opacity={strong ? 1 : 0.75}
@@ -391,6 +401,8 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
         && !dimmed && !!kernel;
     const viewportHeight = useThree((s) => s.size.height);
     const allPicked = useStudio((s) => s.picked);
+    // An open form with selection boxes takes the clicks on this part instead of the plain pick list.
+    const boxes = usePartPicks(part.id, kernel);
     const [hoverPick, setHoverPick] = useState<Entity | null>(null);
     const hoverRef = useRef<Entity | null>(null);
     const setHover = (entity: Entity | null) => {
@@ -426,6 +438,9 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
             : { faces: null, edges: edgesPoints(kernel, [hoverPick.index]) };
     }, [kernel, hoverPick]);
     const pickedOverlay = useMemo(() => {
+        if (kernel && boxes?.lists) {
+            return { faces: facesGeometry(kernel, boxes.faces), edges: edgesPoints(kernel, boxes.edges) };
+        }
         const mine = allPicked.filter((p) => p.partId === part.id);
         if (!kernel || mine.length === 0) {
             return { faces: null, edges: null };
@@ -434,7 +449,17 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
             faces: facesGeometry(kernel, mine.filter((p) => p.kind === 'face').map((p) => p.index)),
             edges: edgesPoints(kernel, mine.filter((p) => p.kind === 'edge').map((p) => p.index)),
         };
-    }, [kernel, allPicked, part.id]);
+    }, [kernel, allPicked, part.id, boxes?.lists, boxes?.faces, boxes?.edges]);
+    const rowOverlay = useMemo(() => {
+        const row = boxes?.hover;
+        if (!kernel || !row) {
+            return { faces: null, edges: null };
+        }
+        return row.kind === 'face'
+            ? { faces: facesGeometry(kernel, [row.index]), edges: null }
+            : { faces: null, edges: edgesPoints(kernel, [row.index]) };
+    }, [kernel, boxes?.hover?.kind, boxes?.hover?.index]);
+    useEffect(() => () => rowOverlay.faces?.dispose(), [rowOverlay]);
     useEffect(() => () => hoverOverlay.faces?.dispose(), [hoverOverlay]);
     useEffect(() => () => pickedOverlay.faces?.dispose(), [pickedOverlay]);
     // Outline for the selection highlight while the kernel mesh (with its real edges) is still building.
@@ -478,7 +503,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
         onPointerMove: (e: ThreeEvent<PointerEvent>) => {
             setHovered(onPartPointer('move', part, e));
             if (pickable && kernel) {
-                setHover(entityAt(e, kernel, viewportHeight));
+                setHover(entityAt(e, kernel, viewportHeight, boxes?.allow.length ? boxes.allow : undefined));
             }
         },
         onPointerOut: (e: ThreeEvent<PointerEvent>) => {
@@ -489,8 +514,12 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
         onClick: (e: ThreeEvent<MouseEvent>) => {
             onPartPointer('click', part, e);
             if (pickable && kernel && e.delta <= CLICK_SLOP_PX) {
-                const entity = entityAt(e, kernel, viewportHeight);
-                if (entity) {
+                const entity = entityAt(e, kernel, viewportHeight, boxes?.allow.length ? boxes.allow : undefined);
+                if (entity && boxes?.allow.length) {
+                    const n = e.face?.normal;
+                    const local = e.object.worldToLocal(e.point.clone());
+                    boxes.click(entity, [local.x, local.y, local.z], n ? [n.x, n.y, n.z] : undefined);
+                } else if (entity) {
                     pickEntity({ partId: part.id, ...entity }, e.shiftKey);
                 }
             }
@@ -541,6 +570,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                         <group position={part.position} rotation={rotation}>
                             <PickOverlay faces={pickedOverlay.faces} edges={pickedOverlay.edges} strong />
                             <PickOverlay faces={hoverOverlay.faces} edges={hoverOverlay.edges} strong={false} />
+                            <PickOverlay faces={rowOverlay.faces} edges={rowOverlay.edges} strong color={ROW_HOVER_COLOR} />
                         </group>
                     )}
                     {edges && selected && (

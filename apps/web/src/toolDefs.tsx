@@ -24,14 +24,16 @@ import {
 } from './sketcher';
 import { evaluate, type ConstraintTool } from './sketchGeometry';
 import { angledPlane, planeLabel } from './sketchMath';
+import { itemsOf, pickItems, type PickEntity, type PickItem } from './pickField';
+import { chamferFeature, draftFeature, filletFeature, shellFeature } from './pickFeatures';
 
-export type Values = Record<string, string | boolean | string[]>;
+export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
 
 export interface Field {
     key: string;
     label: string;
-    kind: 'number' | 'text' | 'select' | 'check' | 'multi' | 'color' | 'vec' | 'range';
+    kind: 'number' | 'text' | 'select' | 'check' | 'multi' | 'color' | 'vec' | 'range' | 'pick';
     unit?: string;
     step?: number;
     min?: number;
@@ -42,6 +44,13 @@ export interface Field {
     show?: (v: Values) => boolean;
     /** Property manager: consecutive fields with the same section share a titled, collapsible block. */
     section?: string;
+    /** pick fields (selection boxes): what a click in the view adds, and whether the box takes more than one. */
+    entities?: PickEntity[];
+    multi?: boolean;
+    /** pick fields: only flat faces. */
+    flat?: boolean;
+    /** vec fields: once focused, a click on the part sets the value (pickField.ts). */
+    pickable?: boolean;
 }
 
 export interface Ctx {
@@ -1154,6 +1163,7 @@ const sketchModeTools: ToolDef[] = [
 
 const EDGES = opts(['all', 'All edges'], ['top', 'Top edges'], ['bottom', 'Bottom edges'], ['vertical', 'Vertical edges'],
     ['horizontal', 'Horizontal edges']);
+const CHAMFER_TYPES = opts(['angle', 'Angle distance'], ['distance', 'Distance distance'], ['equal', 'Equal distance']);
 const FACES = opts(['top', 'Top'], ['bottom', 'Bottom'], ['front', 'Front'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right']);
 const FACE_NORMALS: Record<string, Vec3> = {
     top: [0, 1, 0], bottom: [0, -1, 0], front: [0, 0, 1], back: [0, 0, -1], right: [1, 0, 0], left: [-1, 0, 0],
@@ -1225,17 +1235,25 @@ const featureTools: Record<string, ToolDef> = {
         op: 'fillet',
         needsPart: true,
         fields: () => [
-            { key: 'r', label: 'Radius', kind: 'number', unit: 'mm', min: 0, step: 0.5 },
-            { key: 'edges', label: 'Edges', kind: 'select', options: EDGES },
+            { key: 'items', label: 'Items to fillet', kind: 'pick', entities: ['edge', 'face'], multi: true, section: 'Items to fillet' },
+            { key: 'tangent', label: 'Tangent propagation', kind: 'check', section: 'Items to fillet' },
+            { key: 'edges', label: 'Edge group (when none picked)', kind: 'select', options: EDGES, section: 'Items to fillet',
+                show: (v) => pickItems(v.items).length === 0 },
+            { key: 'r', label: 'Radius', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Fillet parameters' },
         ],
         defaults: (ctx) => {
             const f = edited(ctx, 'fillet');
-            return f ? { r: fmt(f.radius), edges: f.edges ?? 'all' } : { r: '2', edges: 'vertical' };
+            return f
+                ? { r: fmt(f.radius), edges: f.edges ?? 'all', items: itemsOf(f.at, f.faces), tangent: !!f.tangent }
+                : { r: '2', edges: 'vertical', items: [], tangent: true };
         },
-        apply: (v, ctx) => attempt(() => {
-            const r = num(v, 'r', 'Radius', { positive: true });
-            return saveFeature(ctx, { op: 'fillet', name: `Fillet ${fmt(r)} mm ${v.edges} edges`, radius: r, edges: v.edges });
-        }),
+        // A variable radius (radius2, set by Jarvis) is kept: which end of each edge gets which radius is not stored.
+        top: (_, ctx) => {
+            const f = edited(ctx, 'fillet');
+            return f?.radius2 !== undefined
+                ? <p className="tb-note">The variable radius to {fmt(f.radius2)} mm is kept. Ask Jarvis to change it.</p> : null;
+        },
+        apply: (v, ctx) => attempt(() => saveFeature(ctx, filletFeature(v))),
     },
     chamfer: {
         id: 'chamfer',
@@ -1245,17 +1263,39 @@ const featureTools: Record<string, ToolDef> = {
         op: 'chamfer',
         needsPart: true,
         fields: () => [
-            { key: 's', label: 'Size', kind: 'number', unit: 'mm', min: 0, step: 0.5 },
-            { key: 'edges', label: 'Edges', kind: 'select', options: EDGES },
+            { key: 'type', label: 'Chamfer type', kind: 'select', options: CHAMFER_TYPES, section: 'Chamfer type' },
+            { key: 'items', label: 'Items to chamfer', kind: 'pick', entities: ['edge', 'face'], multi: true, section: 'Items to chamfer' },
+            { key: 'tangent', label: 'Tangent propagation', kind: 'check', section: 'Items to chamfer' },
+            { key: 'edges', label: 'Edge group (when none picked)', kind: 'select', options: EDGES, section: 'Items to chamfer',
+                show: (v) => pickItems(v.items).length === 0 },
+            { key: 's', label: 'Distance', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Chamfer parameters',
+                show: (v) => v.type !== 'distance' },
+            { key: 's', label: 'Distance 1', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Chamfer parameters',
+                show: (v) => v.type === 'distance' },
+            { key: 'd2', label: 'Distance 2', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Chamfer parameters',
+                show: (v) => v.type === 'distance' },
+            { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', min: 0, max: 90, step: 1, section: 'Chamfer parameters',
+                show: (v) => v.type === 'angle' },
+            { key: 'flip', label: 'Flip direction', kind: 'check', section: 'Chamfer parameters', show: (v) => v.type !== 'equal' },
         ],
         defaults: (ctx) => {
             const f = edited(ctx, 'chamfer');
-            return f ? { s: fmt(f.size), edges: f.edges ?? 'all' } : { s: '1', edges: 'top' };
+            if (!f) {
+                return { type: 'equal', s: '1', d2: '2', angle: '45', flip: false, edges: 'top', items: [], tangent: true, side: '' };
+            }
+            return {
+                type: f.angle !== undefined ? 'angle' : f.distance2 !== undefined ? 'distance' : 'equal',
+                s: fmt(f.size),
+                d2: fmt(f.distance2 ?? f.size),
+                angle: fmt(f.angle ?? 45),
+                flip: false,
+                edges: f.edges ?? 'all',
+                items: itemsOf(f.at, f.faces),
+                tangent: !!f.tangent,
+                side: f.side ? JSON.stringify(f.side) : '',
+            };
         },
-        apply: (v, ctx) => attempt(() => {
-            const s = num(v, 's', 'Size', { positive: true });
-            return saveFeature(ctx, { op: 'chamfer', name: `Chamfer ${fmt(s)} mm ${v.edges} edges`, size: s, edges: v.edges });
-        }),
+        apply: (v, ctx) => attempt(() => saveFeature(ctx, chamferFeature(v, !!ctx.edit))),
     },
     shell: {
         id: 'shell',
@@ -1265,23 +1305,54 @@ const featureTools: Record<string, ToolDef> = {
         op: 'shell',
         needsPart: true,
         fields: () => [
-            { key: 't', label: 'Wall', kind: 'number', unit: 'mm', min: 0, step: 0.4 },
-            { key: 'open', label: 'Open faces', kind: 'multi', options: FACES },
+            { key: 't', label: 'Thickness', kind: 'number', unit: 'mm', min: 0, step: 0.4, section: 'Parameters' },
+            { key: 'remove', label: 'Faces to remove', kind: 'pick', entities: ['face'], multi: true, section: 'Parameters' },
+            { key: 'outward', label: 'Shell outward', kind: 'check', section: 'Parameters' },
+            { key: 'open', label: 'Open sides (when no face picked)', kind: 'multi', options: FACES, section: 'Parameters',
+                show: (v) => pickItems(v.remove).length === 0 },
         ],
         defaults: (ctx) => {
             const f = edited(ctx, 'shell');
-            return f ? { t: fmt(f.thickness), open: [...(f.open ?? [])] } : { t: '2', open: ['top'] };
+            return f
+                ? { t: fmt(f.thickness), open: [...(f.open ?? [])], remove: itemsOf(undefined, f.remove), outward: !!f.outward }
+                : { t: '2', open: ['top'], remove: [], outward: false };
         },
-        apply: (v, ctx) => attempt(() => {
-            const t = num(v, 't', 'Wall', { positive: true });
-            const open = v.open as string[];
-            return saveFeature(ctx, {
-                op: 'shell',
-                name: `Shell ${fmt(t)} mm${open.length ? `, open ${open.join(' + ')}` : ', closed'}`,
-                thickness: t,
-                open,
-            });
-        }),
+        apply: (v, ctx) => attempt(() => saveFeature(ctx, shellFeature(v))),
+    },
+    draft: {
+        id: 'draft',
+        preview: true,
+        label: 'Draft',
+        icon: 'draft',
+        hint: 'tilt faces about a neutral plane',
+        op: 'draft',
+        needsPart: true,
+        fields: () => [
+            { key: 'angle', label: 'Draft angle', kind: 'number', unit: 'deg', min: 0, max: 45, step: 1, section: 'Draft angle' },
+            { key: 'neutral', label: 'Neutral plane', kind: 'pick', entities: ['face'], multi: false, flat: true, section: 'Neutral plane' },
+            { key: 'flip', label: 'Reverse direction', kind: 'check', section: 'Neutral plane' },
+            { key: 'faces', label: 'Faces to draft', kind: 'pick', entities: ['face'], multi: true, section: 'Faces to draft' },
+            { key: 'propagation', label: 'Face propagation', kind: 'select', options: opts(['none', 'None'], ['tangent', 'Along tangent']),
+                section: 'Faces to draft' },
+        ],
+        defaults: (ctx) => {
+            const f = edited(ctx, 'draft');
+            return f
+                ? {
+                    angle: fmt(f.angle), neutral: itemsOf(undefined, f.neutralFace ? [f.neutralFace] : []), flip: !!f.flip,
+                    faces: itemsOf(undefined, f.picked), propagation: f.tangent ? 'tangent' : 'none',
+                }
+                : { angle: '3', neutral: [], flip: false, faces: [], propagation: 'none' };
+        },
+        top: (_, ctx) => {
+            const f = edited(ctx, 'draft');
+            const kept = [
+                ...(f?.neutral && !f.neutralFace ? ['the neutral plane'] : []),
+                ...(f?.faces?.length ? [`the ${f.faces.join(', ')} faces`] : []),
+            ];
+            return kept.length ? <p className="tb-note">Jarvis set {kept.join(' and ')}; picks made here are used with them.</p> : null;
+        },
+        apply: (v, ctx) => attempt(() => saveFeature(ctx, draftFeature(v, edited(ctx, 'draft')))),
     },
     hole: {
         id: 'hole',
@@ -1298,7 +1369,7 @@ const featureTools: Record<string, ToolDef> = {
             { key: 'fit', label: 'Fit', kind: 'select', options: opts(['normal', 'Normal'], ['close', 'Close']),
                 show: (v) => ['clearance', 'counterbore', 'countersink', 'nutTrap'].includes(v.kind as string) },
             { key: 'face', label: 'Drill from', kind: 'select', options: FACES },
-            { key: 'pos', label: 'Entry point', kind: 'vec', unit: 'mm' },
+            { key: 'pos', label: 'Entry point', kind: 'vec', unit: 'mm', pickable: true },
             { key: 'through', label: 'Through all', kind: 'check' },
             { key: 'depth', label: 'Depth', kind: 'number', unit: 'mm', min: 0, show: (v) => !v.through },
             ...repeatFields('rep'),
@@ -1370,7 +1441,7 @@ const featureTools: Record<string, ToolDef> = {
             { key: 'dia', label: 'Diameter', kind: 'number', unit: 'mm', min: 0, show: (v) => v.shape === 'cylinder' },
             { key: 'depth', label: 'Depth', kind: 'number', unit: 'mm', min: 0 },
             { key: 'r', label: 'Corner round', kind: 'number', unit: 'mm', min: 0, show: (v) => v.shape === 'box' },
-            { key: 'pos', label: 'Top centre', kind: 'vec', unit: 'mm' },
+            { key: 'pos', label: 'Top centre', kind: 'vec', unit: 'mm', pickable: true },
         ],
         defaults: (ctx) => {
             const [hx, hy, hz] = half(ctx.part);
@@ -1504,6 +1575,7 @@ const solidTools: ToolDef[] = [
     featureTools.shell,
     featureTools.fillet,
     featureTools.chamfer,
+    featureTools.draft,
     featureTools.hole,
     featureTools.pocket,
     featureTools.thread,

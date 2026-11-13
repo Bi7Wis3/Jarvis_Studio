@@ -738,7 +738,7 @@ export function createTools(store: ProjectStore): StudioTool[] {
         {
             name: 'features_update',
             description: 'Edits features in a part\'s history by id: change dimensions, rename, or suppress/unsuppress. '
-                + 'Only the fields given change; the op cannot change.',
+                + 'Only the fields given change; a field set to null is removed; the op cannot change.',
             schema: {
                 partId: z.string(),
                 updates: z.array(z.object({ id: z.string() }).passthrough()).min(1)
@@ -759,6 +759,12 @@ export function createTools(store: ProjectStore): StudioTool[] {
                             return f;
                         }
                         const merged = { ...f, ...update, id: f.id, op: f.op };
+                        // null clears an optional field (e.g. a chamfer's angle when it becomes equal distance).
+                        for (const [key, value] of Object.entries(update)) {
+                            if (value === null) {
+                                delete (merged as Record<string, unknown>)[key];
+                            }
+                        }
                         // Switching between an inline sketch and a sketch step replaces the other one.
                         if ('sketchRef' in update) {
                             delete merged.sketch;
