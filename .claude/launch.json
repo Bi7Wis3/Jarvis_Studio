@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "jarvis-studio",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["PORT=4720", "npm", "run", "dev"],
+      "port": 4719
+    }
+  ]
+}

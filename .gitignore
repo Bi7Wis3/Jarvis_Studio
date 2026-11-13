@@ -1,0 +1,9 @@
+node_modules
+dist
+.venv
+voices/*.onnx
+voices/*.json
+projects
+.env
+.shots
+voices/stt

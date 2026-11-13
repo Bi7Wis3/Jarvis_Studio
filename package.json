@@ -1,0 +1,23 @@
+{
+  "name": "jarvis-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @jarvis/server\" \"npm run dev -w @jarvis/web\"",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "setup:voice": "bash scripts/setup-voice.sh",
+    "setup:stt": "bash scripts/setup-stt.sh",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/three": "^0.187.0",
+    "concurrently": "^10.0.7",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
