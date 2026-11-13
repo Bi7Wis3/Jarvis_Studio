@@ -309,6 +309,51 @@ describe('features', () => {
         expect(volume(nutBody)).toBeLessThan(2400 - Math.PI * 16 * 6);
         expect(volume(nutBody)).toBeGreaterThan(2400 - Math.PI * 25.5 * 6);
     }, SLOW);
+
+    // A shaft of diameter 10 along +X, from x = 0 to 20 (a circle on the right plane, extruded).
+    const shaft: Feature = {
+        id: 'rod', op: 'extrude', mode: 'add', distance: 20, sketch: { plane: 'right', profiles: [{ kind: 'circle', center: [0, 0], radius: 5 }] },
+    };
+
+    it('threads a horizontal shaft from a picked circular edge, along the shaft only', async () => {
+        const plain = await mesh({ kind: 'empty' }, [shaft]);
+        const threaded = await mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 10 }]);
+        // Axis, diameter and start come from the edge at x = 20: the thread runs back along the shaft, nothing
+        // sticks out past its end, and the crest stays at the shaft's diameter.
+        const b = bounds(threaded);
+        expect(b.max[0]).toBeCloseTo(20, 1);
+        expect(b.min[0]).toBeCloseTo(0, 1);
+        expect(b.max[1]).toBeLessThan(5.05);
+        expect(b.max[1]).toBeGreaterThan(4.9);
+        expect(volume(threaded)).toBeLessThan(volume(plain) - 50);
+        expect(openEdges(threaded)).toBe(0);
+        // Left hand, two starts and a revolutions end condition build too; a thread longer than the shaft does not.
+        const left = await mesh({ kind: 'empty' }, [shaft, {
+            id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, revolutions: 4, starts: 2, leftHanded: true, offset: 2,
+        }]);
+        expect(bounds(left).max[0]).toBeCloseTo(20, 1);
+        expect(volume(left)).not.toBeCloseTo(volume(threaded), 0);
+        await expect(mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 25 }]))
+            .rejects.toThrow(/runs off the cylinder/);
+        await expect(mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'internal', at: [20, 5, 0], pitch: 1.5, length: 10 }]))
+            .rejects.toThrow(/on a shaft: use an external thread/);
+    }, SLOW);
+
+    it('taps a hole from its picked edge, sized from the hole', async () => {
+        const block = sharpBox([20, 20, 20]);
+        const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 8 }, position: [10, 0, 0], direction: [-1, 0, 0] };
+        const drilled = await mesh(block, [hole]);
+        const r = (8 + DEFAULT_PRINT.holeTolerance) / 2;
+        const tapped = await mesh(block, [hole, { id: 't', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5, length: 12 }]);
+        // Bored out to the major diameter (hole + 1.0825 x pitch) over 12 mm, with the ridge left standing.
+        expect(volume(tapped)).toBeLessThan(volume(drilled));
+        expect(volume(tapped)).toBeGreaterThan(volume(drilled) - Math.PI * ((r + 0.82 + 0.1) ** 2 - r * r) * 12);
+        expectBounds(tapped, [-10, -10, -10], [10, 10, 10]);
+        await expect(mesh(block, [hole, { id: 't', op: 'thread', kind: 'external', at: [10, r, 0], pitch: 1.5, length: 12 }]))
+            .rejects.toThrow(/on a hole: use an internal thread/);
+        await expect(mesh(block, [hole, { id: 't', op: 'thread', kind: 'internal', at: [10, 10, 10], pitch: 1.5, length: 12 }]))
+            .rejects.toThrow(/not a full circle/);
+    }, SLOW);
 });
 
 describe('fasteners', () => {

@@ -12,6 +12,7 @@ import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { useStudio } from './state';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, loadSolver, measure, pointOf, solveGeometry, solverReady } from './solver';
 import { regionsOf } from './regionPick';
+import { geometryOpenChains } from './sketchGeometry';
 import {
     EMPTY_GEOMETRY, PICKS_NEEDED, addArc, addCircle, addConstraint, addLine, addPerimeterCircle, addPolygon, addRect, addRect3, addSlot, addTangentArc,
     relationsFromPicks, tangentAt,
@@ -1726,11 +1727,14 @@ export function currentSketch(): Sketch {
     const s = get();
     // Every closed area on its own, so each extrude or cut can use just the ones picked for it.
     const regions = regionsOf(s.geometry);
+    // Open chains (a sweep path, a guide) are kept too; `profiles` stays the closed areas only.
+    const open = geometryOpenChains(s.geometry);
     return {
         plane: s.plane,
         ...(s.offset ? { offset: s.offset } : {}),
         profiles: sketchProfiles().profiles,
         ...(regions.length ? { regions } : {}),
+        ...(open.length ? { open } : {}),
         // Label positions travel with their dimensions.
         geometry: {
             ...s.geometry,

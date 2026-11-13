@@ -8,8 +8,11 @@ import {
     shapeHalfExtents, THREAD_SIZES, type Feature, type FastenerType, type Material, type Part, type Project, type Shape,
     type SketchShape, type ThreadSize, type Vec3,
 } from '@jarvis/core';
-import { STANDARD_LENGTHS, threadData } from '@jarvis/core/fasteners';
+import { heatsetData, STANDARD_LENGTHS, threadData } from '@jarvis/core/fasteners';
 import { clearEditing, editItem, refit, runTool, select, setSketchHidden, setWorkspace, useStudio } from './state';
+import { loadedMeshBounds, meshByKey } from './meshes';
+import { circleOfEdge, edgePick } from './pickRefs';
+import { captureToolCalls, type ToolCall } from './preview';
 import { RegionPickSession, useRegionPick } from './regionPick';
 import { showError } from './menus';
 import { addPicture, PicturePicker } from './DecalPanel';
@@ -122,6 +125,11 @@ export interface ToolDef {
      * Only for tools whose apply makes its model-editing call synchronously and does nothing else before it.
      */
     preview?: boolean;
+    /**
+     * Live preview for a tool whose apply does more than one model call (the sketch finish panel): the calls to
+     * preview for these values, made without side effects. Used instead of capturing apply.
+     */
+    previewCalls?: (v: Values, ctx: Ctx) => ToolCall[];
 }
 
 export interface ToolGroup {
@@ -173,6 +181,19 @@ async function attempt(build: () => Promise<Result>): Promise<Result> {
 
 function half(part: Part | null): Vec3 {
     return part ? shapeHalfExtents(part.shape) : [10, 10, 10];
+}
+
+/**
+ * Centre and half size of a part in its own frame: of its built body when that is loaded (a part built from
+ * sketches has no size of its own), else of its base shape about the origin.
+ */
+function partBox(part: Part | null): { centre: Vec3; half: Vec3 } {
+    const box = part ? loadedMeshBounds(part.id) : null;
+    if (box) {
+        const [lo, hi] = box;
+        return { centre: [0, 1, 2].map((i) => (lo[i] + hi[i]) / 2) as Vec3, half: [0, 1, 2].map((i) => (hi[i] - lo[i]) / 2) as Vec3 };
+    }
+    return { centre: [0, 0, 0], half: half(part) };
 }
 
 /** The full part from the history (the viewport copy may be cut back by the timeline). */
@@ -764,6 +785,8 @@ const finishTool: ToolDef = {
     width: 300,
     panel: true,
     regionPick: 'sketcher',
+    // The real result (end conditions, offsets, draft, both directions, regions) from the server, as Extrude shows it.
+    previewCalls: (v, ctx) => finishPreviewCalls(v, ctx),
     fields: () => {
         const target = sketchEditTarget();
         if (target?.feature?.op === 'sketch') {
@@ -927,6 +950,19 @@ const finishTool: ToolDef = {
     }),
 };
 
+/**
+ * The calls the finish panel's OK would make, for the live preview: none for a plain sketch (it builds nothing).
+ * Capturing is safe here: a captured call answers as an error, so apply neither closes the sketch nor selects.
+ */
+export function finishPreviewCalls(v: Values, ctx: Ctx): ToolCall[] {
+    if (v.op === 'sketch' || sketchEditTarget()?.feature?.op === 'sketch') {
+        return [];
+    }
+    const captured = captureToolCalls(() => finishTool.apply!(v, ctx));
+    void captured.result.catch(() => undefined);
+    return captured.calls;
+}
+
 /** Keeps a popup's `sketch` field in step with sketch curves clicked in the viewport. */
 function SketchPickListener({ api, keyName }: { api: PopupApi; keyName: string }) {
     const picked = useSketcher((s) => s.picked);
@@ -1073,19 +1109,26 @@ const loftTool: ToolDef = {
     needsPart: true,
     width: 310,
     fields: (ctx) => [
-        { key: 'sections', label: 'Sections', kind: 'multi', options: sketchSteps(ctx.part).map((f) => ({ value: f.id, label: f.name ?? f.id })) },
-        { key: 'ruled', label: 'Ruled (straight sides)', kind: 'check' },
-        { key: 'mode', label: 'Result', kind: 'select', options: opts(['add', 'Join'], ['cut', 'Cut']) },
+        { key: 'sections', label: 'Sections', kind: 'multi', options: sketchSteps(ctx.part).map((f) => ({ value: f.id, label: f.name ?? f.id })),
+            section: 'Profiles' },
+        { key: 'ruled', label: 'Ruled (straight sides)', kind: 'check', section: 'Options' },
+        { key: 'closed', label: 'Close loft', kind: 'check', section: 'Options', show: (v) => (v.sections as string[]).length >= 3 },
+        { key: 'mode', label: 'Result', kind: 'select', options: opts(['add', 'Join'], ['cut', 'Cut']), section: 'Result' },
     ],
     defaults: (ctx) => {
         const f = edited(ctx, 'loft');
         if (f) {
-            return { sections: f.sections.map((s) => s.sketchRef ?? '').filter(Boolean), ruled: !!f.ruled, mode: f.mode };
+            return { sections: f.sections.map((s) => s.sketchRef ?? '').filter(Boolean), ruled: !!f.ruled, closed: !!f.closed, mode: f.mode };
         }
-        return { sections: sketchSteps(ctx.part).slice(-2).map((f) => f.id), ruled: false, mode: 'add' };
+        return { sections: sketchSteps(ctx.part).slice(-2).map((f) => f.id), ruled: false, closed: false, mode: 'add' };
     },
     top: () => <p className="tb-note">Pick the sketches in order (chips or in the view). Each needs exactly one closed profile.</p>,
-    extra: (api) => <SketchPickListener api={api} keyName="sections" />,
+    extra: (api, ctx) => (
+        <>
+            <SketchPickListener api={api} keyName="sections" />
+            <SectionOrder api={api} ctx={ctx} />
+        </>
+    ),
     apply: (v, ctx) => attempt(async () => {
         const sections = v.sections as string[];
         if (sections.length < 2) {
@@ -1104,8 +1147,179 @@ const loftTool: ToolDef = {
             name: `Loft ${names.join(' → ')}`,
             sections: sections.map((sketchRef) => ({ sketchRef })),
             ruled: !!v.ruled,
+            // Sent on an edit too, so turning it off sticks.
+            ...(v.closed && sections.length >= 3 ? { closed: true } : ctx.edit ? { closed: false } : {}),
             mode: v.mode,
         });
+    }),
+};
+
+/** The loft's sections in order, each with Move up and Move down (the order the loft passes through them). */
+function SectionOrder({ api, ctx }: { api: PopupApi; ctx: Ctx }) {
+    const list = (api.values.sections as string[]) ?? [];
+    if (list.length < 2) {
+        return null;
+    }
+    const steps = sketchSteps(ctx.part);
+    const move = (i: number, by: number) => {
+        const next = [...list];
+        [next[i], next[i + by]] = [next[i + by], next[i]];
+        api.set({ sections: next });
+    };
+    return (
+        <ol className="pm-contours" aria-label="Section order">
+            {list.map((id, i) => (
+                <li key={id}>
+                    <span>{i + 1}. {steps.find((f) => f.id === id)?.name?.split(' · ')[0] ?? id}</span>
+                    <button type="button" disabled={i === 0} onClick={() => move(i, -1)} title="Move up" aria-label="Move up">↑</button>
+                    <button type="button" disabled={i === list.length - 1} onClick={() => move(i, 1)} title="Move down" aria-label="Move down">↓</button>
+                </li>
+            ))}
+        </ol>
+    );
+}
+
+/** What a sketch step offers a sweep: closed areas (a profile) and open chains (a path). */
+function sweepRole(step: Extract<Feature, { op: 'sketch' }> | undefined): 'profile' | 'path' | null {
+    if (!step) {
+        return null;
+    }
+    return (step.sketch.open?.length ?? 0) > 0 && !step.sketch.profiles.length ? 'path' : 'profile';
+}
+
+/** Fills the sweep's profile or path from a sketch clicked in the view: an open sketch is the path, else the profile. */
+function SweepPickListener({ api, ctx }: { api: PopupApi; ctx: Ctx }) {
+    const picked = useSketcher((s) => s.picked);
+    const [seen] = useState(() => picked?.n ?? 0);
+    useEffect(() => {
+        if (picked && picked.n > seen) {
+            const role = sweepRole(sketchSteps(ctx.part).find((f) => f.id === picked.id));
+            api.set(role === 'path' ? { path: picked.id } : { sketch: picked.id, profileType: 'sketch' });
+        }
+    }, [picked?.n]);
+    return null;
+}
+
+/**
+ * Sweep: a profile (a sketch step, or a circle of a diameter) along a path (the open chain of another sketch step).
+ * The profile sketch is the `sketch` value, so its areas can be picked like an extrude's.
+ */
+const sweepTool: ToolDef = {
+    id: 'sweep',
+    preview: true,
+    label: 'Sweep',
+    icon: 'sweep',
+    op: 'sweep',
+    hint: 'a profile along a path',
+    needsPart: true,
+    width: 310,
+    regionPick: 'step',
+    fields: (ctx) => {
+        const steps = sketchSteps(ctx.part).map((f) => ({ value: f.id, label: f.name ?? f.id }));
+        const none = [{ value: '', label: 'None' }];
+        return [
+            { key: 'profileType', label: 'Profile', kind: 'select', options: opts(['sketch', 'Sketch profile'], ['circular', 'Circular profile']),
+                section: 'Profile and path' },
+            { key: 'sketch', label: 'Profile sketch', kind: 'select', options: [...none, ...steps], section: 'Profile and path',
+                show: (v) => v.profileType === 'sketch' },
+            { key: 'diameter', label: 'Diameter', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Profile and path',
+                show: (v) => v.profileType === 'circular' },
+            { key: 'path', label: 'Path sketch', kind: 'select', options: [...none, ...steps], section: 'Profile and path' },
+            { key: 'orientation', label: 'Orientation', kind: 'select', section: 'Options',
+                options: opts(['followPath', 'Follow path'], ['keepNormal', 'Keep normal constant']) },
+            { key: 'twist', label: 'Profile twist', kind: 'select', section: 'Options', show: (v) => v.orientation !== 'keepNormal',
+                options: opts(['none', 'None'], ['angle', 'Specify twist angle']) },
+            { key: 'twistAngle', label: 'Twist angle', kind: 'number', unit: 'deg', section: 'Options',
+                show: (v) => v.orientation !== 'keepNormal' && v.twist === 'angle' },
+            { key: 'mode', label: 'Result', kind: 'select', options: opts(['add', 'Join (boss)'], ['cut', 'Cut']), section: 'Result' },
+        ];
+    },
+    defaults: (ctx) => {
+        const f = edited(ctx, 'sweep');
+        if (f) {
+            return {
+                profileType: f.profile ? 'sketch' : 'circular', sketch: f.profile?.sketchRef ?? '', kept: f.profile?.sketchRef ?? '',
+                diameter: fmt(f.diameter ?? 5), path: 'helix' in f.path ? '' : f.path.sketchRef ?? '',
+                orientation: f.orientation ?? 'followPath', twist: f.twist ? 'angle' : 'none', twistAngle: fmt(f.twist ?? 90), mode: f.mode,
+            };
+        }
+        const steps = sketchSteps(ctx.part);
+        const path = [...steps].reverse().find((f) => sweepRole(f) === 'path');
+        const profile = [...steps].reverse().find((f) => sweepRole(f) === 'profile');
+        return {
+            profileType: 'sketch', sketch: profile?.id ?? '', kept: profile?.id ?? '', diameter: '5', path: path?.id ?? '',
+            orientation: 'followPath', twist: 'none', twistAngle: '90', mode: 'add',
+        };
+    },
+    // A circular profile has no sketch (and so no areas to pick); the sketch comes back when switching back.
+    onChange: (key, v): Values | void => {
+        if (key === 'profileType') {
+            return v.profileType === 'circular' ? { kept: v.sketch, sketch: '' } : { sketch: v.kept || v.sketch };
+        }
+        if (key === 'sketch') {
+            return { kept: v.sketch };
+        }
+    },
+    top: () => (
+        <p className="tb-note">
+            The profile is a closed sketch (or a circle); the path is a sketch of one open chain of lines and arcs, starting
+            at the profile. Pick them in the lists or click them in the view.
+        </p>
+    ),
+    extra: (api, ctx) => {
+        const f = edited(ctx, 'sweep');
+        return (
+            <>
+                <SweepPickListener api={api} ctx={ctx} />
+                <RegionPickSession
+                    sketchKey={ctx.part && api.values.sketch ? `${ctx.part.id}/${api.values.sketch as string}` : null}
+                    initial={f?.profile?.sketchRef === api.values.sketch ? f?.regions : undefined}
+                />
+                {api.values.sketch && <p className="tb-note tb-hint">Click one area of the profile to sweep just that one.</p>}
+            </>
+        );
+    },
+    apply: (v, ctx) => attempt(async () => {
+        const steps = sketchSteps(ctx.part);
+        const path = steps.find((f) => f.id === v.path);
+        if (!path) {
+            throw new Error('Pick the path sketch.');
+        }
+        const chains = path.sketch.open?.length ?? 0;
+        if (chains > 1 || (chains === 0 && path.sketch.profiles.length !== 1) || (chains === 1 && path.sketch.profiles.length)) {
+            throw new Error(`${path.name ?? path.id} is not a path: it needs one connected open chain of lines and arcs (or one closed profile)`
+                + `${chains === 0 && path.sketch.geometry ? '. A sketch saved before open chains were kept: open it and exit it again' : ''}.`);
+        }
+        const circular = v.profileType === 'circular';
+        const profile = circular ? null : steps.find((f) => f.id === v.sketch);
+        if (!circular && !profile) {
+            throw new Error('Pick the profile sketch, or use a circular profile.');
+        }
+        if (profile && profile.id === path.id) {
+            throw new Error('The profile and the path must be different sketches.');
+        }
+        const keepNormal = v.orientation === 'keepNormal';
+        const twist = !keepNormal && v.twist === 'angle' ? num(v, 'twistAngle', 'Twist angle') : 0;
+        const regions = circular ? [] : useRegionPick.getState().picked;
+        const pathName = path.name?.split(' · ')[0] ?? path.id;
+        const feature: Record<string, unknown> = {
+            op: 'sweep',
+            name: `Sweep ${circular ? `⌀${v.diameter} ` : ''}along ${pathName}`,
+            ...(circular ? { diameter: num(v, 'diameter', 'Diameter', { positive: true }) } : { profile: { sketchRef: profile!.id } }),
+            path: { sketchRef: path.id },
+            mode: v.mode,
+            ...(keepNormal ? { orientation: 'keepNormal' } : {}),
+            ...(twist ? { twist } : {}),
+            ...(regions.length ? { regions } : {}),
+        };
+        if (ctx.edit?.feature) {
+            // An update merges fields: what the form turned off is cleared explicitly.
+            Object.assign(feature, {
+                ...(circular ? { profile: null } : { diameter: null }),
+                orientation: keepNormal ? 'keepNormal' : 'followPath', twist, regions,
+            });
+        }
+        return saveFeature(ctx, feature);
     }),
 };
 
@@ -1313,10 +1527,18 @@ function readRepeat(v: Values, prefix: string): Record<string, unknown> | undefi
 const HOLE_KINDS = opts(['clearance', 'Clearance'], ['tap', 'Tap drill'], ['heatset', 'Heat-set insert'],
     ['counterbore', 'Counterbore'], ['countersink', 'Countersink'], ['nutTrap', 'Nut trap'], ['plain', 'Plain (diameter)']);
 
+/** The face a drilling direction comes in from, or 'other' for a direction that is not along an axis. */
 function faceOf(direction: Vec3 | undefined): string {
     const d = direction ?? [0, -1, 0];
-    return Object.entries(FACE_NORMALS).find(([, n]) => n.every((c, i) => Math.abs(c + d[i]) < 1e-6))?.[0] ?? 'top';
+    const l = Math.hypot(...d) || 1;
+    return Object.entries(FACE_NORMALS).find(([, n]) => n.every((c, i) => Math.abs(c + d[i] / l) < 1e-6))?.[0] ?? 'other';
 }
+
+/** Vector form values without rounding (a direction must come back exactly as it was stored). */
+const exactVec = (key: string, value: Vec3): Values => ({ [`${key}0`]: String(value[0]), [`${key}1`]: String(value[1]), [`${key}2`]: String(value[2]) });
+
+/** Depth of a heat-set insert's hole (the kernel's default for it). */
+const insertDepth = (size: string): number => Math.round((heatsetData(size as ThreadSize).length + 0.5) * 1000) / 1000;
 
 const featureTools: Record<string, ToolDef> = {
     fillet: {
@@ -1454,42 +1676,51 @@ const featureTools: Record<string, ToolDef> = {
         op: 'hole',
         needsPart: true,
         width: 320,
-        fields: () => [
+        fields: (ctx) => [
             { key: 'kind', label: 'Type', kind: 'select', options: HOLE_KINDS },
             { key: 'size', label: 'Size', kind: 'select', options: SIZE_OPTIONS, show: (v) => v.kind !== 'plain' },
             { key: 'diameter', label: 'Diameter', kind: 'number', unit: 'mm', min: 0, step: 0.1, show: (v) => v.kind === 'plain' },
             { key: 'fit', label: 'Fit', kind: 'select', options: opts(['normal', 'Normal'], ['close', 'Close']),
                 show: (v) => ['clearance', 'counterbore', 'countersink', 'nutTrap'].includes(v.kind as string) },
-            { key: 'face', label: 'Drill from', kind: 'select', options: FACES },
+            { key: 'face', label: 'Drill from', kind: 'select',
+                options: (ctx.edit?.feature?.op === 'hole' && faceOf(ctx.edit.feature.direction) === 'other')
+                    ? [...FACES, { value: 'other', label: 'Its own direction' }] : FACES },
+            { key: 'dir', label: 'Direction', kind: 'vec', show: (v) => v.face === 'other' },
             { key: 'pos', label: 'Entry point', kind: 'vec', unit: 'mm', pickable: true },
-            { key: 'through', label: 'Through all', kind: 'check' },
-            { key: 'depth', label: 'Depth', kind: 'number', unit: 'mm', min: 0, show: (v) => !v.through },
+            // A heat-set hole is as deep as its insert unless a depth is given: it has no Through all.
+            { key: 'through', label: 'Through all', kind: 'check', show: (v) => v.kind !== 'heatset' },
+            { key: 'depth', label: 'Depth', kind: 'number', unit: 'mm', min: 0, show: (v) => v.kind === 'heatset' || !v.through },
             ...repeatFields('rep'),
         ],
         defaults: (ctx) => {
-            const [, hy] = half(ctx.part);
+            const { centre: c, half: [, hy] } = partBox(ctx.part);
             const values: Values = {
-                kind: 'clearance', size: 'M3', diameter: '5', fit: 'normal', face: 'top', ...vecValues('pos', [0, hy, 0]),
-                through: true, depth: '10', ...repeatDefaults('rep', [10, 0, 0]),
+                kind: 'clearance', size: 'M3', diameter: '5', fit: 'normal', face: 'top', ...vecValues('dir', [0, -1, 0]),
+                ...vecValues('pos', [c[0], c[1] + hy, c[2]]), through: true, depth: '10', ...repeatDefaults('rep', [10, 0, 0]),
             };
             const f = edited(ctx, 'hole');
             if (f) {
+                const size = f.spec.size ?? 'M3';
                 Object.assign(values, {
-                    kind: f.spec.kind, size: f.spec.size ?? 'M3', diameter: fmt(f.spec.diameter ?? 5), fit: f.spec.fit ?? 'normal',
-                    face: faceOf(f.direction), ...vecValues('pos', f.position), through: f.depth === undefined,
-                    depth: fmt(f.depth ?? 10), ...repeatValues('rep', f.repeat, [10, 0, 0]),
+                    kind: f.spec.kind, size, diameter: fmt(f.spec.diameter ?? 5), fit: f.spec.fit ?? 'normal',
+                    face: faceOf(f.direction), ...exactVec('dir', f.direction ?? [0, -1, 0]), ...vecValues('pos', f.position),
+                    through: f.depth === undefined,
+                    depth: fmt(f.depth ?? (f.spec.kind === 'heatset' ? insertDepth(size) : 10)), ...repeatValues('rep', f.repeat, [10, 0, 0]),
                 });
             }
             return values;
         },
         onChange: (key, v, { part }) => {
-            const h = half(part);
-            if (key === 'face') {
+            const { centre: c, half: h } = partBox(part);
+            if (key === 'face' && v.face !== 'other') {
                 const n = FACE_NORMALS[v.face as string];
-                return vecValues('pos', [n[0] * h[0], n[1] * h[1], n[2] * h[2]]);
+                return vecValues('pos', [c[0] + n[0] * h[0], c[1] + n[1] * h[1], c[2] + n[2] * h[2]]);
+            }
+            if ((key === 'kind' || key === 'size') && v.kind === 'heatset') {
+                return { depth: fmt(insertDepth(v.size as string)) };
             }
             if (key === 'repkind' && v.repkind === 'radial') {
-                return { repcount: '6', pos0: fmt(Math.round(h[0] * 0.6)) };
+                return { repcount: '6', pos0: fmt(Math.round(c[0] + h[0] * 0.6)) };
             }
         },
         apply: (v, ctx) => attempt(() => {
@@ -1503,7 +1734,11 @@ const featureTools: Record<string, ToolDef> = {
             if (['clearance', 'counterbore', 'countersink', 'nutTrap'].includes(kind)) {
                 spec.fit = v.fit;
             }
-            const n = FACE_NORMALS[v.face as string];
+            // A direction that is along no axis (a hole Jarvis drilled at an angle) is kept as it is.
+            const direction = v.face === 'other' ? vec(v, 'dir', 'Direction') : FACE_NORMALS[v.face as string].map((c) => -c);
+            if (!(Math.hypot(...direction) > 1e-9)) {
+                throw new Error('Direction must not be zero.');
+            }
             const repeat = readRepeat(v, 'rep');
             const label = kind === 'plain' ? `Ø${fmt(spec.diameter as number)} hole` : `${v.size} ${HOLE_KINDS.find((o) => o.value === kind)!.label.toLowerCase()} hole`;
             return saveFeature(ctx, {
@@ -1511,8 +1746,8 @@ const featureTools: Record<string, ToolDef> = {
                 name: `${label[0].toUpperCase()}${label.slice(1)}${repeat ? ` ×${repeat.count}` : ''}`,
                 spec,
                 position: vec(v, 'pos', 'Entry'),
-                direction: [-n[0], -n[1], -n[2]],
-                ...(v.through ? {} : { depth: num(v, 'depth', 'Depth', { positive: true }) }),
+                direction,
+                ...(v.through && kind !== 'heatset' ? {} : { depth: num(v, 'depth', 'Depth', { positive: true }) }),
                 ...(repeat ? { repeat } : {}),
             });
         }),
@@ -1615,25 +1850,48 @@ const featureTools: Record<string, ToolDef> = {
         label: 'Thread',
         icon: 'thread',
         op: 'thread',
-        hint: 'printable ISO thread on a boss or in a bore',
+        hint: 'printable ISO thread on a shaft or in a hole',
         needsPart: true,
-        width: 300,
+        width: 310,
         fields: () => [
-            { key: 'kind', label: 'Kind', kind: 'select', options: opts(['external', 'External (boss)'], ['internal', 'Internal (bore)']) },
-            { key: 'size', label: 'Preset', kind: 'select', options: [{ value: 'custom', label: 'Custom' }, ...SIZE_OPTIONS] },
-            { key: 'diameter', label: 'Diameter', kind: 'number', unit: 'mm', min: 0, step: 0.1 },
-            { key: 'pitch', label: 'Pitch', kind: 'number', unit: 'mm', min: 0, step: 0.05 },
-            { key: 'length', label: 'Length', kind: 'number', unit: 'mm', min: 0 },
-            { key: 'pos', label: 'Start', kind: 'vec', unit: 'mm' },
+            { key: 'start', label: 'Start at', kind: 'select', section: 'Thread location',
+                options: opts(['edge', 'Circular edge (picked)'], ['point', 'Point on a +Y axis']) },
+            { key: 'pos', label: 'Start point', kind: 'vec', unit: 'mm', section: 'Thread location', show: (v) => v.start === 'point' },
+            { key: 'offset', label: 'Offset', kind: 'number', unit: 'mm', section: 'Thread location', show: (v) => v.start === 'edge' },
+            { key: 'startAngle', label: 'Start angle', kind: 'number', unit: 'deg', section: 'Thread location' },
+            { key: 'end', label: 'End condition', kind: 'select', options: opts(['blind', 'Blind'], ['revolutions', 'Revolutions']), section: 'End condition' },
+            { key: 'length', label: 'Depth', kind: 'number', unit: 'mm', min: 0, section: 'End condition', show: (v) => v.end !== 'revolutions' },
+            { key: 'revolutions', label: 'Revolutions', kind: 'number', min: 0, section: 'End condition', show: (v) => v.end === 'revolutions' },
+            { key: 'kind', label: 'Type', kind: 'select', options: opts(['external', 'External (shaft)'], ['internal', 'Internal (hole)']), section: 'Specification' },
+            { key: 'size', label: 'Size', kind: 'select', options: [{ value: 'custom', label: 'Custom' }, ...SIZE_OPTIONS], section: 'Specification' },
+            { key: 'override', label: 'Override diameter', kind: 'check', section: 'Specification', show: (v) => v.start === 'edge' },
+            { key: 'diameter', label: 'Diameter', kind: 'number', unit: 'mm', min: 0, step: 0.1, section: 'Specification',
+                show: (v) => v.start !== 'edge' || !!v.override },
+            { key: 'pitch', label: 'Pitch', kind: 'number', unit: 'mm', min: 0, step: 0.05, section: 'Specification' },
+            { key: 'hand', label: 'Hand', kind: 'select', options: opts(['right', 'Right-hand'], ['left', 'Left-hand']), section: 'Thread options' },
+            { key: 'starts', label: 'Starts', kind: 'number', min: 1, max: 8, step: 1, section: 'Thread options' },
         ],
         defaults: (ctx) => {
             const f = edited(ctx, 'thread');
             if (f) {
-                return { kind: f.kind, size: 'custom', diameter: fmt(f.diameter), pitch: fmt(f.pitch), length: fmt(f.length),
-                    ...vecValues('pos', f.position ?? [0, 0, 0]) };
+                const preset = THREAD_SIZES.find((s) => {
+                    const t = threadData(s);
+                    return f.diameter !== undefined && Math.abs(t.major - f.diameter) < 1e-6 && Math.abs(t.pitch - f.pitch) < 1e-6;
+                });
+                return {
+                    start: f.at ? 'edge' : 'point', ...exactVec('at', f.at ?? [0, 0, 0]), edge: f.at ? 'the stored edge' : '',
+                    ...vecValues('pos', f.position ?? [0, 0, 0]), offset: fmt(f.offset ?? 0), startAngle: fmt(f.startAngle ?? 0),
+                    end: f.revolutions !== undefined ? 'revolutions' : 'blind', length: fmt(f.length ?? 10), revolutions: fmt(f.revolutions ?? 8),
+                    kind: f.kind, size: preset ?? 'custom', override: !!f.at && f.diameter !== undefined, diameter: fmt(f.diameter ?? 8),
+                    pitch: fmt(f.pitch), hand: f.leftHanded ? 'left' : 'right', starts: String(f.starts ?? 1),
+                };
             }
-            const [, hy] = half(ctx.part);
-            return { kind: 'external', size: 'M8', diameter: '8', pitch: '1.25', length: '10', ...vecValues('pos', [0, -hy, 0]) };
+            const { centre: c, half: [, hy] } = partBox(ctx.part);
+            return {
+                start: 'edge', ...exactVec('at', [0, 0, 0]), edge: '', ...vecValues('pos', [c[0], c[1] - hy, c[2]]), offset: '0',
+                startAngle: '0', end: 'blind', length: '10', revolutions: '8', kind: 'external', size: 'M8', override: false,
+                diameter: '8', pitch: '1.25', hand: 'right', starts: '1',
+            };
         },
         onChange: (key, v) => {
             if (key === 'size' && v.size !== 'custom') {
@@ -1641,27 +1899,92 @@ const featureTools: Record<string, ToolDef> = {
                 return { diameter: fmt(t.major), pitch: fmt(t.pitch) };
             }
         },
+        top: (api) => (
+            <p className="tb-note">
+                {api.values.start !== 'edge' ? 'The thread runs up +Y from the start point, as a rod or bore of its own.'
+                    : api.values.edge ? `Starts at ${api.values.edge as string}; click another circular edge to move it.`
+                        : 'Click the circular edge at the end of the shaft or hole where the thread starts.'}
+            </p>
+        ),
+        extra: (api, ctx) => <ThreadEdgeListener api={api} ctx={ctx} />,
         apply: (v, ctx) => attempt(() => {
-            const diameter = num(v, 'diameter', 'Diameter', { positive: true });
             const pitch = num(v, 'pitch', 'Pitch', { positive: true });
-            const length = num(v, 'length', 'Length', { positive: true });
-            return saveFeature(ctx, {
+            const onEdge = v.start === 'edge';
+            if (onEdge && !v.edge) {
+                throw new Error('Click the circular edge where the thread starts.');
+            }
+            const diameter = !onEdge || v.override ? num(v, 'diameter', 'Diameter', { positive: true }) : undefined;
+            const revolutions = v.end === 'revolutions' ? num(v, 'revolutions', 'Revolutions', { positive: true }) : undefined;
+            const length = revolutions === undefined ? num(v, 'length', 'Depth', { positive: true }) : undefined;
+            const starts = Math.round(num(v, 'starts', 'Starts', { min: 1 }));
+            const startAngle = num(v, 'startAngle', 'Start angle');
+            const offset = onEdge ? num(v, 'offset', 'Offset') : 0;
+            const size = v.size !== 'custom' ? String(v.size) : diameter !== undefined ? `Ø${fmt(diameter)}` : '';
+            const feature: Record<string, unknown> = {
                 op: 'thread',
-                name: `${v.kind === 'external' ? 'External' : 'Internal'} thread Ø${fmt(diameter)}×${fmt(pitch)}, ${fmt(length)} mm`,
+                name: `${v.kind === 'external' ? 'External' : 'Internal'} thread ${size}${size ? '×' : 'P'}${fmt(pitch)}`,
                 kind: v.kind,
-                diameter,
                 pitch,
-                length,
-                position: vec(v, 'pos', 'Start'),
-            });
+                ...(diameter !== undefined ? { diameter } : {}),
+                ...(onEdge ? { at: vec(v, 'at', 'Edge') } : { position: vec(v, 'pos', 'Start') }),
+                ...(revolutions !== undefined ? { revolutions } : { length }),
+                ...(offset ? { offset } : {}),
+                ...(startAngle ? { startAngle } : {}),
+                ...(v.hand === 'left' ? { leftHanded: true } : {}),
+                ...(starts > 1 ? { starts } : {}),
+            };
+            if (ctx.edit?.feature) {
+                // An update merges fields: what the form left out is cleared explicitly.
+                Object.assign(feature, {
+                    diameter: diameter ?? null, at: onEdge ? feature.at : null, position: onEdge ? null : feature.position,
+                    revolutions: revolutions ?? null, length: length ?? null, offset, startAngle, leftHanded: v.hand === 'left', starts,
+                });
+            }
+            return saveFeature(ctx, feature);
         }),
     },
 };
+
+/**
+ * Takes the thread's start from a circular edge clicked on the part in the view (or already selected when a new
+ * thread opens): a point on the edge, stored as `at`, which the kernel resolves to the edge on every rebuild.
+ */
+function ThreadEdgeListener({ api, ctx }: { api: PopupApi; ctx: Ctx }) {
+    const picked = useStudio((s) => s.picked);
+    const [seen] = useState(() => (ctx.edit ? picked : null));
+    useEffect(() => {
+        const partId = ctx.part?.id;
+        const entity = picked === seen ? undefined : [...picked].reverse().find((p) => p.kind === 'edge' && p.partId === partId);
+        const key = entity && useStudio.getState().meshes.keys[entity.partId];
+        if (!entity || !key) {
+            return;
+        }
+        let live = true;
+        void meshByKey(key).then((mesh) => {
+            if (!live || !mesh) {
+                return;
+            }
+            const lines = mesh.edges.getAttribute('position').array;
+            const at = edgePick(lines, mesh.segEdge, entity.index);
+            const circle = circleOfEdge(lines, mesh.segEdge, entity.index);
+            if (!at) {
+                return;
+            }
+            const edge = circle?.full ? `the Ø${fmt(circle.radius * 2)} mm circular edge` : 'the picked edge (not a full circle: pick another)';
+            api.set({ start: 'edge', ...exactVec('at', at as Vec3), edge });
+        });
+        return () => {
+            live = false;
+        };
+    }, [picked]);
+    return null;
+}
 
 const solidTools: ToolDef[] = [
     sketchOpTool('extrude'),
     sketchOpTool('cut'),
     sketchOpTool('revolve'),
+    sweepTool,
     loftTool,
     featureTools.mirror,
     featureTools.shell,
@@ -2193,6 +2516,11 @@ export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketc
     const reference = referenceEditor(feature);
     if (reference) {
         return reference;
+    }
+    if (feature?.op === 'sweep') {
+        // The form edits sweeps of sketch steps; coils (helix paths) and inline sketches are Jarvis's.
+        const path = 'helix' in feature.path ? null : feature.path;
+        return path?.sketchRef && (!feature.profile || feature.profile.sketchRef) ? sweepTool : noEditTool;
     }
     if (feature ? feature.op === 'extrude' || feature.op === 'revolve' || feature.op === 'sketch' : part.shape.kind === 'sketch') {
         return 'sketch';

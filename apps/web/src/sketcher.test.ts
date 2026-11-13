@@ -82,6 +82,14 @@ describe('dimension tool', () => {
         startSketch(null, 'sketch', { partId: 'p', featureId: null, sketch: saved });
         expect(state().labels).toEqual({ d1: [12, -7] });
     });
+
+    it('saves open chains next to the closed profiles, for sweep paths', () => {
+        // scene(): a 40 mm line and a circle.
+        const saved = currentSketch();
+        expect(saved.profiles).toHaveLength(1);
+        expect(saved.open).toHaveLength(1);
+        expect(saved.open![0]).toMatchObject({ kind: 'path', segments: [{ kind: 'line' }] });
+    });
 });
 
 describe('dragging in the select tool', () => {

@@ -303,6 +303,28 @@ describe('sketch steps, loft and empty parts', () => {
         expect(Math.abs(ruled - smooth)).toBeGreaterThan(100);
     }, SLOW);
 
+    it('closes a loft back to its first section (a ring), with 3 or more sections', async () => {
+        // Squares 20 mm out on four sides of the Y axis, each facing the way round: a closed loop around Y.
+        const at = (origin: Vec3, normal: Vec3, xDir: Vec3): { sketch: Sketch } =>
+            ({ sketch: { plane: { origin, normal, xDir }, profiles: [rect([0, 0], 4, 4)] } });
+        const sections = [
+            at([20, 0, 0], [0, 0, 1], [1, 0, 0]), at([0, 0, 20], [-1, 0, 0], [0, 0, 1]),
+            at([-20, 0, 0], [0, 0, -1], [-1, 0, 0]), at([0, 0, -20], [1, 0, 0], [0, 0, -1]),
+        ];
+        const ring = await mesh(empty, [{ id: 'l', op: 'loft', mode: 'add', closed: true, sections }]);
+        expect(openEdges(ring)).toBe(0);
+        const b = bounds(ring);
+        // The ring passes on all four sides of the axis.
+        expect(b.min[0]).toBeLessThan(-19);
+        expect(b.max[0]).toBeGreaterThan(19);
+        expect(b.min[2]).toBeLessThan(-19);
+        expect(b.max[2]).toBeGreaterThan(19);
+        const open = await mesh(empty, [{ id: 'l', op: 'loft', mode: 'add', sections }]);
+        expect(volume(ring)).toBeGreaterThan(volume(open) + 300);
+        await expect(mesh(empty, [{ id: 'l', op: 'loft', mode: 'add', closed: true, sections: sections.slice(0, 2) }]))
+            .rejects.toThrow(/closed loft needs at least 3 sections/);
+    }, SLOW);
+
     it('cuts a loft from a box, and rejects bad sections', async () => {
         const sections = [
             { sketch: { plane: 'top' as const, offset: -20, profiles: [rect([0, 0], 10, 10)] } },

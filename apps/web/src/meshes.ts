@@ -54,6 +54,9 @@ function load(key: string): Promise<KernelMesh | null> {
             if (!mesh && cache.get(key) === entry) {
                 cache.delete(key);
             }
+            if (mesh) {
+                remember(key, mesh);
+            }
         });
         if (cache.size > MAX_CACHED) {
             cache.delete(cache.keys().next().value!);
@@ -95,6 +98,39 @@ export function useKernelMesh(partId: string, withPreview = false): KernelMesh |
     }, [key]);
     // Keep showing the previous mesh while a changed part rebuilds, so it does not flicker.
     return mesh?.mesh ?? null;
+}
+
+/** The mesh with this key, loaded once and shared (null when it cannot be loaded). */
+export function meshByKey(key: string): Promise<KernelMesh | null> {
+    return load(key);
+}
+
+const boxes = new Map<string, [[number, number, number], [number, number, number]]>();
+
+/**
+ * The bounding box of a part's current kernel mesh in its own frame, when that mesh has been loaded already (the
+ * part workspace loads the active part's); null otherwise. Sketch-built parts have no size of their own.
+ */
+export function loadedMeshBounds(partId: string): [[number, number, number], [number, number, number]] | null {
+    const key = useStudio.getState().meshes.keys[partId];
+    if (!key) {
+        return null;
+    }
+    if (!boxes.has(key)) {
+        void load(key);
+    }
+    return boxes.get(key) ?? null;
+}
+
+function remember(key: string, mesh: KernelMesh): void {
+    mesh.surface.computeBoundingBox();
+    const box = mesh.surface.boundingBox;
+    if (box && !box.isEmpty()) {
+        boxes.set(key, [box.min.toArray(), box.max.toArray()]);
+        if (boxes.size > MAX_CACHED) {
+            boxes.delete(boxes.keys().next().value!);
+        }
+    }
 }
 
 /** The mesh with this key, or null while it loads; for drawing something that is not a committed part (a preview). */

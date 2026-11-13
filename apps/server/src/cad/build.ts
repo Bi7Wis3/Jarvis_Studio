@@ -22,7 +22,8 @@ import { chamferEdges, draftFaces, filletEdges, shellFaces, type ChamferSpec } f
 import { resolveAxis, resolvePlane } from '@jarvis/core/reference';
 import { relativePlacement, type CombineContext } from './context.js';
 import {
-    extrudeRange, extrudeSketch, extrudeTool, isPlainExtrude, loftSketches, pathWire, profileWire, revolveSketch, throughRange,
+    extrudeRange, extrudeSketch, extrudeTool, isPlainExtrude, loftSketches, pathWire, revolveSketch, sweepProfile, throughRange,
+    type SketchFrame,
 } from './sketch.js';
 
 type P2 = [number, number];
@@ -309,6 +310,9 @@ interface RidgeSpec {
     wCrest: number;
     y0: number;
     height: number;
+    /** Helix advance per turn when it differs from the pitch (multi-start threads). */
+    lead?: number;
+    leftHanded?: boolean;
 }
 
 interface Ridge {
@@ -322,7 +326,7 @@ interface Ridge {
  */
 function threadRidge(spec: RidgeSpec): Ridge {
     const { pitch, rBase, rCrest, wBase, wCrest, y0, height } = spec;
-    const helix = makeHelix(pitch, height, rBase, [0, 0, 0], [0, 0, 1]);
+    const helix = makeHelix(spec.lead ?? pitch, height, rBase, [0, 0, 0], [0, 0, 1], !!spec.leftHanded);
     const profile = makePolygon([
         [rBase, 0, -wBase / 2], [rCrest, 0, -wCrest / 2], [rCrest, 0, wCrest / 2], [rBase, 0, wBase / 2],
     ]);
@@ -332,7 +336,8 @@ function threadRidge(spec: RidgeSpec): Ridge {
 }
 
 /** External thread ridge for a major radius, inside the zone [yLow, yHigh]; null if the zone is too short. */
-function externalRidge(pitch: number, rMajor: number, rRoot: number, yLow: number, yHigh: number): Ridge | null {
+function externalRidge(pitch: number, rMajor: number, rRoot: number, yLow: number, yHigh: number,
+    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): Ridge | null {
     const rBase = rRoot - THREAD_OVERLAP;
     const wCrest = pitch / 8;
     const wBase = wCrest + 2 * (rMajor - rBase) * TAN30;
@@ -341,11 +346,12 @@ function externalRidge(pitch: number, rMajor: number, rRoot: number, yLow: numbe
     if (height < pitch || wBase >= pitch * 0.98) {
         return null;
     }
-    return threadRidge({ pitch, rBase, rCrest: rMajor, wBase, wCrest, y0, height });
+    return threadRidge({ pitch, rBase, rCrest: rMajor, wBase, wCrest, y0, height, ...hand });
 }
 
 /** Internal thread ridge in a bore of radius rMajor, inside [yLow, yHigh]; null if too short. */
-function internalRidge(pitch: number, rMajor: number, yLow: number, yHigh: number): Ridge | null {
+function internalRidge(pitch: number, rMajor: number, yLow: number, yHigh: number,
+    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): Ridge | null {
     const rBase = rMajor + THREAD_OVERLAP;
     const rCrest = rMajor - (1.0825 * pitch) / 2;
     const wCrest = pitch / 4;
@@ -355,7 +361,7 @@ function internalRidge(pitch: number, rMajor: number, yLow: number, yHigh: numbe
     if (height < pitch || wBase >= pitch * 0.98) {
         return null;
     }
-    return threadRidge({ pitch, rBase, rCrest, wBase, wCrest, y0, height });
+    return threadRidge({ pitch, rBase, rCrest, wBase, wCrest, y0, height, ...hand });
 }
 
 /** Fastener compounds: the body and its thread ridges, meshed analytically by meshSolid. */
@@ -837,33 +843,123 @@ function cutChecked(shape: Shape3D, tool: Shape3D, what: string): Shape3D {
     return result;
 }
 
+/** ISO metric: the minor (tap drill) diameter is the major diameter less 1.0825 x pitch. */
+const MINOR_DEPTH = 1.0825;
+
+/**
+ * Where a thread picked on a circular edge sits: the edge's centre, the unit axis pointing from the edge into its
+ * cylindrical face, the edge radius, how far the cylinder runs from the edge, and whether it is a hole.
+ */
+function threadEdge(shape: Shape3D, at: Vec3): { centre: Vec3; axis: Vec3; radius: number; reach: number; hole: boolean } {
+    const [edge] = resolveEdges(shape, [at]);
+    if (edge.geomType !== 'CIRCLE' || !edge.isClosed) {
+        throw new Error('the thread needs the circular edge at the end of a shaft or hole; the picked edge is not a full circle');
+    }
+    const oc = getOC();
+    const [r, gc] = localGC();
+    let centre: Vec3;
+    let normal: Vec3;
+    let radius: number;
+    try {
+        const circle = r(r(new oc.BRepAdaptor_Curve(edge.wrapped)).Circle());
+        const loc = r(circle.Location());
+        const dir = r(r(circle.Axis()).Direction());
+        centre = [loc.X(), loc.Y(), loc.Z()];
+        normal = [dir.X(), dir.Y(), dir.Z()];
+        radius = circle.Radius();
+    } finally {
+        gc();
+    }
+    const face = shape.faces.find((f) => f.geomType === 'CYLINDRE' && f.edges.some((e) => e.isSame(edge)));
+    if (!face) {
+        throw new Error('the picked circular edge is not the end of a cylindrical face (a shaft or hole)');
+    }
+    // The face's centre of mass lies on the axis halfway along it: that gives the side and the length.
+    const mid = face.center.toTuple() as Vec3;
+    const along = dot3(sub3(mid, centre), normal);
+    const axis: Vec3 = along < 0 ? [-normal[0], -normal[1], -normal[2]] : normal;
+    // On a point of the face, the outward normal points away from the axis on a shaft and toward it in a hole.
+    const onFace = face.pointOnSurface(0.5, 0.5).toTuple() as Vec3;
+    const rel = sub3(onFace, centre);
+    const k = dot3(rel, axis);
+    const radial = sub3(rel, [axis[0] * k, axis[1] * k, axis[2] * k]);
+    const outward = face.normalAt(onFace).toTuple() as Vec3;
+    return { centre, axis, radius, reach: 2 * Math.abs(along), hole: dot3(outward, radial) < 0 };
+}
+
+/** Turns a solid built along +Y from the origin onto `axis` (unit) at `origin`, first turning it `angle` degrees about Y. */
+function placeOnAxis(solid: Shape3D, origin: Vec3, axis: Vec3, angle: number): Shape3D {
+    let out = angle ? solid.rotate(angle, [0, 0, 0], [0, 1, 0]) : solid;
+    out = orientDown(out, [-axis[0], -axis[1], -axis[2]]);
+    return out.translate(origin);
+}
+
 function threadFeature(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>, print: PrintSettings): Shape3D {
-    const { pitch, length } = f;
-    if (!(pitch > 0 && length >= pitch && f.diameter > 2 * pitch)) {
+    const { pitch } = f;
+    const starts = f.starts ?? 1;
+    if (!(Number.isInteger(starts) && starts >= 1 && starts <= 8)) {
+        throw new Error('thread starts must be a whole number from 1 to 8');
+    }
+    const lead = pitch * starts;
+    let origin: Vec3 = f.position ?? [0, 0, 0];
+    let axis: Vec3 = [0, 1, 0];
+    let diameter = f.diameter;
+    let reach = Infinity;
+    if (f.at) {
+        const edge = threadEdge(shape, f.at);
+        if (edge.hole !== (f.kind === 'internal')) {
+            throw new Error(edge.hole ? 'the picked edge is on a hole: use an internal thread'
+                : 'the picked edge is on a shaft: use an external thread');
+        }
+        ({ centre: origin, axis, reach } = edge);
+        diameter ??= f.kind === 'external' ? 2 * edge.radius : 2 * edge.radius + MINOR_DEPTH * pitch;
+    }
+    if (diameter === undefined) {
+        throw new Error('thread needs a diameter, or the circular edge where it begins');
+    }
+    const offset = f.offset ?? 0;
+    if (!Number.isFinite(offset)) {
+        throw new Error('thread offset must be a number');
+    }
+    origin = [origin[0] + axis[0] * offset, origin[1] + axis[1] * offset, origin[2] + axis[2] * offset];
+    if (f.revolutions !== undefined && !(f.revolutions > 0)) {
+        throw new Error('thread revolutions must be positive');
+    }
+    const length = f.revolutions !== undefined ? f.revolutions * lead : f.length;
+    if (!(pitch > 0 && length !== undefined && length >= pitch && diameter > 2 * pitch)) {
         throw new Error('thread needs pitch > 0, length >= pitch and diameter > 2 x pitch');
     }
-    const [x, y, z] = f.position ?? [0, 0, 0];
-    const at = (s: Shape3D): Shape3D => (x || y || z ? s.translate(x, y, z) : s);
+    if (f.at && (offset < -1e-6 || offset + length > reach + 1e-6)) {
+        throw new Error(`the thread runs off the cylinder: it is ${fmtMm(reach)} long from the edge, `
+            + `the thread needs ${fmtMm(offset + length)}`);
+    }
+    const hand = { lead, leftHanded: !!f.leftHanded };
+    const at = (s: Shape3D): Shape3D => placeOnAxis(s, origin, axis, f.startAngle ?? 0);
+    /** The ridge and its copies for the other starts, evenly around the axis. */
+    const ridges = (ridge: Ridge): Shape3D => fuseAll(Array.from({ length: starts },
+        (_, i) => (i ? ridge.shape.clone().rotate((360 * i) / starts, [0, 0, 0], [0, 1, 0]) : ridge.shape)));
     if (f.kind === 'external') {
-        const rMaj = f.diameter / 2;
+        const rMaj = diameter / 2;
         const rRoot = rMaj - 0.6134 * pitch;
-        const ridge = externalRidge(pitch, rMaj, rRoot, 0, length);
+        const ridge = externalRidge(pitch, rMaj, rRoot, 0, length, hand);
         if (!ridge) {
             throw new Error('thread is too short for its pitch');
         }
-        const rod = asSolid(cylinderY(rRoot, 0, length).fuse(ridge.shape, { simplify: false }), 'threaded rod');
+        const rod = asSolid(cylinderY(rRoot, 0, length).fuse(ridges(ridge), { simplify: false }), 'threaded rod');
         const turned = shape.cut(at(revolve([[rRoot - 0.05, 0], [rMaj + 0.05, 0], [rMaj + 0.05, length],
             [rRoot - 0.05, length]])));
         return asSolid(turned.fuse(at(rod)), 'thread');
     }
-    const rMaj = (f.diameter + print.holeTolerance) / 2;
-    const ridge = internalRidge(pitch, rMaj, 0, length);
+    const rMaj = (diameter + print.holeTolerance) / 2;
+    const ridge = internalRidge(pitch, rMaj, 0, length, hand);
     if (!ridge) {
         throw new Error('thread is too short for its pitch');
     }
     const bored = shape.cut(at(cylinderY(rMaj, 0, length)));
-    return asSolid(bored.fuse(at(ridge.shape), { simplify: false }), 'thread');
+    return asSolid(bored.fuse(at(ridges(ridge)), { simplify: false }), 'thread');
 }
+
+const fmtMm = (mm: number): string => `${Math.round(mm * 100) / 100} mm`;
 
 /** The edges a fillet or chamfer picked in the view: its picked edges, and every edge of its picked faces. */
 function pickedEdges(shape: Shape3D, f: { at?: Vec3[]; faces?: FacePickRef[]; tangent?: boolean }): Edge[] {
@@ -1031,28 +1127,92 @@ function helixWire(h: HelixPath, centre: Vec3, earlier: Feature[]): Wire {
     }
 }
 
-function sweepTool(f: Extract<Feature, { op: 'sweep' }>, state: BuildState, index: number): Shape3D {
-    const profile = resolveSketch(f.profile, state, index);
-    const { wire, centre } = profileWire(profile, 'sweep profile');
-    let result: Shape3D;
-    if ('helix' in f.path && f.path.helix) {
-        if (f.twist) {
-            throw new Error('twist is not supported along a helix');
+/** Sweeps one wire along a spine; keepNormal: the profile keeps its plane's orientation (a fixed trihedron). */
+function sweepWire(wire: Wire, spine: Wire, opts: { frenet?: boolean; keepNormal?: SketchFrame | null }): Shape3D {
+    if (!opts.keepNormal) {
+        return genericSweep(wire, spine, opts.frenet ? { frenet: true } : { transitionMode: 'round' }) as Shape3D;
+    }
+    const oc = getOC();
+    const [r, gc] = localGC();
+    try {
+        const { origin, normal, u } = opts.keepNormal;
+        const builder = r(new oc.BRepOffsetAPI_MakePipeShell(spine.wrapped));
+        builder.SetTransitionMode(oc.BRepBuilderAPI_TransitionMode.BRepBuilderAPI_RoundCorner);
+        builder.SetMode(r(new oc.gp_Ax2(r(new oc.gp_Pnt(...origin)), r(new oc.gp_Dir(...normal)), r(new oc.gp_Dir(...u)))));
+        builder.Add(wire.wrapped, false, false);
+        builder.Build(r(new oc.Message_ProgressRange()));
+        if (!builder.IsDone()) {
+            throw new Error('the profile cannot be swept along this path with its normal kept constant');
         }
-        const spine = helixWire(f.path.helix, centre, before(state, index));
-        result = genericSweep(wire, spine, { frenet: true });
+        builder.MakeSolid();
+        return cast(builder.Shape()) as Shape3D;
+    } finally {
+        gc();
+    }
+}
+
+/** A circle of `diameter` at the start of the path, square to it there (the Circular profile option). */
+function circularProfile(path: Wire, diameter: number): { outer: Wire; holes: Wire[]; centre: Vec3; frame: SketchFrame } {
+    if (!(diameter > 0)) {
+        throw new Error('circular profile diameter must be positive');
+    }
+    const centre = path.startPoint.toTuple() as Vec3;
+    const t = path.tangentAt(0).toTuple() as Vec3;
+    const l = Math.hypot(...t);
+    const normal: Vec3 = [t[0] / l, t[1] / l, t[2] / l];
+    const seed: Vec3 = Math.abs(normal[0]) > 0.9 ? [0, 1, 0] : [1, 0, 0];
+    const k = dot3(seed, normal);
+    const x = sub3(seed, [normal[0] * k, normal[1] * k, normal[2] * k]);
+    const xl = Math.hypot(...x);
+    const u: Vec3 = [x[0] / xl, x[1] / xl, x[2] / xl];
+    const v: Vec3 = [normal[1] * u[2] - normal[2] * u[1], normal[2] * u[0] - normal[0] * u[2], normal[0] * u[1] - normal[1] * u[0]];
+    return { outer: assembleWire([makeCircle(diameter / 2, centre, normal)]), holes: [], centre, frame: { origin: centre, u, v, normal } };
+}
+
+function sweepTool(f: Extract<Feature, { op: 'sweep' }>, state: BuildState, index: number): Shape3D {
+    const helix = 'helix' in f.path && f.path.helix ? f.path.helix : null;
+    if (helix && f.twist) {
+        throw new Error('twist is not supported along a helix');
+    }
+    const drawn = f.profile ? sweepProfile(resolveSketch(f.profile, state, index), f.regions) : null;
+    // An open path is used from its end nearer the profile.
+    const path = helix ? null : pathWire(resolveSketch(f.path as { sketch?: Sketch; sketchRef?: string }, state, index), drawn?.centre);
+    let profile: { outer: Wire; holes: Wire[]; centre: Vec3; frame: SketchFrame };
+    if (drawn) {
+        profile = drawn;
+    } else if (f.diameter !== undefined) {
+        if (!path) {
+            throw new Error('a circular profile needs a path sketch, not a helix; draw the profile for a coil');
+        }
+        profile = circularProfile(path.wire, f.diameter);
     } else {
-        const path = pathWire(resolveSketch(f.path as { sketch?: Sketch; sketchRef?: string }, state, index));
+        throw new Error('sweep needs a profile sketch or a diameter (circular profile)');
+    }
+    const orientation = f.orientation ?? 'followPath';
+    if (orientation !== 'followPath' && orientation !== 'keepNormal') {
+        throw new Error('sweep orientation must be followPath or keepNormal');
+    }
+    const keepNormal = orientation === 'keepNormal' ? profile.frame : null;
+    if (keepNormal && f.twist) {
+        throw new Error('twist cannot be combined with keep normal constant');
+    }
+    const sweepOne = (wire: Wire): Shape3D => {
+        if (helix) {
+            return sweepWire(wire, helixWire(helix, profile.centre, before(state, index)), { frenet: true, keepNormal });
+        }
         if (f.twist) {
-            if (!path.line) {
+            if (!path!.line) {
                 throw new Error('twist is only supported along a single straight line');
             }
-            result = twistExtrude(wire, f.twist, path.line[0], sub3(path.line[1], path.line[0]));
-        } else {
-            result = genericSweep(wire, path.wire, { transitionMode: 'round' });
+            return twistExtrude(wire, f.twist, path!.line[0], sub3(path!.line[1], path!.line[0])) as Shape3D;
         }
+        return sweepWire(wire, path!.wire, { keepNormal });
+    };
+    let result = asSolid(sweepOne(profile.outer), 'sweep');
+    // A profile with holes (a tube's ring): the holes swept the same way are taken out.
+    for (const hole of profile.holes) {
+        result = asSolid(result.cut(asSolid(sweepOne(hole), 'sweep')), 'sweep');
     }
-    result = asSolid(result, 'sweep');
     if (!isValid(result)) {
         throw new Error('the swept solid intersects itself (profile too big for the path\'s bends or helix pitch?)');
     }
@@ -1121,7 +1281,7 @@ function stepTool(shape: Shape3D | null, f: Feature, state: BuildState, index: n
                 }
             });
             if (f.mode === 'cut') needBody(shape);
-            return { tool: loftSketches(sections, !!f.ruled), mode: f.mode, what: 'loft' };
+            return { tool: loftSketches(sections, !!f.ruled, !!f.closed), mode: f.mode, what: 'loft' };
         }
         case 'sweep':
             if (f.mode === 'cut') needBody(shape);

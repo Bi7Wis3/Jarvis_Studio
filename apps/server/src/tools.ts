@@ -91,6 +91,8 @@ const sketch = z.object({
     }).optional().describe('Leave out; written by the interactive sketcher'),
     regions: z.array(z.object({ loops: z.array(sketchProfile).min(1), at: point2 })).optional()
         .describe('Leave out; written by the interactive sketcher (every closed area of the sketch, for picking)'),
+    open: z.array(sketchProfile).optional()
+        .describe('Open chains (path profiles, not closed back to their start), e.g. a sweep path; profiles holds only closed areas'),
 });
 /** Pick points selecting some closed areas of the sketch instead of all of it. */
 const regionPicks = z.array(point2).optional()
@@ -295,6 +297,7 @@ const feature = z.discriminatedUnion('op', [
         sections: z.array(z.object(sketchSource)).min(2)
             .describe('Two or more sections in order, each one closed profile without holes, e.g. on offset planes'),
         ruled: z.boolean().optional().describe('Straight faces between sections instead of a smooth blend'),
+        closed: z.boolean().optional().describe('Close loft: join the last section back to the first (3 or more sections)'),
         mode: z.enum(['add', 'cut']),
     }),
     z.object({
@@ -334,9 +337,14 @@ const feature = z.discriminatedUnion('op', [
     z.object({
         ...featureBase,
         op: z.literal('sweep'),
-        profile: z.object(sketchSource).describe('Closed profile, e.g. a circle for a tube or spring wire'),
+        profile: z.object(sketchSource).optional().describe('Closed profile, e.g. a circle for a tube or spring wire (or give diameter)'),
+        diameter: z.number().positive().optional()
+            .describe('Circular profile instead of a profile sketch: a round rod of this diameter centred on the path start'),
+        regions: regionPicks.describe('Areas of the profile sketch to sweep (one area; holes in it are kept)'),
+        orientation: z.enum(['followPath', 'keepNormal']).optional()
+            .describe('followPath (default): the profile turns with the path; keepNormal: it stays parallel to its plane'),
         path: z.union([
-            z.object(sketchSource).describe('An open or closed chain of lines and arcs in another sketch'),
+            z.object(sketchSource).describe('The open chain (sketch.open) or single closed profile of another sketch'),
             z.object({
                 helix: z.object({
                     axis: axisRef,
@@ -348,7 +356,7 @@ const feature = z.discriminatedUnion('op', [
                 }),
             }),
         ]),
-        twist: z.number().optional(),
+        twist: z.number().optional().describe('Degrees of twist along a straight path'),
         mode: z.enum(['add', 'cut']),
     }).describe('Sweep a profile along a path or helix: tubes, rails, handles, springs, coils, spiral grooves'),
     z.object({
@@ -384,10 +392,17 @@ const feature = z.discriminatedUnion('op', [
         ...featureBase,
         op: z.literal('thread'),
         kind: z.enum(['external', 'internal']),
-        diameter: z.number().positive(),
+        at: vec3.optional().describe('A point on the circular edge where the thread begins (end of a shaft or hole); '
+            + 'axis, start and diameter come from it'),
+        diameter: z.number().positive().optional().describe('Nominal (major) diameter; required without at'),
         pitch: z.number().positive(),
-        length: z.number().positive(),
-        position: vec3.optional(),
+        length: z.number().positive().optional().describe('Thread length (blind); or give revolutions'),
+        revolutions: z.number().positive().optional().describe('End condition Revolutions: length = revolutions x lead'),
+        offset: z.number().optional().describe('Start this far from the edge along the thread'),
+        leftHanded: z.boolean().optional(),
+        starts: z.number().int().min(1).max(8).optional().describe('Multi-start thread; default 1'),
+        startAngle: z.number().optional().describe('Degrees about the axis where the thread begins'),
+        position: vec3.optional().describe('Without at: thread base on the +Y axis through this point'),
     }),
 ]);
 
@@ -434,7 +449,11 @@ export function checkHistory(part: Pick<Part, 'id' | 'features'>): void {
         } else if (f.op === 'loft') {
             f.sections.forEach((s, i) => source(`${where} section ${i + 1}`, s));
         } else if (f.op === 'sweep') {
-            source(`${where} profile`, f.profile);
+            if (f.profile) {
+                source(`${where} profile`, f.profile);
+            } else if (f.diameter === undefined) {
+                throw new Error(`${where}: give a profile or a diameter (circular profile)`);
+            }
             if (!('helix' in f.path)) {
                 source(`${where} path`, f.path);
             }
@@ -764,7 +783,7 @@ export function createTools(store: ProjectStore): StudioTool[] {
             schema: {
                 partId: z.string(),
                 updates: z.array(z.object({ id: z.string() }).passthrough()).min(1)
-                    .describe('Each: { id, ...fields to change }, e.g. { id: "lid-fillet", radius: 3 }'),
+                    .describe('Each: { id, ...fields to change }, e.g. { id: "lid-fillet", radius: 3 }; null removes an optional field'),
             },
             run: ({ partId, updates }) => {
                 const missing: string[] = [];

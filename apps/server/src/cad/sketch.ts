@@ -59,6 +59,7 @@ export function sketchFrame(sketch: Sketch): SketchFrame {
 }
 
 const scale = (v: Vec3, s: number): Vec3 => [v[0] * s, v[1] * s, v[2] * s];
+const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 
 function to3d(frame: SketchFrame, [a, b]: P2): Vec3 {
     const { origin: o, u, v } = frame;
@@ -772,10 +773,16 @@ export function extrudeTool(sketch: Sketch, f: ExtrudeOptions, regions: P2[] | u
     return slab.cut(tool);
 }
 
-/** Solid blended through the sections in order; each section is one closed profile without holes. */
-export function loftSketches(sections: Sketch[], ruled: boolean): Shape3D {
+/**
+ * Solid blended through the sections in order; each section is one closed profile without holes. closed: the
+ * loft runs on from the last section back to the first (a ring), which needs at least 3 sections.
+ */
+export function loftSketches(sections: Sketch[], ruled: boolean, closed = false): Shape3D {
     if (sections.length < 2) {
         throw new Error('a loft needs at least 2 sections');
+    }
+    if (closed && sections.length < 3) {
+        throw new Error('a closed loft needs at least 3 sections');
     }
     const wires = sections.map((sketch, i) => {
         if (!sketch?.profiles || sketch.profiles.length !== 1) {
@@ -788,7 +795,8 @@ export function loftSketches(sections: Sketch[], ruled: boolean): Shape3D {
             throw new Error(`section ${i}: ${e instanceof Error ? e.message : String(e)}`);
         }
     });
-    return loft(wires, { ruled });
+    // The same wire again at the end: OpenCascade then joins the last section to the first, smoothly.
+    return loft(closed ? [...wires, wires[0]] : wires, { ruled });
 }
 
 function singleProfile(sketch: Sketch, what: string): SketchProfile {
@@ -808,17 +816,51 @@ export function profileWire(sketch: Sketch, what = 'profile'): { wire: Wire; cen
 }
 
 /**
- * A sweep path: a single profile, where a `path` may stay open (it is not closed back to its start).
- * Returns the wire and whether it is one straight line (for twisting).
+ * The closed area a sweep moves along its path: the area of the sketch picked by `regions` (or the sketch's only
+ * area), as its outline and hole wires, with the outline's centre and the sketch frame.
  */
-export function pathWire(sketch: Sketch): { wire: Wire; line: [Vec3, Vec3] | null } {
-    const profile = singleProfile(sketch, 'path sketch');
+export function sweepProfile(sketch: Sketch, regions?: P2[]): { outer: Wire; holes: Wire[]; centre: Vec3; frame: SketchFrame } {
+    const parts = selectedRegions(sketch, regions);
+    if (parts.length !== 1) {
+        throw new Error(`sweep profile: pick one area of the sketch (${parts.length} are picked)`);
+    }
+    const { faces, frame, outlines } = sketchFaces(parts[0]);
+    if (faces.length !== 1) {
+        throw new Error(`sweep profile needs one closed area (the sketch has ${faces.length}); pick the area to sweep`);
+    }
+    const pts = outlines.reduce((a, b) => (Math.abs(signedArea(b)) > Math.abs(signedArea(a)) ? b : a));
+    const c: P2 = [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length];
+    // outerWire and innerWires use up the face they are called on.
+    return { outer: faces[0].clone().outerWire(), holes: faces[0].innerWires(), centre: to3d(frame, c), frame };
+}
+
+/**
+ * A sweep path: the sketch's one open chain (`open`), or else its single profile, where a `path` profile may stay
+ * open (it is not closed back to its start). Returns the wire and whether it is one straight line (for twisting).
+ */
+export function pathWire(sketch: Sketch, near?: Vec3): { wire: Wire; line: [Vec3, Vec3] | null } {
+    const chains = sketch?.open ?? [];
+    if (chains.length > 1) {
+        throw new Error(`path sketch has ${chains.length} separate open chains; a path must be one connected chain`);
+    }
+    if (chains.length === 1 && sketch.profiles?.length) {
+        throw new Error('path sketch has closed profiles besides its open chain; keep only the path in it');
+    }
+    const open = chains.length === 1;
+    const profile = open ? chains[0] : singleProfile(sketch, 'path sketch');
     const frame = sketchFrame(sketch);
     let ps: Piece[];
     try {
-        ps = pieces(profile, profile.kind === 'path');
+        ps = pieces(profile, open || profile.kind === 'path');
     } catch (e) {
         throw new Error(`path: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // An open path runs from its end nearer `near` (the profile), so the sweep starts at the profile.
+    const first = ps[0];
+    const last = ps[ps.length - 1];
+    if (near && first.kind !== 'circle' && last.kind !== 'circle'
+        && Math.hypot(...sub(to3d(frame, last.to), near)) < Math.hypot(...sub(to3d(frame, first.from), near)) - 1e-9) {
+        ps = ps.reverse().map((p) => (p.kind === 'circle' ? p : { ...p, from: p.to, to: p.from }));
     }
     const only = ps.length === 1 && ps[0].kind === 'line' ? ps[0] : null;
     return { wire: wireOf(frame, ps), line: only ? [to3d(frame, only.from), to3d(frame, only.to)] : null };

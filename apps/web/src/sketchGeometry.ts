@@ -4,7 +4,7 @@
 import type { SketchConstraint, SketchCurve, SketchGeometry, SketchPoint, SketchProfile } from '@jarvis/core';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, pointOf } from './solver';
 import { arcPoints, circleThrough, dist, entityDistance, mid, type Entity, type Pt } from './sketchMath';
-import { regionProfiles } from './sketchRegions';
+import { openChains, regionProfiles } from './sketchRegions';
 
 /** A constraint before it gets its id. */
 export type NewConstraint = SketchConstraint extends infer C ? (C extends SketchConstraint ? Omit<C, 'id'> : never) : never;
@@ -68,7 +68,16 @@ export function geometryEntities(g: SketchGeometry, includeConstruction = true):
 
 /** The solved closed profiles the kernel builds from (construction curves left out). */
 export function geometryProfiles(g: SketchGeometry): { profiles: SketchProfile[]; open: number } {
-    // Sketch point ids at the ends of each line and arc, so curves sharing a point share a graph vertex.
+    return regionProfiles(geometryEntities(g, false), curveEnds(g));
+}
+
+/** The open chains (construction curves left out) as open `path` profiles: what a sweep can use as its path. */
+export function geometryOpenChains(g: SketchGeometry): SketchProfile[] {
+    return openChains(geometryEntities(g, false), curveEnds(g));
+}
+
+/** Sketch point ids at the ends of each line and arc, so curves sharing a point share a graph vertex. */
+function curveEnds(g: SketchGeometry): Map<string, [string, string]> {
     const ends = new Map<string, [string, string]>();
     for (const c of g.curves) {
         if (c.kind === 'line') {
@@ -77,7 +86,7 @@ export function geometryProfiles(g: SketchGeometry): { profiles: SketchProfile[]
             ends.set(c.id, [c.start, c.end]);
         }
     }
-    return regionProfiles(geometryEntities(g, false), ends);
+    return ends;
 }
 
 // ---- Old sketches (profiles only) to editable geometry ------------------------------------------------

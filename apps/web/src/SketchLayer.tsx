@@ -1,12 +1,12 @@
 // The sketcher in the 3D view: plane picking, the sketch grid, entities, the entity in progress with live
-// dimensions, shaded closed profiles and a preview of the extrusion or revolve.
+// dimensions and shaded closed profiles (the finish panel's solid is previewed by the server, like other tools).
 
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Grid, Html, Line } from '@react-three/drei';
 import {
-    DoubleSide, Euler, ExtrudeGeometry, LatheGeometry, MathUtils, Matrix4, Path, Quaternion, Shape, ShapeGeometry, Vector2,
-    Vector3, type BufferGeometry, type Group, type Material, type Mesh, type PerspectiveCamera,
+    DoubleSide, Euler, MathUtils, Matrix4, Path, Quaternion, Shape, ShapeGeometry, Vector2,
+    Vector3, type Group, type Material, type Mesh, type PerspectiveCamera,
 } from 'three';
 import {
     shapeHalfExtents, type Feature, type Part, type Sketch, type SketchPlane, type SketchPlaneName, type SketchRegion, type Vec3,
@@ -123,8 +123,8 @@ function RegionFills({ regions, picked, onToggle }: { regions: SketchRegion[]; p
 }
 
 /**
- * Shaded closed profiles and, while finishing, a translucent preview of the solid. While finishing, each region
- * can be clicked to pick it; the preview then shows the picked regions only (all of them when none is picked).
+ * Shaded closed profiles. While finishing, each region can be clicked to pick it; the solid the panel would make
+ * is the server's preview (a ghost over the model, as for Extrude), so every option shows as it will be built.
  */
 function Profiles() {
     const geometry = useSketcher((s) => s.geometry);
@@ -138,69 +138,14 @@ function Profiles() {
     const nested = useMemo(() => nestProfiles(geometryProfiles(geometry).profiles), [geometry]);
     const regions = useMemo(() => (open ? regionsOf(geometry) : []), [open, geometry]);
     const picked = useMemo(() => (ownPicks ? pickedRegions(regions, picks) : []), [ownPicks, regions, picks]);
-    const used = useMemo(() => (ownPicks && picks.length ? regionOutlines(picked.map((i) => regions[i])) : nested),
-        [ownPicks, picks, picked, regions, nested]);
     const fill = useMemo(() => new ShapeGeometry(shapesFor(nested)), [nested]);
-    const solid = useMemo<BufferGeometry | null>(() => {
-        if (!finishing || !used.length) {
-            return null;
-        }
-        if (finishing.op === 'extrude') {
-            const depth = Math.max(0.1, finishing.distance);
-            const geometry = new ExtrudeGeometry(shapesFor(used), { depth, bevelEnabled: false, curveSegments: 24 });
-            const start = finishing.direction === 'reverse' ? -depth : finishing.direction === 'symmetric' ? -depth / 2 : 0;
-            return geometry.translate(0, 0, start);
-        }
-        // Revolve: a lathe of each outline about the axis, when the axis lies in the sketch plane.
-        let axis: ReturnType<typeof resolveRevolveAxis>['inPlane'] = null;
-        try {
-            axis = resolveRevolveAxis(finishing.axis, { plane, offset, geometry }, context).inPlane;
-        } catch {
-            return null;
-        }
-        if (!axis) {
-            return null;
-        }
-        const [start, sweep] = revolveSpan(finishing.angle || 360, finishing.type, !!finishing.reverse, finishing.angle2 ?? 0);
-        const lathes = used.map(({ outer }) => {
-            const { points, side } = latheProfile(outer, axis!);
-            const lathe = new LatheGeometry([...points, points[0]].map(([r, h]) => new Vector2(r, h)), 64,
-                MathUtils.degToRad(Math.min(start, start + sweep)), MathUtils.degToRad(Math.abs(sweep)));
-            // Lathe frame: y along the axis, z towards the profile at angle 0, x = y × z.
-            const y = new Vector3(axis!.direction[0], axis!.direction[1], 0);
-            const z = new Vector3(side[0], side[1], 0);
-            return lathe.applyMatrix4(new Matrix4().makeBasis(new Vector3().crossVectors(y, z), y, z)
-                .setPosition(axis!.point[0], axis!.point[1], 0)).toNonIndexed();
-        });
-        return lathes.length === 1 ? lathes[0] : mergeGeometries(lathes);
-    }, [finishing, used, plane, offset, geometry, context]);
     useEffect(() => () => fill.dispose(), [fill]);
-    useEffect(() => () => solid?.dispose(), [solid]);
-    const cut = finishing?.mode === 'cut';
-    return (
-        <>
-            {open ? (
-                <RegionFills regions={regions} picked={picked} onToggle={(at) => toggleRegion(at, regions)} />
-            ) : (
-                <mesh geometry={fill} renderOrder={15} raycast={() => null}>
-                    <meshBasicMaterial color="#b46bff" transparent opacity={0.2} depthTest={false} depthWrite={false} side={DoubleSide} />
-                </mesh>
-            )}
-            {solid && (
-                <mesh geometry={solid} renderOrder={16} raycast={() => null}>
-                    <meshStandardMaterial
-                        color={cut ? '#ff6b78' : '#35e0ff'}
-                        transparent
-                        opacity={0.35}
-                        depthWrite={false}
-                        depthTest={false}
-                        side={DoubleSide}
-                        emissive={cut ? '#ff6b78' : '#35e0ff'}
-                        emissiveIntensity={0.25}
-                    />
-                </mesh>
-            )}
-        </>
+    return open ? (
+        <RegionFills regions={regions} picked={picked} onToggle={(at) => toggleRegion(at, regions)} />
+    ) : (
+        <mesh geometry={fill} renderOrder={15} raycast={() => null}>
+            <meshBasicMaterial color="#b46bff" transparent opacity={0.2} depthTest={false} depthWrite={false} side={DoubleSide} />
+        </mesh>
     );
 }
 

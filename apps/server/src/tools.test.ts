@@ -498,6 +498,19 @@ describe('reference geometry and instances', () => {
                 path: { helix: { axis: 'y', pitch: 4, turns: 5 } },
             }],
         })).toContain('Added 1');
+        const path = { sketch: { plane: 'front', profiles: [], open: [{ kind: 'path', start: [0, 0], segments: [{ kind: 'line', to: [0, 20] }] }] } };
+        expect(run('features_add', { partId: 'body', features: [{ op: 'sweep', mode: 'add', diameter: 3, path }] })).toContain('Added 1');
+        expect(() => run('features_add', { partId: 'body', features: [{ op: 'sweep', mode: 'add', path }] }))
+            .toThrow(/give a profile or a diameter/);
+    });
+
+    it('clears optional fields an update sets to null', () => {
+        body([{ op: 'thread', id: 't', kind: 'external', diameter: 8, pitch: 1.25, length: 10, position: [0, 0, 0] }]);
+        run('features_update', { partId: 'body', updates: [{ id: 't', at: [4, 0, 0], position: null, length: null, revolutions: 6 }] });
+        const f = store.get().parts[0].features?.find((x) => x.id === 't');
+        expect(f).toMatchObject({ at: [4, 0, 0], revolutions: 6 });
+        expect(f).not.toHaveProperty('position');
+        expect(f).not.toHaveProperty('length');
     });
 
     it('accepts point steps in plane and axis definitions, and revolves about a sketch line or an axis step', () => {

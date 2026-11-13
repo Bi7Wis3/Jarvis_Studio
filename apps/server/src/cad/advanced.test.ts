@@ -159,6 +159,49 @@ describe('sweep', () => {
         expect(volume(m) / (4 * Math.PI * (40 + 5 * Math.PI))).toBeCloseTo(1, 1);
     }, SLOW);
 
+    // What the sketcher saves for a sketch with only an L-shaped polyline: no closed profile, one open chain.
+    const lPath: Sketch = { plane: 'front', profiles: [], open: [{
+        kind: 'path', start: [30, 20], segments: [{ kind: 'line', to: [0, 20] }, { kind: 'line', to: [0, 0] }],
+    }] };
+
+    it('sweeps along the open chain a sketcher sketch saves, from the end at the profile', async () => {
+        const m = await mesh(empty, [
+            { id: 'path', op: 'sketch', sketch: lPath },
+            { id: 's', op: 'sweep', mode: 'add', profile: { sketch: { plane: 'top', profiles: [circle([0, 0], 2)] } }, path: { sketchRef: 'path' } },
+        ]);
+        expect(openEdges(m)).toBe(0);
+        // The chain is stored from (30, 20) but the profile sits at (0, 0): the sweep starts there.
+        expectBounds(m, [-2, 0, -2], [30, 22, 2], 0.1);
+        expect(volume(m) / (4 * Math.PI * 50)).toBeCloseTo(1, 1);
+        await expect(mesh(empty, [{
+            id: 's', op: 'sweep', mode: 'add', profile: { sketch: { plane: 'top', profiles: [circle([0, 0], 2)] } },
+            path: { sketch: { ...lPath, open: [...lPath.open!, { kind: 'path', start: [50, 0], segments: [{ kind: 'line', to: [60, 0] }] }] } },
+        }])).rejects.toThrow(/2 separate open chains/);
+    }, SLOW);
+
+    it('sweeps a circular profile, keeps the normal constant, and keeps holes of the profile', async () => {
+        const rod = await mesh(empty, [{ id: 's', op: 'sweep', mode: 'add', diameter: 4, path: { sketch: lPath } }]);
+        expect(volume(rod) / (4 * Math.PI * 50)).toBeCloseTo(1, 1);
+        expectBounds(rod, [-2, 0, -2], [30, 22, 2], 0.1);
+        // Kept normal: the horizontal disc stays horizontal along the vertical leg, then shears along the
+        // horizontal leg (volume = area x vertical travel only, 4 pi x 20).
+        const flat = await mesh(empty, [{
+            id: 's', op: 'sweep', mode: 'add', orientation: 'keepNormal', profile: { sketch: { plane: 'top', profiles: [circle([0, 0], 2)] } },
+            path: { sketch: { plane: 'front', profiles: [], open: [{ kind: 'path', start: [0, 0], segments: [{ kind: 'line', to: [0, 20] }, { kind: 'line', to: [10, 30] }] }] } },
+        }]);
+        expect(volume(flat) / (4 * Math.PI * 30)).toBeCloseTo(1, 1);
+        // A ring profile (two regions; the ring is picked) makes a tube.
+        const ringSketch: Sketch = {
+            plane: 'top', profiles: [circle([0, 0], 3), circle([0, 0], 2)],
+            regions: [{ loops: [circle([0, 0], 3), circle([0, 0], 2)], at: [2.5, 0] }, { loops: [circle([0, 0], 2)], at: [0, 0] }],
+        };
+        const tube = await mesh(empty, [{ id: 's', op: 'sweep', mode: 'add', profile: { sketch: ringSketch }, regions: [[2.5, 0]], path: { sketch: lPath } }]);
+        expect(volume(tube) / (5 * Math.PI * 50)).toBeCloseTo(1, 1);
+        expect(openEdges(tube)).toBe(0);
+        await expect(mesh(empty, [{ id: 's', op: 'sweep', mode: 'add', path: { sketch: lPath } }]))
+            .rejects.toThrow(/profile sketch or a diameter/);
+    }, SLOW);
+
     it('twists along a straight path and cuts a helical groove', async () => {
         const square: Sketch = { plane: 'top', profiles: [rect([0, 0], 4, 4)] };
         const line: Sketch = { plane: 'front', profiles: [{ kind: 'path', start: [0, 0], segments: [{ kind: 'line', to: [0, 20] }] }] };
