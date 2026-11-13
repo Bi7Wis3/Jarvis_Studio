@@ -518,7 +518,9 @@ describe('reference geometry and instances', () => {
         })).toThrow(/not an earlier point step/);
         // An edit back to 360 degrees, Blind, sticks: the fields given replace the stored ones.
         run('features_update', { partId: 'body', updates: [{ id: 'revolve1', angle: 360, type: 'blind', reverse: false, angle2: null, axis: { line: 'c' } }] });
-        expect(store.get().parts[0].features?.[4]).toMatchObject({ angle: 360, type: 'blind', angle2: null, axis: { line: 'c' } });
+        // A field sent as null is removed (features_update clears optional fields that way).
+        expect(store.get().parts[0].features?.[4]).toMatchObject({ angle: 360, type: 'blind', axis: { line: 'c' } });
+        expect(store.get().parts[0].features?.[4]).not.toHaveProperty('angle2');
     });
 
     it('places instances that share the source design', () => {
