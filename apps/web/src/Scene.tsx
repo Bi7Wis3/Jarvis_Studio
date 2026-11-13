@@ -18,6 +18,7 @@ import { chooseFace, useSketcher } from './sketcher';
 import { planePickerSize, SketchLayer, SketchSteps, sketchView } from './SketchLayer';
 import { PartDecals } from './Decals';
 import { Manipulators } from './Manipulators';
+import { partLook } from './partView';
 
 /** Animated values shared between the scene and the label overlay. */
 export const anim = { explode: 0, settleAt: 0 };
@@ -823,7 +824,7 @@ export function Scene({ project }: { project: Project }) {
     const focus = project.view.focus;
     const workspace = useStudio((s) => s.workspace);
     const activePart = useStudio((s) => s.activePart);
-    const showOthers = useSketcher((s) => s.showOthers);
+    const partView = useStudio((s) => s.partView);
     const sketchPart = useSketcher((s) => s.partId);
     const placingDecal = useStudio((s) => !!s.placingDecal);
     const activeShown = activePart !== null && project.parts.some((p) => p.id === activePart);
@@ -871,12 +872,11 @@ export function Scene({ project }: { project: Project }) {
             </Environment>
 
             {parts.map((part) => {
-                const other = workspace === 'part' && activeShown && part.id !== activePart;
-                if (other && !showOthers) {
+                const look = partLook(part.id, { workspace, activePart: activeShown ? activePart : null, partView, focus });
+                if (look === 'hidden') {
                     return null;
                 }
-                const dimmed = other || (workspace !== 'part' && focus !== null && focus !== part.id);
-                return <PartMesh key={part.id} part={part} offset={offsets[part.id] ?? NO_OFFSET} dimmed={dimmed} />;
+                return <PartMesh key={part.id} part={part} offset={offsets[part.id] ?? NO_OFFSET} dimmed={look === 'dimmed'} />;
             })}
             {ghosts.map((part) => (
                 <GhostPart key={part.id} part={part} meshKey={preview?.keys[part.id] ?? null} offset={offsets[part.id] ?? NO_OFFSET} />

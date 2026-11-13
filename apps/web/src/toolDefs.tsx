@@ -1830,8 +1830,9 @@ const othersTool: ToolDef = {
     id: 'others',
     label: 'Show other parts',
     icon: 'ghost',
-    hint: 'as faint ghosts',
-    instant: () => useSketcher.setState((s) => ({ showOthers: !s.showOthers })),
+    hint: 'in context: the rest of the assembly as faint ghosts',
+    // The same switch as Isolated / In context above the tree.
+    instant: () => useStudio.setState((s) => ({ partView: s.partView === 'inContext' ? 'isolated' : 'inContext' })),
     active: (_, s) => s.showOthers,
 };
 const sketchesTool: ToolDef = {
