@@ -15,6 +15,7 @@ import { showError } from './menus';
 import { addPicture, PicturePicker } from './DecalPanel';
 import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchToolDefs';
 import { evaluateTools } from './evaluateToolDefs';
+import { referenceEditor, referenceTools } from './referenceToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { Icon } from './icons';
 import {
@@ -458,6 +459,17 @@ const sketchPlaneTool: ToolDef = {
                         )}
                     >
                         {plane[0].toUpperCase() + plane.slice(1)}
+                    </button>
+                ))}
+                {/* The part's reference planes (not tilted: a tilted plane is made with the Plane tool). */}
+                {useSketcher.getState().context.filter((f) => f.op === 'plane' && !f.suppressed).map((f) => (
+                    <button
+                        key={f.id}
+                        type="button"
+                        title="A reference plane of the part (click it in the view too)"
+                        onClick={() => choosePlane({ planeRef: f.id }, evaluate(String(api.values.offset)) ?? 0)}
+                    >
+                        {f.name ?? f.id}
                     </button>
                 ))}
             </div>
@@ -2058,6 +2070,7 @@ export const noEditTool: ToolDef = {
 export const PART_GROUPS: ToolGroup[] = [
     { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchStartTools },
     { id: 'solid', label: 'Solid', icon: 'extrude', collapse: 4, tools: solidTools },
+    { id: 'reference', label: 'Reference geometry', icon: 'ref-plane', collapse: 2, tools: referenceTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
     { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, othersTool, sketchesTool, sketchVisibilityTool] },
@@ -2097,6 +2110,10 @@ export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketc
     }
     if (feature?.op === 'loft') {
         return feature.sections.every((s) => s.sketchRef) ? loftTool : noEditTool;
+    }
+    const reference = referenceEditor(feature);
+    if (reference) {
+        return reference;
     }
     if (feature ? feature.op === 'extrude' || feature.op === 'revolve' || feature.op === 'sketch' : part.shape.kind === 'sketch') {
         return 'sketch';

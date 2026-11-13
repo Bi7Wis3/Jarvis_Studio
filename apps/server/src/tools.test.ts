@@ -490,6 +490,27 @@ describe('reference geometry and instances', () => {
         })).toContain('Added 1');
     });
 
+    it('accepts point steps in plane and axis definitions, and revolves about a sketch line or an axis step', () => {
+        body([
+            { op: 'point', name: 'Point1', position: [5, 0, 0] },
+            { op: 'plane', name: 'Plane1', definition: { kind: 'parallel', base: 'top', point: { pointRef: 'point1' } } },
+            { op: 'axis', name: 'Axis1', definition: { kind: 'pointPlane', point: { pointRef: 'point1' }, plane: 'front' } },
+            { op: 'plane', name: 'Plane2', definition: { kind: 'normal', axis: { axisRef: 'axis1' } } },
+            {
+                op: 'revolve', name: 'Revolve1', mode: 'add', axis: { axisRef: 'axis1' }, type: 'midPlane', angle: 90,
+                sketch: { plane: 'top', profiles: [{ kind: 'circle', center: [20, 0], radius: 2 }] },
+            },
+        ]);
+        expect(store.get().parts[0].features?.map((f) => f.id)).toEqual(['point1', 'plane1', 'axis1', 'plane2', 'revolve1']);
+        expect(() => run('features_add', {
+            partId: 'body',
+            features: [{ op: 'axis', definition: { kind: 'twoPoints', a: { pointRef: 'later' }, b: [0, 1, 0] } }],
+        })).toThrow(/not an earlier point step/);
+        // An edit back to 360 degrees, Blind, sticks: the fields given replace the stored ones.
+        run('features_update', { partId: 'body', updates: [{ id: 'revolve1', angle: 360, type: 'blind', reverse: false, angle2: null, axis: { line: 'c' } }] });
+        expect(store.get().parts[0].features?.[4]).toMatchObject({ angle: 360, type: 'blind', angle2: null, axis: { line: 'c' } });
+    });
+
     it('places instances that share the source design', () => {
         body([]);
         expect(run('parts_instance', { partId: 'body', instances: [{ position: [50, 5, 0] }, { position: [100, 5, 0] }] }))

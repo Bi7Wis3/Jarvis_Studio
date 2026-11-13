@@ -428,9 +428,9 @@ describe('revolve axes and directions', () => {
     }, SLOW);
 
     it('revolves blind one way or reversed, mid plane, and in two directions', async () => {
-        const at = (extra: Partial<Extract<Feature, { op: 'revolve' }>>) => mesh(empty, [
-            { id: 'r', op: 'revolve', mode: 'add', axis: 'v', angle: 90, sketch: { plane: 'front', profiles: [rect([7.5, 5], 5, 10)] }, ...extra },
-        ]);
+        const at = (extra: { angle?: number; reverse?: boolean; type?: 'midPlane'; angle2?: number }) => mesh(empty, [{
+            id: 'r', op: 'revolve', mode: 'add', axis: 'v', angle: 90, sketch: { plane: 'front', profiles: [rect([7.5, 5], 5, 10)] }, ...extra,
+        } as Feature]);
         const quarter = Math.PI * 75 * 10 / 4;
         // +X turned +90 degrees about +Y points to -Z.
         const blind = await at({});
