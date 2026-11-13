@@ -926,8 +926,12 @@ function reflect(p: Pt, [a, b]: [Pt, Pt]): Pt {
     return [2 * foot[0] - p[0], 2 * foot[1] - p[1]];
 }
 
-/** Mirror copies of the curves about a line or axis, each point held symmetric to its original. */
-export function mirrorCurves(g: SketchGeometry, curveIds: string[], about: string): EditResult & { created?: string[] } {
+/**
+ * Mirror copies of the curves about a line or axis, each point held symmetric to its original. With `keepOriginals` off the
+ * originals are removed and the mirrored curves keep the relations and dimensions among them (`dropped` counts the
+ * ones to the rest of the sketch, which no longer hold).
+ */
+export function mirrorCurves(g: SketchGeometry, curveIds: string[], about: string, keepOriginals = true): EditResult & { created?: string[]; dropped?: number } {
     const axis = mirrorLine(g, about);
     if (!axis) {
         return { error: 'Mirror about a line or one of the sketch axes.' };
@@ -977,7 +981,39 @@ export function mirrorCurves(g: SketchGeometry, curveIds: string[], about: strin
         out = putCurve(out, copy);
         created.push(copy.id);
     }
-    return { g: withConstraints(out, extra), created };
+    if (keepOriginals) {
+        return { g: withConstraints(out, extra), created };
+    }
+    // Copy off: the originals go; the mirrored curves take over the relations and dimensions among them.
+    const curveMap = new Map(curves.map((c, i) => [c.id, created[i]]));
+    const own = new Set([...curves.map((c) => c.id), ...curves.flatMap(curvePoints)]);
+    const rename = (id: string) => curveMap.get(id) ?? map.get(id) ?? id;
+    const level = Math.abs(axis[0][0] - axis[1][0]) < 1e-9 || Math.abs(axis[0][1] - axis[1][1]) < 1e-9;
+    let dropped = 0;
+    const carriedOver: NewConstraint[] = [];
+    for (const k of g.constraints) {
+        const refs = constraintRefs(k);
+        if (!refs.some((r) => own.has(r))) {
+            continue;
+        }
+        // Directions survive a reflection only about a level or upright line.
+        const directional = k.kind === 'horizontal' || k.kind === 'vertical' || (k.kind === 'distance' && !!k.axis);
+        if (refs.every((r) => own.has(r)) && k.kind !== 'fix' && (level || !directional)) {
+            carriedOver.push(renamed(k, rename));
+        } else {
+            dropped += 1;
+        }
+    }
+    const goneCurves = new Set(curves.map((c) => c.id));
+    const kept = out.curves.filter((c) => !goneCurves.has(c.id));
+    const used = new Set(kept.flatMap(curvePoints));
+    const gone = new Set([...goneCurves, ...curves.flatMap(curvePoints).filter((p) => !used.has(p) && p !== ORIGIN)]);
+    const result: SketchGeometry = {
+        points: out.points.filter((p) => !gone.has(p.id)),
+        curves: kept,
+        constraints: out.constraints.filter((k) => !constraintRefs(k).some((r) => gone.has(r))),
+    };
+    return { g: withConstraints(result, carriedOver), created, dropped };
 }
 
 // ---- Move, copy, rotate, scale ----------------------------------------------------------------------

@@ -145,9 +145,9 @@ const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}`>, string> = {
     centerArc: 'Click the centre, then the start, then where it ends · type the radius, then the angle + Enter',
     trim: 'Click the piece of a curve to remove, up to where other curves cross it',
     extend: 'Click near the end of a line or arc to lengthen it to the next curve',
-    fillet: 'Click a corner, or two lines, to round it · type a radius + Enter to change it',
-    chamfer: 'Click a corner, or two lines, to cut it · type a distance + Enter to change it',
-    offset: 'Click a curve, then click where the copy goes · or type the distance + Enter',
+    fillet: 'Click a corner, or two lines or arcs, to round it · type a radius + Enter to change it · options in the form',
+    chamfer: 'Click a corner, or two lines, to cut it · type a distance + Enter to change it · options in the form',
+    offset: 'Click a curve (or select curves first), then click where the copy goes · or type the distance + Enter',
     mirror: 'Click the curves to mirror, then an axis or a centre line · or press Enter and click any line',
 };
 

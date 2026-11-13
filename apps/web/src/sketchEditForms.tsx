@@ -51,7 +51,8 @@ function toOptions(fields: Field[], v: Values): Partial<EditOptions> {
 }
 
 function fromOptions(fields: Field[]): Values {
-    const o = useSketcher.getState().editOptions as unknown as Record<string, unknown>;
+    const s = useSketcher.getState();
+    const o = { ...s.editOptions, filletRadius: s.filletRadius, chamferDistance: s.chamferDistance } as unknown as Record<string, unknown>;
     return Object.fromEntries(fields.map((f) => [f.key, f.kind === 'check' ? !!o[f.key] : String(o[f.key] ?? '')]));
 }
 
@@ -171,5 +172,70 @@ const offset = editTool({
     note: OffsetNote,
 });
 
+// ---- Fillet and chamfer ---------------------------------------------------------------------------------------
+
+function CornerNote({ tool }: { tool: 'fillet' | 'chamfer' }) {
+    const picked = useSketcher((s) => s.picks.filter((p) => p.type === 'point').length + (s.picks.filter((p) => p.type === 'curve').length === 2 ? 1 : 0));
+    return (
+        <p className="tb-note">
+            {picked ? <><b>{picked}</b> corner{picked === 1 ? '' : 's'} selected: OK {tool === 'fillet' ? 'rounds' : 'cuts'} them. </> : null}
+            {tool === 'fillet' ? 'Click a corner, or two lines or arcs, to round it.' : 'Click a corner, or two lines, to cut it.'}
+        </p>
+    );
+}
+
+const fillet = editTool({
+    id: 'fillet',
+    label: 'Fillet',
+    icon: 'sk-fillet',
+    hint: 'round a corner of lines or arcs',
+    fields: [
+        { key: 'filletRadius', label: 'Radius', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Fillet parameters' },
+        { key: 'filletKeepCorners', label: 'Keep constrained corners', kind: 'check', section: 'Fillet parameters' },
+        { key: 'filletDimensionEach', label: 'Dimension each fillet', kind: 'check', section: 'Fillet parameters' },
+    ],
+    note: () => <CornerNote tool="fillet" />,
+});
+
+const chamfer = editTool({
+    id: 'chamfer',
+    label: 'Chamfer',
+    icon: 'sk-chamfer',
+    hint: 'cut a corner of two lines',
+    fields: [
+        { key: 'chamferType', label: 'Type', kind: 'select', options: opts(['distance', 'Distance-distance'], ['angle', 'Angle-distance']), section: 'Chamfer parameters' },
+        { key: 'chamferEqual', label: 'Equal distance', kind: 'check', section: 'Chamfer parameters', show: (v) => v.chamferType === 'distance' },
+        { key: 'chamferDistance', label: 'Distance 1', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Chamfer parameters' },
+        {
+            key: 'chamferDistance2', label: 'Distance 2', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Chamfer parameters',
+            show: (v) => v.chamferType === 'distance' && !v.chamferEqual,
+        },
+        { key: 'chamferAngle', label: 'Direction 1 angle', kind: 'number', unit: 'deg', section: 'Chamfer parameters', show: (v) => v.chamferType === 'angle' },
+    ],
+    note: () => <CornerNote tool="chamfer" />,
+});
+
+// ---- Mirror -----------------------------------------------------------------------------------------------
+
+function MirrorNote() {
+    const picked = useSketcher((s) => s.picks.length);
+    const about = useSketcher((s) => s.mirrorAbout);
+    return (
+        <p className="tb-note">
+            <b>{picked}</b> to mirror. {about ? 'Click any line to mirror about.' : 'Click the curves, then an axis or a centreline (or press Enter, then any line).'}
+        </p>
+    );
+}
+
+const mirror = editTool({
+    id: 'mirror',
+    label: 'Mirror',
+    icon: 'mirror',
+    hint: 'mirror curves about a line or axis',
+    shortcut: 'M',
+    fields: [{ key: 'mirrorCopy', label: 'Copy', kind: 'check', section: 'Options' }],
+    note: MirrorNote,
+});
+
 /** In the Modify group, in place of the plain click tools. */
-export const editToolForms: ToolDef[] = [trim, extend, offset];
+export const editToolForms: ToolDef[] = [trim, extend, fillet, chamfer, offset, mirror];

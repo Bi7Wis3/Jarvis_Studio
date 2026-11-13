@@ -8,7 +8,7 @@ import type {
 } from '@jarvis/core';
 import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { useStudio } from './state';
-import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, loadSolver, measure, pointOf, solveGeometry, solverReady } from './solver';
+import { AXIS_U, AXIS_V, ORIGIN, curveOf, curveRadius, isDimension, loadSolver, measure, pointOf, solveGeometry, solverReady } from './solver';
 import { regionsOf } from './regionPick';
 import {
     EMPTY_GEOMETRY, PICKS_NEEDED, addArc, addCircle, addConstraint, addLine, addPolygon, addRect, addSlot, constraintFromPicks,
@@ -16,11 +16,12 @@ import {
     toggleConstruction, type ConstraintTool, type NewConstraint, type Pick, type PointRef,
 } from './sketchGeometry';
 import {
-    addCentreArc, addCentreRect, chamferCorner, cornerOf, curvePoints, extendAt, filletCorner, mirrorCurves, offsetEntities,
+    addCentreArc, addCentreRect, curvePoints, extendAt, mirrorCurves, offsetEntities,
     offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type OffsetCap, type OffsetOptions, type Transform,
 } from './sketchEdit';
 import { powerTrim, trimBetween, trimCorner, trimmable, type TrimMode } from './sketchTrim';
 import { circularSketchPattern, linearSketchPattern, type CircularPatternOptions, type LinearPatternOptions } from './sketchPattern';
+import { chamferSides, filletCornerAt, filletCornerOf, filletSides, type ChamferOptions, type FilletCorner } from './sketchFillet';
 import { fixAll, fixProblem, fullyDefine, type Problem } from './sketchRepair';
 import { unmetConstraints } from './sketchCheck';
 import { dist, mid, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
@@ -150,6 +151,8 @@ interface SketcherState {
     trimStroke: { from: SketchGeometry; path: Pt[]; trimmed: number; slop: number } | null;
     /** Trim corner: the first line and where it was clicked; trim away inside / outside: the two boundaries. */
     trimPicks: { id: string; at: Pt }[];
+    /** Fillet: the first fillet made since the tool started (later ones of the same radius are equal to it). */
+    filletFirst: string | null;
     /** First point of the current line chain, to close it on. */
     chainStart: string | null;
     cursor: Pt | null;
@@ -230,6 +233,7 @@ const IDLE = {
     mirrorAbout: false,
     trimStroke: null,
     trimPicks: [],
+    filletFirst: null,
     chainStart: null,
     cursor: null,
     snapKind: null,
@@ -414,7 +418,7 @@ export function setTool(tool: SketchTool): void {
     set({
         tool, draft: [], chainStart: null, typed: '', picks, hover: null, dimDrag: null, dimDraft: null, message: null,
         editPreview: [], editText: null, offsetCurve: null, mirrorAbout: false, arcSweep: 0, ...(tool === 'xform' ? {} : { xform: null }),
-        trimStroke: null, trimPicks: [],
+        trimStroke: null, trimPicks: [], filletFirst: null,
     });
 }
 
@@ -425,6 +429,15 @@ export function startEditTool(tool: EditTool): void {
     const curves = selected.filter((x): x is Pick => x.type === 'curve');
     if (tool === 'offset' && curves.length) {
         set({ offsetCurve: curves[0].id, picks: curves });
+    }
+    if (tool === 'fillet' || tool === 'chamfer') {
+        // Selected corner points, or two selected curves, are filleted with OK.
+        const used = new Set(get().geometry.curves.flatMap(curvePoints));
+        const corners = selected.filter((x): x is Pick => x.type === 'point' && used.has(x.id));
+        set({ picks: [...corners, ...curves.slice(0, 2)] });
+    }
+    if (tool === 'mirror') {
+        set({ picks: curves });
     }
 }
 
@@ -441,12 +454,43 @@ export function finishEditTool(tool: EditTool): string | null {
         applyOffset(side * (o.offsetReverse ? -1 : 1) * Math.abs(o.offsetDistance));
         return get().offsetCurve ? get().message ?? 'The offset could not be applied.' : null;
     }
+    if (tool === 'fillet' || tool === 'chamfer') {
+        const size = tool === 'fillet' ? s.filletRadius : s.chamferDistance;
+        const points = s.picks.filter((p) => p.type === 'point').map((p) => p.id);
+        const curves = s.picks.filter((p) => p.type === 'curve').map((p) => p.id);
+        const errors: string[] = [];
+        for (const id of points) {
+            const corner = filletCornerAt(get().geometry, id);
+            if ('error' in corner) {
+                errors.push(corner.error);
+            } else if (!applyCorner(tool, corner, size)) {
+                errors.push(get().message ?? 'Not applied.');
+            }
+        }
+        if (curves.length === 2) {
+            const corner = filletCornerOf(get().geometry, curves[0], curves[1]);
+            if ('error' in corner) {
+                errors.push(corner.error);
+            } else if (!applyCorner(tool, corner, size)) {
+                errors.push(get().message ?? 'Not applied.');
+            }
+        }
+        set({ picks: [] });
+        return errors.length ? errors[0] : null;
+    }
     return null;
 }
 
 /** Changes edit tool options (from the tool's form). */
-export function setEditOptions(patch: Partial<EditOptions>): void {
-    set((s) => ({ editOptions: { ...s.editOptions, ...patch }, trimPicks: patch.trimMode ? [] : s.trimPicks, picks: patch.trimMode ? [] : s.picks }));
+export function setEditOptions(patch: Partial<EditOptions> & { filletRadius?: number; chamferDistance?: number }): void {
+    const { filletRadius, chamferDistance, ...options } = patch;
+    set((s) => ({
+        editOptions: { ...s.editOptions, ...options },
+        trimPicks: patch.trimMode ? [] : s.trimPicks,
+        picks: patch.trimMode ? [] : s.picks,
+        ...(filletRadius && filletRadius > 0 ? { filletRadius } : {}),
+        ...(chamferDistance && chamferDistance > 0 ? { chamferDistance } : {}),
+    }));
 }
 
 export function undoSketch(): void {
@@ -1299,7 +1343,21 @@ function editHover(s: SketcherState, raw: Pt, tolerance: number): Partial<Sketch
         case 'fillet':
         case 'chamfer': {
             const size = s.tool === 'fillet' ? `R${round(s.filletRadius, 0.01)}` : `${round(s.chamferDistance, 0.01)}`;
-            return { hover: cornerPick(g, raw, tolerance), editPreview: [], editText: s.typed ? null : size };
+            const pick = cornerPick(g, raw, tolerance);
+            // A corner under the pointer: the fillet or chamfer it would get.
+            let preview: NewEntity[] = [];
+            const corner = pick?.type === 'point' ? filletCornerAt(g, pick.id) : null;
+            if (corner && !('error' in corner)) {
+                const typed = s.typed ? evaluate(s.typed) : null;
+                const r = s.tool === 'fillet'
+                    ? filletSides(g, corner, Math.abs(typed ?? s.filletRadius), { keepCorners: s.editOptions.filletKeepCorners })
+                    : chamferSides(g, corner, chamferOptions(s, Math.abs(typed ?? s.chamferDistance)));
+                if (!('error' in r)) {
+                    const old = new Set(g.curves.map((c) => c.id));
+                    preview = geometryEntities(r.g, false).filter((e) => !old.has(e.id)) as NewEntity[];
+                }
+            }
+            return { hover: pick, editPreview: preview, editText: s.typed ? null : size };
         }
         case 'offset': {
             if (s.offsetCurve) {
@@ -1353,12 +1411,12 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             if (!pick) {
                 return;
             }
-            let corner: ReturnType<typeof cornerOf>;
+            let corner: ReturnType<typeof filletCornerAt>;
             if (pick.type === 'point') {
-                corner = cornerOf(g, { point: pick.id });
+                corner = filletCornerAt(g, pick.id);
             } else {
-                if (curveOf(g, pick.id)?.kind !== 'line') {
-                    set({ picks: [], message: 'Pick a corner, or two lines.' });
+                if (curveOf(g, pick.id)?.kind === 'circle') {
+                    set({ picks: [], message: tool === 'fillet' ? 'Pick a corner, or two lines or arcs.' : 'Pick a corner, or two lines.' });
                     return;
                 }
                 const first = s.picks.find((p) => p.type === 'curve' && p.id !== pick.id);
@@ -1366,14 +1424,13 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
                     set({ picks: [pick], message: null });
                     return;
                 }
-                corner = cornerOf(g, { lines: [first.id, pick.id] });
+                corner = filletCornerOf(g, first.id, pick.id);
             }
-            const r = 'error' in corner ? corner : tool === 'fillet' ? filletCorner(g, corner, size) : chamferCorner(g, corner, size);
-            if ('error' in r) {
-                set({ picks: [], message: r.error });
+            if ('error' in corner) {
+                set({ picks: [], message: corner.error });
                 return;
             }
-            commit(r.g, { picks: [], typed: '', hover: null, selection: [], ...(tool === 'fillet' ? { filletRadius: size } : { chamferDistance: size }) });
+            applyCorner(tool, corner, size);
             return;
         }
         case 'offset': {
@@ -1399,12 +1456,14 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             // An axis or a centre line is the mirror line straight away; any line once Enter was pressed.
             const about = objects.length > 0 && line && !objects.includes(pick.id) && (s.mirrorAbout || isAxis(pick.id) || !!curve?.construction);
             if (about) {
-                const r = mirrorCurves(g, objects, pick.id);
+                const r = mirrorCurves(g, objects, pick.id, s.editOptions.mirrorCopy);
                 if ('error' in r) {
                     set({ message: r.error });
                     return;
                 }
-                commit(r.g, { picks: [], mirrorAbout: false, hover: null, selection: [] });
+                if (commit(r.g, { picks: [], mirrorAbout: false, hover: null, selection: [] }) && r.dropped) {
+                    set({ message: `Mirrored; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} of the originals to the rest of the sketch.` });
+                }
                 return;
             }
             if (s.mirrorAbout) {
@@ -1419,6 +1478,44 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
             return;
         }
     }
+}
+
+/** The chamfer's options from the form, with Distance 1 = `size`. */
+function chamferOptions(s: SketcherState, size: number): ChamferOptions {
+    const o = s.editOptions;
+    return o.chamferType === 'angle' ? { type: 'angle', distance: size, angle: o.chamferAngle }
+        : { type: 'distance', distance: size, ...(o.chamferEqual ? {} : { distance2: o.chamferDistance2 }) };
+}
+
+/** Fillets or chamfers one corner; says what happened to the corner's relations. False when it could not. */
+function applyCorner(tool: 'fillet' | 'chamfer', corner: FilletCorner, size: number): boolean {
+    const s = get();
+    const o = s.editOptions;
+    if (tool === 'chamfer') {
+        const r = chamferSides(s.geometry, corner, chamferOptions(s, size));
+        if ('error' in r) {
+            set({ picks: [], message: r.error });
+            return false;
+        }
+        return commit(r.g, { picks: [], typed: '', hover: null, selection: [], editPreview: [], chamferDistance: size });
+    }
+    // Dimension each fillet off: the first fillet of this session gets the radius, later ones are equal to it.
+    const first = !o.filletDimensionEach && s.filletFirst && curveOf(s.geometry, s.filletFirst) && Math.abs((curveRadius(s.geometry, s.filletFirst) ?? 0) - size) < 1e-6
+        ? s.filletFirst : null;
+    const r = filletSides(s.geometry, corner, size, { keepCorners: o.filletKeepCorners, equalTo: first });
+    if ('error' in r) {
+        set({ picks: [], message: r.error });
+        return false;
+    }
+    if (!commit(r.g, { picks: [], typed: '', hover: null, selection: [], editPreview: [], filletRadius: size, filletFirst: first ?? r.arc })) {
+        return false;
+    }
+    if (r.dropped) {
+        set({ message: `Filleted; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} or dimension${r.dropped === 1 ? '' : 's'} on the corner (Keep constrained corners is off).` });
+    } else if (r.kept) {
+        set({ message: 'Filleted; the corner stays as a point with its relations and dimensions.' });
+    }
+    return true;
 }
 
 /** Trim corner, inside and outside: clicks pick the lines or boundaries, then (inside / outside) the curves to trim. */

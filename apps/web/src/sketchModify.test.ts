@@ -1,9 +1,10 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { SketchCurve, SketchGeometry } from '@jarvis/core';
-import { ORIGIN, curveOf, loadSolver, pointOf, solveGeometry } from './solver';
+import { ORIGIN, curveOf, curveRadius, loadSolver, pointOf, solveGeometry } from './solver';
 import { addCircle, addConstraint, addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import { circularSketchPattern, linearSketchPattern } from './sketchPattern';
-import { extendAt, offsetEntities, trimAt } from './sketchEdit';
+import { extendAt, mirrorCurves, offsetEntities, trimAt } from './sketchEdit';
+import { chamferSides, filletCornerAt, filletSides, type FilletCorner } from './sketchFillet';
 import { unmetConstraints } from './sketchCheck';
 import { powerTrim, trimBetween, trimCorner } from './sketchTrim';
 import type { Pt } from './sketchMath';
@@ -345,6 +346,129 @@ describe('offset tied to the original', () => {
         const out = sound((r as { g: SketchGeometry }).g);
         // The offset adds nothing free but its one distance (held by the dimension).
         expect(out.dof).toBe(before);
+    });
+});
+
+describe('sketch fillet and chamfer', () => {
+    const sound = (g: SketchGeometry) => {
+        const r = solveGeometry(g);
+        expect(r.ok).toBe(true);
+        expect(r.redundant).toEqual([]);
+        expect(unmetConstraints(r.geometry)).toEqual([]);
+        return r;
+    };
+    /** A 40 x 20 rectangle, fully defined: side lengths and a corner dimensioned from the origin. */
+    function definedRect() {
+        const rect = addRect(EMPTY_GEOMETRY, [10, 10], [50, 30]);
+        let g = addConstraint(rect.g, { kind: 'length', line: rect.lines[0], value: 40 }).g;
+        g = addConstraint(g, { kind: 'length', line: rect.lines[1], value: 20 }).g;
+        const corner = (curveOf(g, rect.lines[0]) as Extract<SketchCurve, { kind: 'line' }>).a;
+        g = addConstraint(g, { kind: 'distance', a: ORIGIN, b: corner, value: 10, axis: 'u' }).g;
+        g = addConstraint(g, { kind: 'distance', a: ORIGIN, b: corner, value: 10, axis: 'v' }).g;
+        expect(solveGeometry(g).dof).toBe(0);
+        return { g, lines: rect.lines, corner };
+    }
+
+    it('keeps a constrained corner as a sharp point with its dimensions, and the sides\' lengths', () => {
+        const s = definedRect();
+        const corner = filletCornerAt(s.g, s.corner);
+        expect('error' in corner).toBe(false);
+        const r = filletSides(s.g, corner as FilletCorner, 5, { keepCorners: true });
+        expect('error' in r).toBe(false);
+        const { g, kept, dropped } = r as { g: SketchGeometry; kept: boolean; dropped: number };
+        expect(kept).toBe(true);
+        expect(dropped).toBe(0);
+        const dims = (x: SketchGeometry) => x.constraints.filter((k) => k.kind === 'distance' || k.kind === 'length').length;
+        expect(dims(g)).toBe(dims(s.g));
+        const out = sound(g);
+        expect(out.dof).toBe(0);
+        expect(at(out.geometry, s.corner)).toEqual([10, 10]);
+        // The sides still measure 40 and 20 to the sharp.
+        const changed = sound({ ...g, constraints: g.constraints.map((k) => (k.kind === 'length' && k.value === 40 ? { ...k, value: 50 } : k)) });
+        expect(Math.max(...changed.geometry.points.map((p) => p.u))).toBeCloseTo(60, 5);
+    });
+
+    it('says how many relations went when Keep constrained corners is off', () => {
+        const s = definedRect();
+        const r = filletSides(s.g, filletCornerAt(s.g, s.corner) as FilletCorner, 5, { keepCorners: false }) as { g: SketchGeometry; dropped: number; kept: boolean };
+        expect(r.kept).toBe(false);
+        expect(r.dropped).toBe(3);
+        expect(r.g.points.some((p) => p.id === s.corner)).toBe(false);
+    });
+
+    it('rounds a corner of a line and an arc, tangent to both', () => {
+        // A line from (-20, 10) to (0, 10) meeting a quarter arc about the origin from (0, 10) round to (10, 0).
+        const g0: SketchGeometry = {
+            points: [{ id: 'o', u: 0, v: 0 }, { id: 's', u: 10, v: 0 }, { id: 'e', u: 0, v: 10 }, { id: 'f', u: 10, v: 25 }],
+            curves: [
+                { id: 'arc', kind: 'arc', center: 'o', start: 's', end: 'e' },
+                { id: 'line', kind: 'line', a: 'e', b: 'f' },
+            ],
+            constraints: [],
+        };
+        const r = filletSides(g0, filletCornerAt(g0, 'e') as FilletCorner, 3) as { g: SketchGeometry; arc: string };
+        expect('error' in r).toBe(false);
+        const out = sound(r.g).geometry;
+        const fillet = curveOf(out, r.arc) as Extract<SketchCurve, { kind: 'arc' }>;
+        const c = at(out, fillet.center);
+        // Tangent to the arc's circle (inside or outside) and to the line.
+        const d = Math.hypot(c[0], c[1]);
+        expect(Math.min(Math.abs(d - 13), Math.abs(d - 7))).toBeLessThan(1e-4);
+        const [a, b] = [at(out, 'f'), at(out, (curveOf(out, 'line') as { a: string }).a)];
+        const toLine = Math.abs((b[0] - a[0]) * (a[1] - c[1]) - (a[0] - c[0]) * (b[1] - a[1])) / Math.hypot(b[0] - a[0], b[1] - a[1]);
+        expect(toLine).toBeCloseTo(3, 4);
+        expect(curveRadius(out, r.arc)).toBeCloseTo(3, 5);
+    });
+
+    it('makes later fillets equal to the first instead of dimensioning each', () => {
+        const s = definedRect();
+        const first = filletSides(s.g, filletCornerAt(s.g, s.corner) as FilletCorner, 4) as { g: SketchGeometry; arc: string };
+        const line = curveOf(first.g, s.lines[1]) as Extract<SketchCurve, { kind: 'line' }>;
+        const other = [line.a, line.b].find((p) => filletCornerAt(first.g, p) && !('error' in filletCornerAt(first.g, p)))!;
+        const second = filletSides(first.g, filletCornerAt(first.g, other) as FilletCorner, 4, { equalTo: first.arc }) as { g: SketchGeometry; arc: string };
+        expect(second.g.constraints.filter((k) => k.kind === 'radius')).toHaveLength(1);
+        expect(second.g.constraints.some((k) => k.kind === 'equal' && k.a === second.arc && k.b === first.arc)).toBe(true);
+        expect(sound(second.g).dof).toBe(0);
+    });
+
+    it('chamfers with two distances, or a distance and an angle', () => {
+        let g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [30, 0] }).g;
+        const h = g.curves[0] as Extract<SketchCurve, { kind: 'line' }>;
+        g = addLine(g, { at: [0, 0], point: h.a }, { at: [0, 20] }).g;
+        const corner = filletCornerAt(g, h.a) as FilletCorner;
+        const firstIsH = corner.sides[0].curve.id === h.id;
+        const dd = chamferSides(g, corner, { type: 'distance', distance: 4, distance2: 6 }) as { g: SketchGeometry };
+        let out = sound(dd.g).geometry;
+        const cut = out.curves.find((c) => !c.construction && !g.curves.some((k) => k.id === c.id)) as Extract<SketchCurve, { kind: 'line' }>;
+        const ends = [at(out, cut.a), at(out, cut.b)];
+        const onH = ends.find((p) => Math.abs(p[1]) < 1e-6)!;
+        const onV = ends.find((p) => Math.abs(p[0]) < 1e-6)!;
+        expect(onH[0]).toBeCloseTo(firstIsH ? 4 : 6, 5);
+        expect(onV[1]).toBeCloseTo(firstIsH ? 6 : 4, 5);
+        const ad = chamferSides(g, corner, { type: 'angle', distance: 5, angle: 45 }) as { g: SketchGeometry };
+        out = sound(ad.g).geometry;
+        const cut2 = out.curves.find((c) => !c.construction && !g.curves.some((k) => k.id === c.id)) as Extract<SketchCurve, { kind: 'line' }>;
+        const e2 = [at(out, cut2.a), at(out, cut2.b)];
+        // 45 degrees at a right-angle corner: 5 along both.
+        expect(e2.find((p) => Math.abs(p[1]) < 1e-6)![0]).toBeCloseTo(5, 5);
+        expect(e2.find((p) => Math.abs(p[0]) < 1e-6)![1]).toBeCloseTo(5, 5);
+        expect(chamferSides(g, corner, { type: 'angle', distance: 5, angle: 95 })).toHaveProperty('error');
+    });
+});
+
+describe('mirror without copy', () => {
+    it('removes the originals and keeps their dimensions on the mirrored curves', () => {
+        let g = addLine(EMPTY_GEOMETRY, { at: [5, 0] }, { at: [15, 10] }).g;
+        const line = g.curves[0];
+        g = addConstraint(g, { kind: 'length', line: line.id, value: Math.hypot(10, 10) }).g;
+        const r = mirrorCurves(g, [line.id], 'axis-v', false) as { g: SketchGeometry; created: string[]; dropped: number };
+        expect(r.g.curves).toHaveLength(1);
+        expect(curveOf(r.g, line.id)).toBeUndefined();
+        expect(r.g.constraints.filter((k) => k.kind === 'length')).toHaveLength(1);
+        expect(r.dropped).toBe(0);
+        const out = solveGeometry(r.g).geometry;
+        const l = curveOf(out, r.created[0]) as Extract<SketchCurve, { kind: 'line' }>;
+        expect([at(out, l.a)[0], at(out, l.b)[0]].sort((a, b) => a - b)).toEqual([-15, -5]);
     });
 });
 
