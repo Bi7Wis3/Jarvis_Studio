@@ -62,6 +62,44 @@ describe('offset form', () => {
     });
 });
 
+describe('fillet, chamfer and mirror forms', () => {
+    it('fillets the selected corners with OK, the later ones equal to the first', () => {
+        const rect = addRect(EMPTY_GEOMETRY, [0, 0], [40, 20]);
+        start(rect.g);
+        const corners = [...new Set(lines(rect.g).flatMap((l) => [l.a, l.b]))];
+        useSketcher.setState({ selection: corners.slice(0, 2).map((id) => ({ type: 'point' as const, id })) });
+        startEditTool('fillet');
+        expect(state().picks).toHaveLength(2);
+        setEditOptions({ filletRadius: 3 });
+        expect(finishEditTool('fillet')).toBeNull();
+        const g = state().geometry;
+        expect(g.curves.filter((c) => c.kind === 'arc')).toHaveLength(2);
+        expect(g.constraints.filter((k) => k.kind === 'radius')).toHaveLength(1);
+        expect(g.constraints.filter((k) => k.kind === 'equal')).toHaveLength(1);
+    });
+
+    it('chamfers a corner at an angle, from the form options', () => {
+        const rect = addRect(EMPTY_GEOMETRY, [0, 0], [40, 20]);
+        start(rect.g);
+        setTool('chamfer');
+        setEditOptions({ chamferType: 'angle', chamferAngle: 30, chamferDistance: 4 });
+        sketchClick([0, 0], TOL);
+        expect(state().geometry.constraints.some((k) => k.kind === 'angle' && Math.abs(k.value - 30) < 1e-9)).toBe(true);
+    });
+
+    it('mirrors without keeping the originals when Copy is off', () => {
+        const l = addLine(EMPTY_GEOMETRY, { at: [5, 0] }, { at: [15, 10] });
+        start(l.g);
+        useSketcher.setState({ selection: [{ type: 'curve', id: l.id }] });
+        startEditTool('mirror');
+        setEditOptions({ mirrorCopy: false });
+        sketchClick([0, 30], TOL);
+        const g = state().geometry;
+        expect(g.curves).toHaveLength(1);
+        expect(Math.max(...g.points.map((p) => p.u))).toBeLessThan(0);
+    });
+});
+
 describe('trim tool', () => {
     let s: ReturnType<typeof comb>;
     beforeEach(() => {
