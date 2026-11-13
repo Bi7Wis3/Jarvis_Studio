@@ -925,13 +925,18 @@ function threadFeature(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>, pr
     if (f.revolutions !== undefined && !(f.revolutions > 0)) {
         throw new Error('thread revolutions must be positive');
     }
-    const length = f.revolutions !== undefined ? f.revolutions * lead : f.length;
-    if (!(pitch > 0 && length !== undefined && length >= pitch && diameter > 2 * pitch)) {
+    const asked = f.revolutions !== undefined ? f.revolutions * lead : f.length;
+    if (!(pitch > 0 && asked !== undefined && asked >= pitch && diameter > 2 * pitch)) {
         throw new Error('thread needs pitch > 0, length >= pitch and diameter > 2 x pitch');
     }
-    if (f.at && (offset < -1e-6 || offset + length > reach + 1e-6)) {
-        throw new Error(`the thread runs off the cylinder: it is ${fmtMm(reach)} long from the edge, `
-            + `the thread needs ${fmtMm(offset + length)}`);
+    let length = asked;
+    if (f.at) {
+        if (offset < -1e-6 || offset > reach - pitch) {
+            throw new Error(`the thread starts off the cylinder: it is ${fmtMm(reach)} long from the edge, `
+                + `the thread starts ${fmtMm(offset)} along it`);
+        }
+        // A thread asked longer than the hole or shaft stops at its far end.
+        length = Math.min(asked, reach - offset);
     }
     const hand = { lead, leftHanded: !!f.leftHanded };
     const at = (s: Shape3D): Shape3D => placeOnAxis(s, origin, axis, f.startAngle ?? 0);

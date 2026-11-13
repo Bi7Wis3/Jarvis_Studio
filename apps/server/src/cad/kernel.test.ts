@@ -327,14 +327,20 @@ describe('features', () => {
         expect(b.max[1]).toBeGreaterThan(4.9);
         expect(volume(threaded)).toBeLessThan(volume(plain) - 50);
         expect(openEdges(threaded)).toBe(0);
-        // Left hand, two starts and a revolutions end condition build too; a thread longer than the shaft does not.
+        // Left hand, two starts and a revolutions end condition build too; a thread longer than the shaft stops at its end.
         const left = await mesh({ kind: 'empty' }, [shaft, {
             id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, revolutions: 4, starts: 2, leftHanded: true, offset: 2,
         }]);
         expect(bounds(left).max[0]).toBeCloseTo(20, 1);
         expect(volume(left)).not.toBeCloseTo(volume(threaded), 0);
-        await expect(mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 25 }]))
-            .rejects.toThrow(/runs off the cylinder/);
+        const full = await mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 25 }]);
+        const whole = await mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 20 }]);
+        expect(openEdges(full)).toBe(0);
+        expect(bounds(full).min[0]).toBeCloseTo(0, 1);
+        expect(bounds(full).max[0]).toBeCloseTo(20, 1);
+        expect(volume(full)).toBeCloseTo(volume(whole), 0);
+        await expect(mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 5, offset: 30 }]))
+            .rejects.toThrow(/starts off the cylinder/);
         await expect(mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'internal', at: [20, 5, 0], pitch: 1.5, length: 10 }]))
             .rejects.toThrow(/on a shaft: use an external thread/);
     }, SLOW);
