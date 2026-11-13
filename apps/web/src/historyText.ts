@@ -83,13 +83,18 @@ export function shapeIcon(shape: Shape): string {
 export function featureIcon(feature: Feature): string {
     switch (feature.op) {
         case 'add':
-            return 'box';
+            return 'boss';
         case 'cut':
-            return 'pocket';
-        case 'thread':
-            return 'fastener';
+            return 'cut';
+        case 'extrude':
+        case 'revolve':
+        case 'sweep':
         case 'loft':
-            return 'loft';
+            return `${feature.mode === 'cut' ? 'cut' : 'boss'}-${feature.op}`;
+        case 'pattern':
+            return `pattern-${feature.kind}`;
+        case 'combine':
+            return feature.operation === 'cut' ? 'combine-cut' : 'combine';
         default:
             return feature.op;
     }
@@ -341,11 +346,6 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
         case 'thread':
             return `${feature.kind} ⌀${mm(feature.diameter)} · P ${mm(feature.pitch)} · ${mm(feature.length)} mm`;
     }
-}
-
-/** Is this part bought hardware rather than printed? */
-export function isHardware(part: Part): boolean {
-    return part.purchased ?? part.shape.kind === 'fastener';
 }
 
 /** The feature a CAD build error names (`feature "<name or id>"`), or null when the error is about the body. */

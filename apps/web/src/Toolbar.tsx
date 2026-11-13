@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import type { Feature } from '@jarvis/core';
 import { Icon } from './icons';
 import { clearEditing, clearPicked, runTool, select, setRollback, setWorkspace, useStudio } from './state';
@@ -9,9 +10,12 @@ import {
     type SketchTool,
 } from './sketcher';
 import {
-    ALL_TOOLS, ASSEMBLY_GROUPS, PART_GROUPS, SKETCH_GROUPS, VIEWS, editorFor, finishTool, fitView, setView, sketchPlaneTool,
-    type Ctx, type Field, type Result, type ToolDef, type ToolGroup, type UiSettings, type Values,
+    ALL_TOOLS, ASSEMBLY_GROUPS, PART_GROUPS, SKETCH_GROUPS, VIEWS, discardSketch, editorFor, finishNeedsPanel, finishTool, fitView, setView,
+    sketchPlaneTool,
+    type Ctx, type ToolDef, type ToolGroup, type UiSettings,
 } from './toolDefs';
+import { FieldInput, useToolForm } from './toolForm';
+import { PropertyManager, usePropertyManager, usesPanel } from './PropertyManager';
 import { planeLabel } from './sketchMath';
 import './toolbar.css';
 
@@ -152,7 +156,11 @@ function WorkspaceSwitch() {
                     title={ws === 'part' ? 'Part: sketch and edit one part\'s features' : 'Assembly: place, fasten, pattern and export parts'}
                     onClick={() => {
                         if (sketching) {
-                            closeSketch();
+                            // Leaving mid-sketch would lose it: ask, and stay if the answer is no.
+                            discardSketch();
+                            if (useSketcher.getState().active) {
+                                return;
+                            }
                         }
                         setWorkspace(ws);
                     }}
@@ -162,11 +170,6 @@ function WorkspaceSwitch() {
             ))}
         </div>
     );
-}
-
-function exitSketch(): void {
-    closeSketch();
-    clearEditing();
 }
 
 /** One line under the toolbar while sketching: what the tool expects, the plane and the profile status, and the way out. */
@@ -179,7 +182,7 @@ function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void 
         return (
             <div className="sk-bar" style={{ left: centre }}>
                 Choose a sketch plane, or click a flat face of the part
-                <button type="button" className="sk-exit" onClick={exitSketch} title="Leave without a sketch (Esc)">Cancel</button>
+                <button type="button" className="sk-exit" onClick={discardSketch} title="Leave without a sketch (Esc)">Cancel</button>
             </div>
         );
     }
@@ -191,10 +194,10 @@ function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void 
             <span className={`sk-dof ${dof === 0 ? 'done' : ''}`} title="Degrees of freedom left">
                 {!geometry.curves.length ? 'empty' : dof < 0 ? '…' : dof === 0 ? 'Fully constrained' : `${dof} DOF`}
             </span>
-            <button type="button" className="sk-done" onClick={onFinish} title="Save the sketch, then extrude, cut or revolve it (Enter)">
-                Finish sketch
+            <button type="button" className="sk-done" onClick={onFinish} title="Save the sketch and go back to the part (Enter)">
+                Exit sketch
             </button>
-            <button type="button" className="sk-exit" onClick={exitSketch} title="Leave the sketch and discard its changes">Exit</button>
+            <button type="button" className="sk-exit" onClick={discardSketch} title="Leave the sketch without saving it">Discard</button>
         </div>
     );
 }
@@ -218,9 +221,17 @@ export function Toolbar() {
     const layout = computeLayout(groups, band.room);
     const [popup, setPopup] = useState<{ tool: ToolDef; anchor: Anchor } | null>(null);
     const [menu, setMenu] = useState<{ group: string; anchor: Anchor } | null>(null);
+    // Feature forms open in the property manager in the left panel, the rest in a popup under their button.
+    const slot = usePropertyManager((s) => s.slot);
+    const inPanel = !!popup && usesPanel(popup.tool, workspace, sketchActive);
     const bar = useRef<HTMLDivElement>(null);
     const latest = useRef({ popup, menu, ctx });
     latest.current = { popup, menu, ctx };
+
+    useEffect(() => {
+        usePropertyManager.setState({ open: inPanel });
+    }, [inPanel]);
+    useEffect(() => () => usePropertyManager.setState({ open: false }), []);
 
     useLayoutEffect(() => {
         const update = () => setBand((old) => {
@@ -282,8 +293,11 @@ export function Toolbar() {
             const op = feature?.op === 'revolve' || (part.shape.kind === 'sketch' && part.shape.revolve) ? 'revolve' : 'extrude';
             startSketch(part.id, op, { partId: part.id, featureId: feature?.id ?? null, sketch: sketchData });
             rollBackTo(part.id, feature);
-            // Open the operation popup with it, once the sketch toolbar is there.
-            window.setTimeout(() => setPopup({ tool: finishTool, anchor: anchorFor('sk-finish') }), 60);
+            // A feature's own sketch: open its values with it, once the sketch toolbar is there. A plain sketch
+            // step is just edited, and saved on exit.
+            if (finishNeedsPanel()) {
+                window.setTimeout(() => setPopup({ tool: finishTool, anchor: anchorFor('sk-finish') }), 60);
+            }
             return;
         }
         setPopup({ tool: editor, anchor: anchorFor(editor.id) });
@@ -527,7 +541,11 @@ export function Toolbar() {
                     onClose={() => setMenu(null)}
                 />
             )}
-            {popup && (
+            {popup && inPanel && slot && createPortal(
+                <PropertyManager key={`${popup.tool.id}:${ctx.part?.id ?? ''}:${ctx.edit?.feature?.id ?? ''}`} tool={popup.tool} ctx={ctx} onClose={closePopup} />,
+                slot,
+            )}
+            {popup && !inPanel && (
                 <Popup
                     key={`${popup.tool.id}:${ctx.part?.id ?? ''}:${ctx.edit?.feature?.id ?? ''}`}
                     tool={popup.tool}
@@ -632,160 +650,9 @@ function ToolMenu(props: {
     );
 }
 
-function FieldInput({ field, values, change }: { field: Field; values: Values; change: (key: string, value: Values[string]) => void }) {
-    const value = values[field.key];
-    const unit = field.unit && <em>{field.unit}</em>;
-    switch (field.kind) {
-        case 'check':
-            return (
-                <label className="tb-check">
-                    <input type="checkbox" checked={!!value} onChange={(e) => change(field.key, e.target.checked)} />
-                    <span>{field.label}</span>
-                </label>
-            );
-        case 'select':
-            return (
-                <label className="tb-field">
-                    <span>{field.label}</span>
-                    <span className="tb-input">
-                        <select value={value as string} onChange={(e) => change(field.key, e.target.value)}>
-                            {field.options!.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                        </select>
-                        {unit}
-                    </span>
-                </label>
-            );
-        case 'multi': {
-            const list = value as string[];
-            return (
-                <div className="tb-field">
-                    <span>{field.label}</span>
-                    <span className="tb-chips">
-                        {field.options!.map((o) => (
-                            <button
-                                key={o.value}
-                                type="button"
-                                data-order={field.key === 'sections' && list.includes(o.value) ? list.indexOf(o.value) + 1 : undefined}
-                                className={list.includes(o.value) ? 'on' : ''}
-                                aria-pressed={list.includes(o.value)}
-                                onClick={() => change(field.key, list.includes(o.value)
-                                    ? list.filter((v) => v !== o.value) : [...list, o.value])}
-                            >
-                                {o.label}
-                            </button>
-                        ))}
-                    </span>
-                </div>
-            );
-        }
-        case 'color':
-            return (
-                <label className="tb-field">
-                    <span>{field.label}</span>
-                    <span className="tb-input tb-color">
-                        <input type="color" value={value as string} onChange={(e) => change(field.key, e.target.value)} />
-                        <input
-                            value={value as string}
-                            onChange={(e) => change(field.key, e.target.value)}
-                            pattern="#[0-9a-fA-F]{6}"
-                            aria-label={`${field.label} hex`}
-                        />
-                    </span>
-                </label>
-            );
-        case 'range':
-            return (
-                <label className="tb-field">
-                    <span>{field.label}</span>
-                    <span className="tb-range">
-                        <input
-                            type="range"
-                            min={field.min}
-                            max={field.max}
-                            step={field.step}
-                            value={value as string}
-                            onChange={(e) => change(field.key, e.target.value)}
-                        />
-                        <output>{Number(value).toFixed(2)}</output>
-                    </span>
-                </label>
-            );
-        case 'vec': {
-            const axes = field.axes ?? ['X', 'Y', 'Z'];
-            return (
-                <div className="tb-field">
-                    <span>{field.label}{field.unit && <i>{field.unit}</i>}</span>
-                    <span className="tb-vec">
-                        {axes.map((axis, i) => axis && (
-                            <label key={i} className={`axis-${'xyz'[i]}`}>
-                                <b>{axis}</b>
-                                <input
-                                    type="number"
-                                    step="any"
-                                    value={values[`${field.key}${i}`] as string}
-                                    onChange={(e) => change(`${field.key}${i}`, e.target.value)}
-                                    aria-label={`${field.label} ${axis}`}
-                                />
-                            </label>
-                        ))}
-                    </span>
-                </div>
-            );
-        }
-        default:
-            return (
-                <label className="tb-field">
-                    <span>{field.label}</span>
-                    <span className="tb-input">
-                        <input
-                            type={field.kind === 'text' ? 'text' : 'number'}
-                            step={field.step ?? 'any'}
-                            min={field.min}
-                            value={value as string}
-                            onChange={(e) => change(field.key, e.target.value)}
-                        />
-                        {unit}
-                    </span>
-                </label>
-            );
-    }
-}
-
 function Popup({ tool, anchor, ctx, onClose }: { tool: ToolDef; anchor: Anchor; ctx: Ctx; onClose: () => void }) {
-    const [values, setValues] = useState<Values>(() => tool.defaults?.(ctx) ?? {});
-    const [result, setResult] = useState<Result | null>(null);
-    const [busy, setBusy] = useState(false);
+    const { values, result, busy, form, missingPart, fields, change, api, submit } = useToolForm(tool, ctx, onClose);
     const { ref, style } = useFloating(anchor);
-    const form = useRef<HTMLFormElement>(null);
-    const missingPart = !!tool.needsPart && !ctx.part;
-    const fields = missingPart ? [] : (tool.fields?.(ctx) ?? []).filter((f) => !f.show || f.show(values));
-
-    useEffect(() => {
-        form.current?.querySelector<HTMLElement>('input:not([type=checkbox]):not([type=color]), select, .tb-apply')?.focus();
-    }, []);
-
-    const change = (key: string, value: Values[string]) => {
-        const next = { ...values, [key]: value };
-        setValues({ ...next, ...(tool.onChange?.(key, next, ctx) ?? {}) });
-    };
-    const run = (call: () => Promise<Result>, close = true) => {
-        setBusy(true);
-        void call().then((r) => {
-            setBusy(false);
-            if (!r.isError && close && !tool.keepOpen) {
-                onClose();
-            } else {
-                setResult(r.isError || tool.keepOpen ? r : null);
-            }
-        });
-    };
-    const api = { values, set: (patch: Values) => setValues((v) => ({ ...v, ...patch })), run };
-    const submit = (event: FormEvent) => {
-        event.preventDefault();
-        if (tool.apply && !busy && !missingPart) {
-            run(() => tool.apply!(values, ctx));
-        }
-    };
 
     let body: ReactNode;
     if (missingPart) {

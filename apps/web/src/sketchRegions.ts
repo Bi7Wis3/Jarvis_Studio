@@ -18,16 +18,7 @@ const MERGE = 1e-3;
  * same point id share a vertex. Circles and other closed entities are profiles on their own.
  */
 export function regionProfiles(entities: Entity[], ends: Map<string, [string, string]> = new Map()): { profiles: SketchProfile[]; open: number } {
-    const curves: Curve[] = [];
-    const others: Entity[] = [];
-    for (const e of entities) {
-        if (e.kind === 'line' || e.kind === 'arc') {
-            curves.push(e);
-        } else {
-            others.push(e);
-        }
-    }
-    const vertex = mergeVertices(curves, ends);
+    const { curves, vertex, others } = graphOf(entities, ends);
     let open = 0;
     const found: { first: number; profiles: SketchProfile[] }[] = [];
     for (const block of blocks(vertex)) {
@@ -64,16 +55,7 @@ function loopOf(profile: SketchProfile): Loop {
  * sharing an edge give two regions. Arguments as for regionProfiles.
  */
 export function sketchRegions(entities: Entity[], ends: Map<string, [string, string]> = new Map()): SketchRegion[] {
-    const curves: Curve[] = [];
-    const others: Entity[] = [];
-    for (const e of entities) {
-        if (e.kind === 'line' || e.kind === 'arc') {
-            curves.push(e);
-        } else {
-            others.push(e);
-        }
-    }
-    const vertex = mergeVertices(curves, ends);
+    const { curves, vertex, others } = graphOf(entities, ends);
     // Each block: its outline and the faces inside it (a plain loop is its own single face).
     const found: { first: number; outer: Loop; faces: Loop[] }[] = [];
     for (const block of blocks(vertex)) {
@@ -221,6 +203,37 @@ export function interiorPoint(outer: Pt[], holes: Pt[][]): Pt {
         }
     }
     return best;
+}
+
+/**
+ * The lines and arcs as graph edges with their end vertices, and the closed entities apart. A curve drawn over
+ * another between the same two vertices (the shared side of two rectangles drawn one after the other) counts once.
+ */
+function graphOf(entities: Entity[], ends: Map<string, [string, string]>): { curves: Curve[]; vertex: [number, number][]; others: Entity[] } {
+    const all: Curve[] = [];
+    const others: Entity[] = [];
+    for (const e of entities) {
+        if (e.kind === 'line' || e.kind === 'arc') {
+            all.push(e);
+        } else {
+            others.push(e);
+        }
+    }
+    const merged = mergeVertices(all, ends);
+    const seen = new Set<string>();
+    const curves: Curve[] = [];
+    const vertex: [number, number][] = [];
+    all.forEach((c, i) => {
+        const [a, b] = merged[i];
+        const middle = c.kind === 'arc' ? `:${Math.round(c.m[0] / MERGE)}:${Math.round(c.m[1] / MERGE)}` : '';
+        const key = `${Math.min(a, b)}-${Math.max(a, b)}${middle}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            curves.push(c);
+            vertex.push(merged[i]);
+        }
+    });
+    return { curves, vertex, others };
 }
 
 /** Vertex indices [start, end] of each curve: shared point ids and coinciding points are one vertex. */

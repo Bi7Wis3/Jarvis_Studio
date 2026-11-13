@@ -557,7 +557,9 @@ function partCentre(part: Part, offset: Vec3 | undefined): Vector3 {
 }
 
 /**
- * Drives the explode animation and frames the camera whenever the model or view request changes.
+ * Drives the explode animation and frames the camera when the view is asked for: a project opening, Fit or a view
+ * button, a zoom to a part, exploding, or parts appearing in the assembly. Switching between a part and the
+ * assembly, editing a part, hiding parts and resizing the window leave the camera where the user put it.
  * Camera moves are camera-controls transitions; they also clear any orbit pivot offset, so the fitted
  * object ends up centred.
  */
@@ -565,7 +567,7 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
     const camera = useThree((s) => s.camera) as PerspectiveCamera;
     const controls = useThree((s) => s.controls) as CameraControlsImpl | null;
     const size = useThree((s) => s.size);
-    const fit = useRef({ angles: '', first: true, refit: 0 });
+    const fit = useRef({ angles: '', first: true, refit: 0, asked: '', ids: '', settleUntil: 0 });
     const refit = useStudio((s) => s.refit);
     const workspace = useStudio((s) => s.workspace);
     const activePart = useStudio((s) => s.activePart);
@@ -574,11 +576,9 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
     const { view } = project;
     // The part workspace frames the part being edited; the assembly frames the focus or everything.
     const focus = workspace === 'part' && activePart && project.parts.some((p) => p.id === activePart) ? activePart : view.focus;
-    const key = JSON.stringify([
-        refit, focus, boundsVersion,
-        project.parts.map((p) => [p.id, p.position, p.shape, p.explodeOffset, p.repeat]),
-        view.explode, view.explodeSpacing, view.focus, view.azimuth, view.elevation, view.labels,
-    ]);
+    // What asks for a new framing. Hidden parts are still counted, so hiding one does not move the camera.
+    const asked = JSON.stringify([refit, project.name, view.focus, view.explode, view.explodeSpacing, view.azimuth, view.elevation, view.labels]);
+    const ids = useStudio((s) => (s.history?.parts ?? []).map((p) => p.id).join());
 
     const moveTo = (position: Vector3, target: Vector3, smooth: boolean) => {
         if (!controls) {
@@ -595,6 +595,19 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
             return;
         }
         const state = fit.current;
+        // Parts added or removed reframe the assembly, but not the part being edited.
+        const partsChanged = ids !== state.ids && workspace === 'assembly';
+        // Real sizes of sketch-built parts arrive after the first framing: follow them for a moment.
+        const settling = performance.now() < state.settleUntil;
+        const wanted = state.first || asked !== state.asked || partsChanged || settling;
+        state.ids = ids;
+        if (!wanted) {
+            return;
+        }
+        if (!settling || state.first || asked !== state.asked || partsChanged) {
+            state.settleUntil = performance.now() + 4000;
+        }
+        state.asked = asked;
         if (refit !== state.refit) {
             // An explicit Fit or view button: apply the stored angles again even if they did not change.
             state.refit = refit;
@@ -628,7 +641,7 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
         const position = sphere.center.clone().addScaledVector(direction, distance);
         moveTo(position, sphere.center, !state.first);
         state.first = false;
-    }, [key, controls, size.width, size.height]);
+    }, [asked, ids, boundsVersion, controls]);
 
     // Sketching: turn to look straight at the sketch plane.
     useEffect(() => {

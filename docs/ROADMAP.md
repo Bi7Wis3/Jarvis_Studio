@@ -11,9 +11,9 @@ Status key: [x] done, [~] partial, [ ] not started.
 
 ## Reference: SolidWorks part mode (2026-11-13)
 
-The user's reference for layout and behaviour is SolidWorks part mode (the dark theme stays). Target layout: a ribbon
-with tabs (Features, Sketch, Evaluate) of labelled icons, the FeatureManager tree on the left, Exit Sketch at the far
-left of the Sketch tab, dimensions with extension lines and arrows. Every command in the two ribbons is wanted:
+The user's reference for what the app can do and how it behaves is SolidWorks part mode. Its look is not wanted:
+the app keeps its own compact icon toolbar, floating popups and dark theme (no ribbon, tabs or left-side property
+panel). Every command in the two SolidWorks ribbons is wanted:
 
 Features tab
 - [x] Extruded boss/base, extruded cut, revolved boss/base, revolved cut, swept boss/cut, lofted boss/cut

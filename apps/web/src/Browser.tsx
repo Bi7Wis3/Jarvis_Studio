@@ -1,14 +1,17 @@
-import { useEffect, useState, type MouseEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { effectivePart, shapeHalfExtents, type Part, type Vec3 } from '@jarvis/core';
 import { labelInsets } from './Labels';
 import { ContextMenu, InlineInput, showError, tool, type MenuEntry } from './menus';
 import { focusPart, runTool, select, setHidden, setWorkspace, useStudio } from './state';
-import { isHardware } from './historyText';
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
 import { PartHistory } from './FeatureTree';
+import { usePropertyManager } from './PropertyManager';
 import './browser.css';
 
 const PANEL_INSET = 274;
+
+/** Where the property manager draws itself (see Toolbar). */
+const setSlot = (element: HTMLDivElement | null) => usePropertyManager.setState({ slot: element });
 
 /** Left panel: the part's modelling history in the part workspace, the components list in the assembly. */
 export function Browser() {
@@ -16,6 +19,7 @@ export function Browser() {
     const workspace = useStudio((s) => s.workspace);
     const activePart = useStudio((s) => s.activePart);
     const [open, setOpen] = useState(() => load(STORAGE_KEY, 'open') !== 'closed');
+    const editingFeature = usePropertyManager((s) => s.open);
 
     useEffect(() => {
         store(STORAGE_KEY, open ? 'open' : 'closed');
@@ -31,7 +35,7 @@ export function Browser() {
     const active = workspace === 'part' ? history.parts.find((p) => p.id === activePart) : undefined;
     // An instance is edited through its source design.
     const part = active?.instanceOf ? history.parts.find((p) => p.id === active.instanceOf) ?? active : active;
-    if (!open) {
+    if (!open && !editingFeature) {
         return (
             <button type="button" className="br-toggle" onClick={() => setOpen(true)} title="Show browser">
                 <span className="br-toggle-icon">☰</span>
@@ -40,12 +44,46 @@ export function Browser() {
         );
     }
     return (
-        <nav className="br" aria-label={part ? 'Part history' : 'Components'}>
-            {part
-                ? <PartHistory key={part.id} part={part} parts={history.parts} onMinimise={() => setOpen(false)} />
-                : <Components parts={history.parts} onMinimise={() => setOpen(false)} />}
+        <nav className={`br ${editingFeature ? 'pm-on' : ''}`} aria-label={editingFeature ? 'Property manager' : part ? 'Part history' : 'Components'}>
+            <div className="pm-slot" ref={setSlot} hidden={!editingFeature} />
+            {open && (
+                <Hideable hidden={editingFeature}>
+                    {part
+                        ? <PartHistory key={part.id} part={part} parts={history.parts} onMinimise={() => setOpen(false)} />
+                        : <Components parts={history.parts} onMinimise={() => setOpen(false)} />}
+                </Hideable>
+            )}
         </nav>
     );
+}
+
+/**
+ * Keeps the tree mounted (expanded rows, filter, selection) while the property manager takes its place, and puts
+ * its scroll position back when it shows again.
+ */
+function Hideable({ hidden, children }: { hidden: boolean; children: ReactNode }) {
+    const box = useRef<HTMLDivElement>(null);
+    const scrolls = useRef(new Map<Element, number>());
+    useEffect(() => {
+        const element = box.current;
+        const remember = (event: Event) => {
+            if (event.target instanceof Element && element?.contains(event.target)) {
+                scrolls.current.set(event.target, event.target.scrollTop);
+            }
+        };
+        element?.addEventListener('scroll', remember, true);
+        return () => element?.removeEventListener('scroll', remember, true);
+    }, []);
+    useLayoutEffect(() => {
+        if (!hidden) {
+            for (const [element, top] of scrolls.current) {
+                if (element.isConnected) {
+                    element.scrollTop = top;
+                }
+            }
+        }
+    }, [hidden]);
+    return <div ref={box} className="br-tree" hidden={hidden}>{children}</div>;
 }
 
 // ---- Assembly workspace: the components list -----------------------------------------------------------
@@ -97,10 +135,6 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
         'separator',
         { label: 'Rename', onSelect: () => setRenaming(part.id) },
         { label: 'Duplicate as new part', onSelect: () => duplicate(part) },
-        {
-            label: isHardware(part) ? 'Mark as printed' : 'Mark as purchased',
-            onSelect: () => void tool('parts_update', { updates: [{ id: part.id, purchased: !isHardware(part) }] }),
-        },
         { label: 'Zoom to part', onSelect: () => focusPart(part.id) },
         'separator',
         {
@@ -119,10 +153,8 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
     ];
 
     const designs = parts.filter((p) => !p.instanceOf || !parts.some((q) => q.id === p.instanceOf));
-    const groups = [
-        { id: 'printed', label: 'Printed parts', parts: designs.filter((p) => !isHardware(p)) },
-        { id: 'hardware', label: 'Hardware', parts: designs.filter(isHardware) },
-    ];
+    // Every component is a part: screws, nuts and bearings sit in the same list as the rest.
+    const groups = [{ id: 'parts', label: 'Parts', parts: designs }];
     const row = (part: Part, design: Part, nested: boolean) => {
         const all = part.id === design.id ? [design, ...instancesOf(design.id)] : [part];
         return (
@@ -151,16 +183,18 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
                 {parts.length === 0 && <p className="br-empty">No parts yet. Ask Jarvis or use the toolbar to add one.</p>}
                 {groups.filter((g) => g.parts.length > 0).map((group) => (
                     <section key={group.id} className="br-group">
-                        <button
-                            type="button"
-                            className="br-group-head"
-                            onClick={() => toggle(group.id)}
-                            aria-expanded={!collapsed.has(group.id)}
-                        >
-                            <span className="caret">{collapsed.has(group.id) ? '▸' : '▾'}</span>
-                            {group.label}
-                            <span className="br-count">{group.parts.length}</span>
-                        </button>
+{groups.length > 1 && (
+                                                    <button
+                                type="button"
+                                className="br-group-head"
+                                onClick={() => toggle(group.id)}
+                                aria-expanded={!collapsed.has(group.id)}
+                            >
+                                <span className="caret">{collapsed.has(group.id) ? '▸' : '▾'}</span>
+                                {group.label}
+                                <span className="br-count">{group.parts.length}</span>
+                            </button>
+                        )}
                         {!collapsed.has(group.id) && (
                             <ul>
                                 {group.parts.map((design) => {
@@ -262,7 +296,6 @@ function InstanceHead(props: {
             <span className="br-swatch" style={{ background: part.material.color }} />
             <span className="br-text one-line"><span className="br-name">{part.name}</span></span>
             <span className="br-count">×{members.length}</span>
-            {part.purchased && <span className="br-badge" title="Purchased hardware: listed in the BOM, not printed">purchased</span>}
             {error && <span className="br-warn" title="A build error in this part">⚠</span>}
             <span className={`br-actions ${allHidden ? 'has-off' : ''}`}>
                 <button
@@ -348,7 +381,6 @@ function ComponentRow(props: {
                 ) : <span className="br-name">{part.name}</span>}
             </span>
             {part.repeat && <span className="br-count">×{part.repeat.count}</span>}
-            {!nested && part.purchased && <span className="br-badge" title="Purchased hardware: listed in the BOM, not printed">purchased</span>}
             {error && <span className="br-warn" title={`Built only up to the failing step: ${error}`}>⚠</span>}
             <span className={`br-actions ${hidden ? 'has-off' : ''}`}>
                 <button

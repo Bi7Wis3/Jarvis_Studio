@@ -68,7 +68,7 @@ export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
                     const notes = [
                         status.errors[part.id] ? `ERROR ${status.errors[part.id]}` : null,
                         size ? `${size.join(' x ')} mm` : 'not built',
-                        part.purchased ? 'purchased' : size && !fitsBed(size, bed) ? `TOO BIG for the ${bed.join('x')} bed` : null,
+                        size && !fitsBed(size, bed) ? `TOO BIG for the ${bed.join('x')} bed` : null,
                     ].filter(Boolean);
                     return `${part.id}: ${notes.join('; ')}`;
                 });
@@ -78,8 +78,8 @@ export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
         },
         {
             name: 'export_stl',
-            description: 'Exports printed parts as binary STL (mm, Z up) and offers them to the user as downloads. '
-                + 'By default every part not marked purchased, one file per part, each as placed in the assembly '
+            description: 'Exports parts as binary STL (mm, Z up) and offers them to the user as downloads. '
+                + 'By default every part, one file per part, each as placed in the assembly '
                 + '(the user orients them in the slicer). combined: one file with all of them.',
             schema: {
                 partIds: z.array(z.string()).min(1).optional().describe('Only these parts'),
@@ -88,9 +88,9 @@ export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
             run: async ({ partIds, combined }) => {
                 const project = store.get();
                 await host.meshes.ready(project);
-                const ids: string[] = partIds ?? project.parts.filter((p) => !p.purchased).map((p) => p.id);
+                const ids: string[] = partIds ?? project.parts.map((p) => p.id);
                 if (ids.length === 0) {
-                    throw new Error('Nothing to export: every part is marked purchased');
+                    throw new Error('Nothing to export: the project has no parts');
                 }
                 const meshFor = (part: (typeof project.parts)[number]) => host.meshes.meshFor(part, project);
                 const files: [string, Buffer][] = combined || ids.length === 1

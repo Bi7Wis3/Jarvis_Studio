@@ -1,6 +1,7 @@
 // Small shared UI pieces for the browser panel and the File menu: context menus, inline inputs, tool calls.
 
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { runTool, useStudio } from './state';
 import './browser.css';
 
@@ -52,7 +53,10 @@ export function useDismiss(ref: RefObject<HTMLElement | null>, onClose: () => vo
     }, [ref, onClose, active]);
 }
 
-/** A floating menu at a screen point (right-click or a ⋯ button), kept inside the window. */
+/**
+ * A floating menu at a screen point (right-click or a ⋯ button), kept inside the window. It is rendered on the
+ * page body: inside a panel with a backdrop blur, a fixed position would be measured from that panel, not the window.
+ */
 export function ContextMenu(props: { x: number; y: number; items: MenuEntry[]; onClose: () => void }) {
     const { x, y, items, onClose } = props;
     const box = useRef<HTMLDivElement>(null);
@@ -67,7 +71,7 @@ export function ContextMenu(props: { x: number; y: number; items: MenuEntry[]; o
             });
         }
     }, [x, y]);
-    return (
+    return createPortal(
         <div ref={box} className="ctx-menu" role="menu" style={{ left: pos.x, top: pos.y }}>
             {items.map((item, i) => (item === 'separator'
                 ? <div key={i} className="ctx-sep" role="separator" />
@@ -87,7 +91,8 @@ export function ContextMenu(props: { x: number; y: number; items: MenuEntry[]; o
                         {item.hint && <span className="hint">{item.hint}</span>}
                     </button>
                 )))}
-        </div>
+        </div>,
+        document.body,
     );
 }
 

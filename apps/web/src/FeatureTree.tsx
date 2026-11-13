@@ -5,6 +5,7 @@ import {
     type ReactNode,
 } from 'react';
 import type { Feature, Part, SketchPlaneName } from '@jarvis/core';
+import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { Icon } from './icons';
 import { ContextMenu, InlineInput, showError, tool, type MenuEntry } from './menus';
 import { editItem, runTool, setRollback, setSketchHidden, setSuppressed, setWorkspace, useStudio } from './state';
@@ -14,8 +15,12 @@ import {
 } from './historyText';
 import { StepIcon } from './stepIcons';
 import { DecalPanel } from './DecalPanel';
-import { choosePlane, startSketch } from './sketcher';
-import { blockIds, buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, reorderIds, type TreeNode } from './featureTree';
+import { choosePlane, startSketch, useSketcher } from './sketcher';
+import { loadSolver, solverReady } from './solver';
+import { definitionMark, updateRecent, type RecentSteps } from './sketchState';
+import {
+    blockIds, buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, nodeSketch, reorderIds, treeGuides, type TreeNode,
+} from './featureTree';
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
 
 const NEW_PART = '__new';
@@ -23,6 +28,16 @@ const ROOT = '__root';
 const BODY = '__body';
 const MATERIAL = '__material';
 const ORIGIN = '__origin';
+const HISTORY = '__history';
+const RECENT = '__recent:';
+
+/** The material new parts start with: shown as "not specified". */
+const DEFAULT_COLOR = '#9aa3b5';
+
+/** Tree geometry in px: left padding, width of one indent column; the box and lines sit at a column's centre. */
+const PAD = 2;
+const INDENT = 16;
+const lineX = (column: number) => PAD + column * INDENT + 8;
 
 const PLANES: { key: string; plane: SketchPlaneName; label: string }[] = [
     { key: '__front', plane: 'front', label: 'Front Plane' },
@@ -41,13 +56,51 @@ async function newPart(parts: Part[]): Promise<void> {
             name: `Part ${n}`,
             shape: { kind: 'empty' },
             position: [0, 0, 0],
-            material: { color: '#9aa3b5', metalness: 0, roughness: 0.6 },
+            material: { color: DEFAULT_COLOR, metalness: 0, roughness: 0.6 },
         }],
     });
     const id = /: ([^,.\s]+)\.?$/.exec(result.text.trim())?.[1];
     if (!result.isError && id) {
         setWorkspace('part', id, 'isolated');
     }
+}
+
+// Steps added or edited this session, per part (kept while the tree is closed; not across a reload).
+const recentByPart = new Map<string, { features: Feature[]; state: RecentSteps }>();
+
+function recentSteps(partId: string, features: Feature[]): string[] {
+    const known = recentByPart.get(partId);
+    if (known?.features === features) {
+        return known.state.recent;
+    }
+    const state = updateRecent(known?.state ?? null, features);
+    recentByPart.set(partId, { features, state });
+    return state.recent;
+}
+
+/** True once the sketch solver is loaded (it loads in the background), for the sketch definition marks. */
+function useSolverLoaded(): boolean {
+    const [ready, setReady] = useState(solverReady);
+    useEffect(() => {
+        if (ready) {
+            return undefined;
+        }
+        let live = true;
+        void loadSolver(wasmUrl).then(() => live && setReady(true));
+        return () => {
+            live = false;
+        };
+    }, [ready]);
+    return ready;
+}
+
+/** Short description of a part's material for its tree row. */
+function materialText(part: Part): string | null {
+    const { color, metalness, roughness } = part.material;
+    if (color.toLowerCase() === DEFAULT_COLOR && metalness === 0) {
+        return null;
+    }
+    return `${color} ${metalness >= 0.5 ? 'metal' : roughness < 0.35 ? 'gloss' : 'matte'}`;
 }
 
 /** Isolated (only this part) or in context (the rest of the assembly shown around it). */
@@ -79,6 +132,8 @@ function PartViewToggle({ instances }: { instances: number }) {
 /** One visible line of the tree, in display order. */
 type Entry =
     | { kind: 'root'; key: string; depth: 0 }
+    | { kind: 'folder'; key: string; depth: 1 }
+    | { kind: 'recent'; key: string; depth: 2; stepId: string | null }
     | { kind: 'fixed'; key: string; depth: 1; label: string; icon: ReactNode; plane?: SketchPlaneName; title?: string }
     | { kind: 'body'; key: string; depth: 1 }
     | { kind: 'node'; key: string; depth: number; node: TreeNode }
@@ -111,6 +166,18 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     const [preview, setPreview] = useState<number | null>(null);
     const draggingBar = useRef(false);
     const list = useRef<HTMLOListElement>(null);
+    // A row to scroll into view once it is rendered (after a History shortcut expands its parent).
+    const scrollTo = useRef<string | null>(null);
+    const solverLoaded = useSolverLoaded();
+    const recent = useMemo(() => recentSteps(part.id, features), [part.id, features]).filter((id) => byId.has(id));
+    const sketchEdit = useSketcher((s) => (s.active ? s.edit : null));
+
+    useEffect(() => {
+        if (scrollTo.current) {
+            list.current?.querySelector(`[data-key="${CSS.escape(scrollTo.current)}"]`)?.scrollIntoView({ block: 'nearest' });
+            scrollTo.current = null;
+        }
+    });
 
     useEffect(() => {
         if (!draggingBar.current) {
@@ -119,6 +186,12 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     }, [count]);
 
     const shownCount = preview ?? count;
+    // While a step (or its sketch) is edited, the steps after it are greyed like rolled-back ones.
+    const editTarget = editing?.partId === part.id && editing.featureId
+        ? editing.featureId
+        : sketchEdit?.partId === part.id ? sketchEdit.featureId : null;
+    const editAt = editTarget ? features.findIndex((f) => f.id === editTarget) : -1;
+    const greyCount = editAt >= 0 ? Math.min(shownCount, editAt + 1) : shownCount;
     const shownGap = markerGap(tree, shownCount);
     const failing = failingFeature(part, error);
     const matches = filterKeys(tree, filter);
@@ -149,13 +222,23 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
 
     const entries: Entry[] = [{ kind: 'root', key: ROOT, depth: 0 }];
     if (isOpen(ROOT)) {
+        if (!filtering) {
+            entries.push({ kind: 'folder', key: HISTORY, depth: 1 });
+            if (isOpen(HISTORY)) {
+                entries.push(...(recent.length ? recent : [null])
+                    .map((id): Entry => ({ kind: 'recent', key: `${RECENT}${id ?? ''}`, depth: 2, stepId: id })));
+            }
+        }
+        const material = materialText(part);
         const fixed: Entry[] = [
             {
                 kind: 'fixed',
                 key: MATERIAL,
                 depth: 1,
-                label: 'Material',
-                icon: <span className="br-swatch" style={{ background: part.material.color }} />,
+                label: `Material <${material ?? 'not specified'}>`,
+                icon: material
+                    ? <span className="br-swatch ft-swatch" style={{ background: part.material.color }} />
+                    : <StepIcon name="material" />,
                 title: `Colour ${part.material.color} · metalness ${part.material.metalness} · roughness ${part.material.roughness}`,
             },
             ...PLANES.map((p): Entry => ({ kind: 'fixed', key: p.key, depth: 1, label: p.label, icon: <StepIcon name="plane" />, plane: p.plane })),
@@ -184,6 +267,13 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         });
     }
     const keys = entries.filter((e) => e.kind !== 'gap').map((e) => e.key);
+    // Does the line open onto children (the next row is deeper)?
+    const depths = entries.map((e) => (e.kind === 'gap' ? null : e.depth));
+    const opens = depths.map((d, i) => {
+        const next = depths.slice(i + 1).find((n) => n !== null);
+        return d !== null && next !== undefined && next !== null && next > d;
+    });
+    const guides = treeGuides(depths);
     const nodeOf = (key: string | null): TreeNode | undefined => {
         const entry = entries.find((e) => e.key === key);
         return entry?.kind === 'node' ? entry.node : undefined;
@@ -237,10 +327,24 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         startSketch(part.id, 'sketch');
         choosePlane(plane, 0);
     };
+    /** Selects a step in the tree (opening the step it is nested under) and scrolls to it. */
+    const jump = (stepId: string) => {
+        const owner = tree.find((n) => n.children.some((c) => c.stepId === stepId));
+        if (owner) {
+            setOpen(owner.key, true);
+        }
+        setCurrent(stepId);
+        scrollTo.current = stepId;
+        focusList();
+    };
     /** What double-click or Enter does on a line. */
     const activate = (key: string) => {
-        if (key === ROOT) {
-            setOpen(ROOT, !rootOpen);
+        if (key === ROOT || key === HISTORY) {
+            setOpen(key, !isOpen(key));
+        } else if (key.startsWith(RECENT)) {
+            if (key !== RECENT) {
+                jump(key.slice(RECENT.length));
+            }
         } else if (key === BODY) {
             editItem(part.id, null);
         } else {
@@ -329,7 +433,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         }
         const at = current ? keys.indexOf(current) : -1;
         const node = nodeOf(current);
-        const hasChildren = current === ROOT || !!node?.children.length;
+        const hasChildren = current === ROOT || current === HISTORY || !!node?.children.length;
         switch (event.key) {
             case 'ArrowDown':
                 choose(keys[at < 0 ? 0 : Math.min(at + 1, keys.length - 1)]);
@@ -353,6 +457,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             case 'ArrowLeft':
                 if (current && hasChildren && isOpen(current) && !filtering) {
                     setOpen(current, false);
+                } else if (current?.startsWith(RECENT)) {
+                    choose(HISTORY);
                 } else if (node?.parentId) {
                     choose(node.parentId);
                 } else if (current && current !== ROOT) {
@@ -459,6 +565,14 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
 
     // ---- Rendering ----
 
+    /** "(-) " / "(+) " / "" before a sketch's name: how well it is defined (nothing until the solver is loaded). */
+    const markOf = (node: TreeNode, feature: Feature | undefined): string => {
+        if (!solverLoaded || (feature && feature.op !== 'sketch')) {
+            return '';
+        }
+        return definitionMark(nodeSketch(node, byId)?.geometry) ?? '';
+    };
+
     const nodeTitle = (node: TreeNode, feature: Feature | undefined): string => {
         const parent = node.parentId ? byId.get(node.parentId) : undefined;
         const lines: string[] = [];
@@ -484,26 +598,54 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         if (node.role && feature) {
             lines.unshift(`${node.role} of ${parent ? featureName(parent) : 'its step'}`);
         }
+        const mark = markOf(node, feature);
+        if (mark) {
+            lines.push(mark === '(-) ' ? 'Under defined: some geometry can still move' : 'Over defined: constraints conflict');
+        }
         if (isRolled(node, shownCount)) {
             lines.push('Below the rollback bar: not built');
+        } else if (isRolled(node, greyCount)) {
+            lines.push('After the step being edited');
         }
         return lines.join('\n');
     };
 
-    const caret = (key: string, hasChildren: boolean) => (
-        <span
-            className={`ft-caret ${hasChildren ? (isOpen(key) ? 'open' : '') : 'leaf'}`}
-            onClick={hasChildren ? (event) => { event.stopPropagation(); setOpen(key, !isOpen(key)); } : undefined}
-            onDoubleClick={(event) => event.stopPropagation()}
-            aria-hidden="true"
-        >
-            {hasChildren && (
-                <svg width="8" height="8" viewBox="0 0 8 8"><path d="M2.5 1l3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" /></svg>
+    /** Dotted connector lines of line `i`: lines passing through, its elbow and stub, and the line down to its children. */
+    const lines = (i: number, depth: number) => (
+        <>
+            {guides[i].through.map((k) => <span key={k} className="ft-line" style={{ left: lineX(k) }} aria-hidden="true" />)}
+            {depth > 0 && (
+                <>
+                    <span className={`ft-line elbow ${guides[i].last ? 'last' : ''}`} style={{ left: lineX(depth) }} aria-hidden="true" />
+                    <span className="ft-line stub" style={{ left: lineX(depth) }} aria-hidden="true" />
+                </>
             )}
-        </span>
+            {opens[i] && <span className="ft-line down" style={{ left: lineX(depth + 1) }} aria-hidden="true" />}
+        </>
     );
 
-    const nameOrInput = (key: string, name: string, onCommit: (next: string) => void) => (
+    /** The square [+] / [-] box of a line with children (an empty cell for a leaf), over its connector lines. */
+    const lead = (i: number, entry: Exclude<Entry, { kind: 'gap' }>, hasChildren: boolean) => (
+        <>
+            {lines(i, entry.depth)}
+            <span
+                className={`ft-exp ${hasChildren ? '' : 'leaf'}`}
+                onClick={hasChildren ? (event) => { event.stopPropagation(); setOpen(entry.key, !isOpen(entry.key)); } : undefined}
+                onDoubleClick={(event) => event.stopPropagation()}
+                aria-hidden="true"
+            >
+                {hasChildren && (
+                    <svg className="ft-box" width="9" height="9" viewBox="0 0 9 9" shapeRendering="crispEdges">
+                        <rect x="0.5" y="0.5" width="8" height="8" />
+                        <path d="M2 4.5h5" />
+                        {!isOpen(entry.key) && <path d="M4.5 2v5" />}
+                    </svg>
+                )}
+            </span>
+        </>
+    );
+
+    const nameOrInput = (key: string, name: string, onCommit: (next: string) => void, prefix = '') => (
         renaming === key ? (
             <InlineInput
                 value={name}
@@ -518,7 +660,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     focusList();
                 }}
             />
-        ) : <span className="ft-name">{name}</span>
+        ) : <span className="ft-name">{prefix}{name}</span>
     );
 
     const rowProps = (entry: Exclude<Entry, { kind: 'gap' }>) => ({
@@ -527,7 +669,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         'aria-level': entry.depth + 1,
         'aria-selected': current === entry.key,
         style: { '--depth': entry.depth } as CSSProperties,
-        onClick: () => setCurrent(entry.key),
+        onClick: () => (entry.kind === 'recent' && entry.stepId ? jump(entry.stepId) : setCurrent(entry.key)),
         onDoubleClick: () => activate(entry.key),
         onContextMenu: (event: MouseEvent) => {
             setCurrent(entry.key);
@@ -540,12 +682,13 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         },
     });
 
-    const rows: ReactElement[] = entries.map((entry) => {
+    const rows: ReactElement[] = entries.map((entry, i) => {
         switch (entry.kind) {
             case 'gap': {
                 const here = entry.gap === shownGap;
                 return (
                     <li key={entry.key} className={`ft-gap ${here ? 'has-bar' : ''}`} data-gap={entry.gap} role="none">
+                        {lines(i, 0)}
                         {here ? (
                             <div
                                 className={`ft-bar ${preview !== null && draggingBar.current ? 'dragging' : ''}`}
@@ -587,10 +730,47 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                         aria-expanded={isOpen(ROOT)}
                         title={bodyError ? `⚠ ${error}` : `${part.name}${part.description ? ` · ${part.description}` : ''}`}
                     >
-                        {caret(ROOT, true)}
-                        <span className="ft-icon"><Icon name={shapeIcon(part.shape)} size={14} /></span>
+                        {lead(i, entry, true)}
+                        <span className="ft-icon"><StepIcon name="part" /></span>
                         {nameOrInput(ROOT, part.name, (name) => void tool('parts_update', { updates: [{ id: part.id, name }] }))}
                         {bodyError && <span className="ft-err" aria-label="Build error">⚠</span>}
+                    </li>
+                );
+            }
+            case 'folder':
+                return (
+                    <li
+                        key={entry.key}
+                        {...rowProps(entry)}
+                        className={`ft-row folder ${current === HISTORY ? 'current' : ''}`}
+                        aria-expanded={isOpen(HISTORY)}
+                        title="Steps added or edited in this session, most recent first"
+                    >
+                        {lead(i, entry, true)}
+                        <span className="ft-icon"><StepIcon name="history" /></span>
+                        <span className="ft-name">History</span>
+                    </li>
+                );
+            case 'recent': {
+                const feature = entry.stepId ? byId.get(entry.stepId) : undefined;
+                if (!feature) {
+                    return (
+                        <li key={entry.key} {...rowProps(entry)} className={`ft-row recent empty ${current === entry.key ? 'current' : ''}`}>
+                            {lead(i, entry, false)}
+                            <span className="ft-name">No steps added or edited yet</span>
+                        </li>
+                    );
+                }
+                return (
+                    <li
+                        key={entry.key}
+                        {...rowProps(entry)}
+                        className={`ft-row recent ${current === entry.key ? 'current' : ''}`}
+                        title={`${featureName(feature)}: click to show it in the tree`}
+                    >
+                        {lead(i, entry, false)}
+                        <span className="ft-icon"><StepIcon name={featureIcon(feature)} /></span>
+                        <span className="ft-name">{featureName(feature)}</span>
                     </li>
                 );
             }
@@ -602,7 +782,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                         className={`ft-row fixed ${current === entry.key ? 'current' : ''}`}
                         title={entry.plane ? `${entry.label}: right-click to sketch on it` : entry.title}
                     >
-                        {caret(entry.key, false)}
+                        {lead(i, entry, false)}
                         <span className="ft-icon">{entry.icon}</span>
                         <span className="ft-name">{entry.label}</span>
                     </li>
@@ -620,7 +800,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                         ].join(' ')}
                         title={error && !failing ? `⚠ ${error}` : shapeSummary(part.shape)}
                     >
-                        {caret(BODY, false)}
+                        {lead(i, entry, false)}
                         <span className="ft-icon"><Icon name={shapeIcon(part.shape)} size={14} /></span>
                         <span className="ft-name">Base body</span>
                         {error && !failing && <span className="ft-err" aria-label="Build error">⚠</span>}
@@ -639,6 +819,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     const withSketch = blockIds(node).length > 1;
                     return (
                         <li key={node.key} className="br-row confirm ft-confirm" style={{ '--depth': entry.depth } as CSSProperties}>
+                            {lines(i, entry.depth)}
                             <span className="br-confirm-text">Delete {featureName(feature)}?</span>
                             <button type="button" className="danger" autoFocus onClick={() => remove([feature.id])}>Delete</button>
                             {withSketch && (
@@ -664,9 +845,9 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     isSketch ? 'sketch' : '',
                     feature && REFERENCE_OPS.has(feature.op) ? 'ref' : '',
                     suppressed ? 'suppressed' : '',
-                    isRolled(node, shownCount) ? 'rolled' : '',
+                    isRolled(node, greyCount) ? 'rolled' : '',
                     current === node.key ? 'current' : '',
-                    node.stepId && editing?.partId === part.id && editing.featureId === node.stepId ? 'editing' : '',
+                    node.stepId && editTarget === node.stepId ? 'editing' : '',
                     failed ? 'failed' : '',
                     dragKey === node.key ? 'dragged' : '',
                     dropLine?.key === node.key ? (dropLine.after ? 'drop-after' : 'drop-before') : '',
@@ -691,14 +872,14 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                             setDrop(null);
                         }}
                     >
-                        {caret(node.key, node.children.length > 0)}
+                        {lead(i, entry, node.children.length > 0)}
                         <span className="ft-icon"><StepIcon name={feature ? featureIcon(feature) : 'sketch'} /></span>
                         {feature
                             ? nameOrInput(node.key, featureName(feature), (name) => void tool('features_update', {
                                 partId: part.id,
                                 updates: [{ id: feature.id, name }],
-                            }))
-                            : <span className="ft-name">{node.label}</span>}
+                            }), markOf(node, feature))
+                            : <span className="ft-name">{markOf(node, feature)}{node.label}</span>}
                         {node.role && feature && <span className="ft-role">{node.role}</span>}
                         {shared && <span className="ft-badge" title={`Shared by ${node.users} steps`}>shared ×{node.users}</span>}
                         {failed && <span className="ft-err" aria-label="Build error">⚠</span>}

@@ -37,7 +37,269 @@
     max-height: calc(100% - 176px);
 }
 
-.br button {
+/* While a feature is created or edited, the property manager takes the tree's place; the tree stays mounted. */
+.br-tree {
+    display: contents;
+}
+
+.br-tree[hidden],
+.pm-slot[hidden] {
+    display: none;
+}
+
+.pm-slot {
+    display: contents;
+}
+
+.pm {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.pm form {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-height: 0;
+    padding: 0;
+}
+
+.pm-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 10px 12px 6px;
+    color: var(--accent);
+}
+
+.pm-title {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.pm-title b {
+    overflow: hidden;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pm-title span {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pm-actions {
+    display: flex;
+    gap: 6px;
+    padding: 2px 12px 8px;
+}
+
+.br .pm-actions button {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 30px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.pm-actions svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.br .pm-ok {
+    color: #4fe08f;
+}
+
+.pm-ok svg {
+    stroke-width: 2.6;
+}
+
+.br .pm-ok:hover:not(:disabled) {
+    border-color: rgba(79, 224, 143, 0.6);
+    background: rgba(79, 224, 143, 0.16);
+}
+
+.br .pm-ok:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.pm-ok.busy svg {
+    animation: pulse 1s steps(2) infinite;
+}
+
+.br .pm-cancel {
+    color: #ff6b78;
+}
+
+.pm-cancel svg {
+    stroke-width: 2.2;
+}
+
+.br .pm-cancel:hover {
+    border-color: rgba(255, 93, 108, 0.6);
+    background: rgba(255, 93, 108, 0.14);
+}
+
+.pm .tb-result {
+    margin: 0 12px 8px;
+}
+
+.pm-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 0;
+    padding: 2px 12px 12px;
+    overflow-y: auto;
+}
+
+.pm-fields,
+.pm-section-body {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.pm .tb-field {
+    grid-template-columns: 76px 1fr;
+}
+
+.pm .tb-check {
+    padding-left: 84px;
+}
+
+.pm-section {
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.16);
+}
+
+.br .pm-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 6px 9px;
+    color: #c6cedb;
+    font-size: 11.5px;
+    font-weight: 600;
+    text-align: left;
+}
+
+.br .pm-section-head:hover {
+    color: var(--text);
+}
+
+.pm-section-head svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    transform: rotate(-90deg);
+    transition: transform 0.12s ease;
+}
+
+.pm-section.open .pm-section-head svg {
+    transform: none;
+}
+
+.pm-section-body {
+    padding: 2px 9px 9px;
+}
+
+.pm-spin {
+    display: flex;
+    flex-direction: column;
+    align-self: stretch;
+    border-left: 1px solid var(--line);
+}
+
+.br .pm-spin button {
+    display: grid;
+    flex: 1;
+    place-items: center;
+    width: 16px;
+    padding: 0;
+    color: var(--muted);
+}
+
+.br .pm-spin button:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text);
+}
+
+.pm-spin svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+}
+
+.pm-contours {
+    margin: 0;
+    padding: 3px;
+    max-height: 120px;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.28);
+    list-style: none;
+    font: 11.5px ui-monospace, 'JetBrains Mono', Menlo, monospace;
+}
+
+.pm-contours li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 2px 4px 2px 6px;
+    border-radius: 4px;
+    color: var(--text);
+}
+
+.pm-contours li:hover {
+    background: rgba(53, 224, 255, 0.1);
+}
+
+.pm-contours li span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.br .pm-contours button {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border-radius: 4px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1;
+}
+
+.br .pm-contours button:hover {
+    background: rgba(255, 93, 108, 0.18);
+    color: #ffd0d5;
+}
+
+.pm-contours li.pm-contours-all {
+    color: var(--muted);
+    font-style: italic;
+}
+
+.br :where(button) {
     border: 0;
     background: none;
     color: inherit;
@@ -415,7 +677,9 @@
     position: fixed;
     z-index: 50;
     min-width: 170px;
+    max-height: calc(100vh - 12px);
     padding: 4px;
+    overflow-y: auto;
 }
 
 .ctx-menu button,
@@ -992,7 +1256,8 @@
     padding-left: 34px;
 }
 
-/* Feature tree (part workspace): compact one-line rows, nested sketches, rollback bar */
+/* Feature tree (part workspace), feature manager style: [+]/[-] boxes, dotted connector lines, coloured icons,
+   nested sketches, rollback bar. One indent column is 16px; boxes and lines sit at a column's centre (+8px). */
 
 .ft-filter {
     display: flex;
@@ -1044,13 +1309,16 @@
     box-shadow: inset 0 0 0 1px rgba(53, 224, 255, 0.35);
 }
 
+.ft-tree {
+    --ft-line: rgba(150, 160, 178, 0.6);
+}
+
 .ft-row {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 4px;
     height: 23px;
-    padding: 0 4px 0 calc(2px + var(--depth, 0) * 14px);
+    padding: 0 4px 0 calc(2px + var(--depth, 0) * 16px);
     border-radius: 4px;
     color: #c6cedb;
     white-space: nowrap;
@@ -1076,39 +1344,70 @@
     background: rgba(180, 107, 255, 0.14);
 }
 
-.ft-caret {
-    display: grid;
+/* Connector lines: 1px dots. Fixed attachment keeps every segment on one dot phase, so lines stay continuous
+   across 23px rows and the rollback gaps. */
+.ft-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: repeating-linear-gradient(to bottom, var(--ft-line) 0 1px, transparent 1px 2px) fixed;
+    pointer-events: none;
+}
+
+.ft-line.elbow.last {
+    bottom: auto;
+    height: 12px;
+}
+
+.ft-line.stub {
+    top: 11px;
+    bottom: auto;
+    width: 8px;
+    height: 1px;
+    background: repeating-linear-gradient(to right, var(--ft-line) 0 1px, transparent 1px 2px) fixed;
+}
+
+.ft-line.down {
+    top: 19px;
+}
+
+.ft-exp {
+    position: relative;
     flex: none;
-    place-items: center;
-    width: 12px;
-    height: 16px;
-    color: var(--muted);
+    align-self: stretch;
+    width: 16px;
+}
+
+.ft-box {
+    position: absolute;
+    top: 7px;
+    left: 4px;
+    fill: #1b2029;
+    stroke: #a3acbb;
     cursor: pointer;
 }
 
-.ft-caret.leaf {
-    cursor: default;
-}
-
-.ft-caret svg {
-    transition: transform 0.12s;
-}
-
-.ft-caret.open svg {
-    transform: rotate(90deg);
-}
-
-.ft-caret:hover {
-    color: var(--text);
+.ft-exp:hover .ft-box {
+    stroke: var(--text);
 }
 
 .ft-icon {
-    display: grid;
+    position: relative;
+    display: flex;
     flex: none;
-    place-items: center;
+    justify-content: center;
+    align-self: stretch;
     width: 16px;
-    height: 16px;
+    padding-top: 4px;
     color: var(--accent-2);
+}
+
+.ft-swatch {
+    width: 11px;
+    height: 11px;
+    margin-top: 1px;
+    border-radius: 2px;
 }
 
 .ft-row.root .ft-icon,
@@ -1128,6 +1427,7 @@
 
 .ft-name {
     min-width: 0;
+    margin-left: 4px;
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -1140,6 +1440,7 @@
 .ft-role,
 .ft-badge {
     flex: none;
+    margin-left: 4px;
     color: var(--muted);
     font-size: 10px;
 }
@@ -1154,6 +1455,7 @@
 
 .ft-err {
     flex: none;
+    margin-left: 4px;
     color: #ff6b6b;
     font-size: 11px;
 }
@@ -1167,23 +1469,26 @@
     color: #ff6b6b;
 }
 
+/* Suppressed, rolled back, or after the step being edited: icon and text greyed (lines and boxes stay). */
 .ft-row.suppressed .ft-name {
     color: var(--muted);
     font-style: italic;
 }
 
-.ft-row.suppressed .ft-icon {
+.ft-row.suppressed .ft-icon,
+.ft-row.rolled .ft-icon {
+    filter: grayscale(1);
+    opacity: 0.5;
+}
+
+.ft-row.rolled .ft-name,
+.ft-row.rolled .ft-role {
+    color: #697387;
+}
+
+.ft-row.rolled:hover .ft-name,
+.ft-row.rolled.current .ft-name {
     color: var(--muted);
-    opacity: 0.7;
-}
-
-.ft-row.rolled {
-    opacity: 0.4;
-}
-
-.ft-row.rolled:hover,
-.ft-row.rolled.current {
-    opacity: 0.7;
 }
 
 .ft-row.dragged {
@@ -1225,7 +1530,7 @@
 }
 
 .ft-confirm {
-    padding-left: calc(6px + var(--depth, 0) * 14px);
+    padding-left: calc(2px + (var(--depth, 0) + 1) * 16px + 4px);
 }
 
 /* Gaps between top-level rows: click to move the rollback bar there; the bar itself drags. */
@@ -1264,4 +1569,9 @@
 .ft-bar.dragging {
     background: var(--accent-2);
     box-shadow: 0 0 10px rgba(53, 224, 255, 0.7);
+}
+
+.ft-row.recent.empty .ft-name {
+    color: var(--muted);
+    font-style: italic;
 }

@@ -342,7 +342,7 @@ describe('feature history', () => {
         expect(store.get().parts[0].features?.[0]).toMatchObject({ thickness: 2 });
     });
 
-    it('marks fasteners as purchased hardware', () => {
+    it('adds fasteners as ordinary parts, with no hardware flag', () => {
         run('parts_add', {
             parts: [{
                 name: 'Lid screw',
@@ -351,7 +351,7 @@ describe('feature history', () => {
                 material: { color: '#222222', metalness: 0.9, roughness: 0.4 },
             }],
         });
-        expect(store.get().parts[0].purchased).toBe(true);
+        expect(store.get().parts[0].purchased).toBeUndefined();
     });
 
     it('lists the timeline and reads and writes print settings', () => {

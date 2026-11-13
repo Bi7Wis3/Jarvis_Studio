@@ -412,7 +412,7 @@ const partFields = {
     labelSide: z.enum(['left', 'right']).optional(),
     features: z.array(feature).optional()
         .describe('Design history applied to the shape in order: fillets, shells, holes, cuts, bosses, threads'),
-    purchased: z.boolean().optional().describe('Bought hardware (screws, nuts, inserts, PCBs): not printed'),
+    purchased: z.boolean().optional().describe('No longer used: every component is a part and is treated the same'),
     decals: z.array(z.object({
         id: z.string().optional(),
         image: z.string(),
@@ -509,9 +509,6 @@ export function createTools(store: ProjectStore): StudioTool[] {
                         const part: Part = { ...input, id: uniqueId(draft, input.name), rotation: input.rotation ?? [0, 0, 0] };
                         part.features = input.features ? withFeatureIds({}, input.features) : undefined;
                         part.decals = withDecalIds(input.decals);
-                        if (part.shape.kind === 'fastener') {
-                            part.purchased ??= true;
-                        }
                         checkHistory(part);
                         draft.parts.push(part);
                         ids.push(part.id);

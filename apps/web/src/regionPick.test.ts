@@ -26,6 +26,20 @@ function polyline(g: SketchGeometry, ...pts: Pt[]): SketchGeometry {
 const byArea = (regions: SketchRegion[]) => [...regions].sort((a, b) => regionArea(a) - regionArea(b));
 
 describe('sketch regions', () => {
+    it('splits two rectangles drawn one after the other, whose shared side is two lines on top of each other', () => {
+        // On separate, coinciding points.
+        let g = addRect(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [10, 10] }).g;
+        g = addRect(g, { at: [10, 0] }, { at: [20, 10] }).g;
+        expect(regionsOf(g).map(regionArea).map(Math.round)).toEqual([100, 100]);
+        // Snapped onto the first rectangle's corner: the same points.
+        const first = addRect(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [10, 10] }).g;
+        const corner = first.points.find((q) => q.u === 10 && q.v === 0)!.id;
+        const snapped = addRect(first, { at: [10, 0], point: corner }, { at: [20, 10] }).g;
+        const regions = regionsOf(snapped);
+        expect(regions.map(regionArea).map(Math.round)).toEqual([100, 100]);
+        expect(regionAt(regions, [5, 5])).not.toBe(regionAt(regions, [15, 5]));
+    });
+
     it('splits two squares sharing an edge into two regions', () => {
         let g = addRect(EMPTY_GEOMETRY, [0, 0], [10, 10]).g;
         g = polyline(g, [10, 0], [20, 0], [20, 10], [10, 10]);

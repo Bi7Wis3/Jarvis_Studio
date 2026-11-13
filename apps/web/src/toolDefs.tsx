@@ -11,6 +11,7 @@ import {
 import { STANDARD_LENGTHS, threadData } from '@jarvis/core/fasteners';
 import { clearEditing, editItem, refit, runTool, select, setSketchHidden, setWorkspace, useStudio } from './state';
 import { RegionPickSession, useRegionPick } from './regionPick';
+import { showError } from './menus';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { Icon } from './icons';
 import {
@@ -36,6 +37,8 @@ export interface Field {
     /** vec fields: axis labels, stored as key0, key1, key2. */
     axes?: [string, string, string];
     show?: (v: Values) => boolean;
+    /** Property manager: consecutive fields with the same section share a titled, collapsible block. */
+    section?: string;
 }
 
 export interface Ctx {
@@ -94,6 +97,10 @@ export interface ToolDef {
     op?: Feature['op'];
     /** Shape kinds this tool creates and can edit as a base body. */
     shapes?: Shape['kind'][];
+    /** Opens in the property manager (left panel) in the part workspace even without `op` or `shapes`. */
+    panel?: boolean;
+    /** Picks sketch regions: of the sketch being edited, or of the sketch step in the `sketch` value. */
+    regionPick?: 'sketcher' | 'step';
 }
 
 export interface ToolGroup {
@@ -263,7 +270,7 @@ const fastener: ToolDef = {
     id: 'fastener',
     label: 'Fastener',
     icon: 'fastener',
-    hint: 'ISO hardware, marked purchased',
+    hint: 'ISO screws, nuts, washers and inserts',
     width: 300,
     shapes: ['fastener'],
     fields: (ctx) => [
@@ -306,7 +313,6 @@ const fastener: ToolDef = {
             position: [num(v, 'x', 'Position X'), y, num(v, 'z', 'Position Z')],
             rotation: [0, 0, 0],
             material: type === 'heatsetInsert' ? BRASS : STEEL,
-            purchased: true,
         });
     }),
 };
@@ -413,6 +419,7 @@ const sketchPlaneTool: ToolDef = {
     label: 'Sketch plane',
     icon: 'sketch',
     noApply: true,
+    panel: true,
     width: 300,
     fields: () => [
         { key: 'offset', label: 'Offset', kind: 'number', unit: 'mm' },
@@ -494,7 +501,7 @@ function finishOp(v: Values): FinishOp {
     };
 }
 
-function sketchEditTarget(): { feature: Feature | null; base: SketchShape | null; partId: string } | null {
+export function sketchEditTarget(): { feature: Feature | null; base: SketchShape | null; partId: string } | null {
     const edit = useSketcher.getState().edit;
     const part = edit && fullPart(edit.partId);
     if (!edit || !part) {
@@ -539,13 +546,49 @@ function sketchOpFeature(op: FinishOp, source: { sketchRef: string } | { sketch:
  * Finishes the sketch. A new sketch becomes a named sketch step of the part (a brand-new part starts empty with it),
  * optionally followed by an Extrude, Cut or Revolve that uses it. Editing saves the sketch back in place.
  */
+/**
+ * Does leaving the sketch need the operation panel? Only when the sketch was started from Extrude, Cut or Revolve
+ * (the feature is what was asked for), or it is the own sketch of a feature or base body being edited. A plain
+ * sketch, new or edited, is saved as it is: the features that use it are made afterwards, from the part.
+ */
+export function finishNeedsPanel(): boolean {
+    const target = sketchEditTarget();
+    if (target) {
+        return target.feature?.op !== 'sketch';
+    }
+    return useSketcher.getState().intent !== 'sketch';
+}
+
+/** Leaves the sketch without saving it; asks first when a new sketch has something drawn or an edited one was changed. */
+export function discardSketch(): void {
+    const { undo, geometry, edit } = useSketcher.getState();
+    const unsaved = edit ? undo.length > 0 : geometry.curves.length > 0;
+    if (unsaved && !window.confirm('Discard this sketch? What you drew or changed in it will be lost.')) {
+        return;
+    }
+    closeSketch();
+    clearEditing();
+}
+
+/** Saves the sketch and goes back to the part, without a panel. */
+async function exitSketchSaving(ctx: Ctx): Promise<void> {
+    const result = await finishTool.apply!({ op: 'sketch', result: 'add', distance: '10', direction: 'normal', through: false, axis: 'v', angle: '360' }, ctx);
+    if (result.isError) {
+        showError(result.text);
+    }
+}
+
 const finishTool: ToolDef = {
     id: 'sk-finish',
-    label: 'Finish sketch',
+    label: 'Exit sketch',
     icon: 'finish',
-    hint: 'save the sketch, then extrude, cut or revolve it',
+    hint: 'save the sketch and go back to the part',
     shortcut: 'Enter',
+    instant: (ctx) => void exitSketchSaving(ctx),
+    popupIf: () => finishNeedsPanel(),
     width: 300,
+    panel: true,
+    regionPick: 'sketcher',
     fields: () => {
         const target = sketchEditTarget();
         if (target?.feature?.op === 'sketch') {
@@ -562,16 +605,16 @@ const finishTool: ToolDef = {
             : hasPart ? opts(['add', 'Join'], ['new', 'New body']) : [];
         return [
             ...(choices.length > 1 ? [{ key: 'op', label: 'Operation', kind: 'select' as const, options: opts(...choices) }] : []),
-            ...(results.length ? [{ key: 'result', label: 'Result', kind: 'select' as const, options: results,
-                show: (v: Values) => v.op === 'extrude' || v.op === 'revolve' }] : []),
-            { key: 'distance', label: 'Distance', kind: 'number', unit: 'mm', min: 0,
+            { key: 'distance', label: 'Distance', kind: 'number', unit: 'mm', min: 0, section: 'Direction 1',
                 show: (v) => (v.op === 'extrude' || v.op === 'cut') && !(v.op === 'cut' && v.through) },
             { key: 'direction', label: 'Direction', kind: 'select', options: opts(['normal', 'Along normal'], ['reverse', 'Reversed'], ['symmetric', 'Symmetric']),
-                show: (v) => v.op === 'extrude' || v.op === 'cut' },
-            { key: 'through', label: 'Through all', kind: 'check', show: (v) => v.op === 'cut' },
+                section: 'Direction 1', show: (v) => v.op === 'extrude' || v.op === 'cut' },
+            { key: 'through', label: 'Through all', kind: 'check', section: 'Direction 1', show: (v) => v.op === 'cut' },
             { key: 'axis', label: 'Axis', kind: 'select', options: opts(['v', 'Sketch V (vertical)'], ['u', 'Sketch U (horizontal)']),
-                show: (v) => v.op === 'revolve' },
-            { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', show: (v) => v.op === 'revolve' },
+                section: 'Revolve', show: (v) => v.op === 'revolve' },
+            { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Revolve', show: (v) => v.op === 'revolve' },
+            ...(results.length ? [{ key: 'result', label: 'Result', kind: 'select' as const, options: results, section: 'Result',
+                show: (v: Values) => v.op === 'extrude' || v.op === 'revolve' }] : []),
         ];
     },
     defaults: () => {
@@ -594,26 +637,28 @@ const finishTool: ToolDef = {
         useSketcher.setState({ finishing: finishOp({ ...v, ...patch }) });
         return patch;
     },
+    // The picked areas are listed by the property manager (Selected contours).
     extra: (api) => {
         const f = sketchEditTarget()?.feature;
-        const picks = useRegionPick((s) => s.picked.length);
         if (f?.op === 'sketch' || api.values.op === 'sketch') {
             return null;
         }
         return (
             <>
                 <RegionPickSession sketchKey={null} initial={f && (f.op === 'extrude' || f.op === 'revolve') ? f.regions : undefined} />
-                <p className="tb-note tb-hint">
-                    {picks ? `${picks} area${picks === 1 ? '' : 's'} selected · click an area to add or remove it`
-                        : 'Whole sketch · click areas in the view to use only those'}
-                </p>
+                <p className="tb-note tb-hint">Click areas in the view to use only those.</p>
             </>
         );
     },
     applyLabel: 'OK',
     apply: (v, ctx) => attempt(async () => {
         const { profiles, open } = sketchProfiles();
-        if (!profiles.length) {
+        // A sketch saved on its own may be open (a path, a guide, reference lines); a feature needs a closed area.
+        const plain = v.op === 'sketch' || sketchEditTarget()?.feature?.op === 'sketch';
+        if (plain && !useSketcher.getState().geometry.curves.length) {
+            throw new Error('The sketch is empty: draw something, or use Discard to leave.');
+        }
+        if (!plain && !profiles.length) {
             throw new Error(open ? 'The lines do not form a closed profile yet: join the last point to the first.'
                 : 'Draw at least one closed profile.');
         }
@@ -711,6 +756,7 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
         op,
         hint: kind === 'cut' ? 'cut a sketch into the part' : `${label.toLowerCase()} a sketch`,
         width: 300,
+        regionPick: 'step',
         // With no sketch to use yet, the button starts one.
         instant: (ctx) => beginSketch(ctx, kind),
         popupIf: (ctx) => !!ctx.edit || sketchSteps(ctx.part).length > 0,
@@ -718,14 +764,16 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
             const steps = sketchSteps(ctx.part);
             return [
                 { key: 'sketch', label: 'Sketch', kind: 'select', options: steps.map((f) => ({ value: f.id, label: f.name ?? f.id })) },
-                ...(kind === 'revolve' || ctx.edit ? [{ key: 'mode', label: 'Result', kind: 'select' as const, options: opts(['add', 'Join'], ['cut', 'Cut']) }] : []),
-                { key: 'distance', label: 'Distance', kind: 'number', unit: 'mm', min: 0, show: (v) => op === 'extrude' && !(v.mode === 'cut' && v.through) },
+                { key: 'distance', label: 'Distance', kind: 'number', unit: 'mm', min: 0, section: 'Direction 1',
+                    show: (v) => op === 'extrude' && !(v.mode === 'cut' && v.through) },
                 { key: 'direction', label: 'Direction', kind: 'select', options: opts(['normal', 'Along normal'], ['reverse', 'Reversed'], ['symmetric', 'Symmetric']),
-                    show: () => op === 'extrude' },
-                { key: 'through', label: 'Through all', kind: 'check', show: (v) => op === 'extrude' && v.mode === 'cut' },
+                    section: 'Direction 1', show: () => op === 'extrude' },
+                { key: 'through', label: 'Through all', kind: 'check', section: 'Direction 1', show: (v) => op === 'extrude' && v.mode === 'cut' },
                 { key: 'axis', label: 'Axis', kind: 'select', options: opts(['v', 'Sketch V (vertical)'], ['u', 'Sketch U (horizontal)']),
-                    show: () => op === 'revolve' },
-                { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', show: () => op === 'revolve' },
+                    section: 'Revolve', show: () => op === 'revolve' },
+                { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Revolve', show: () => op === 'revolve' },
+                ...(kind === 'revolve' || ctx.edit
+                    ? [{ key: 'mode', label: 'Result', kind: 'select' as const, options: opts(['add', 'Join'], ['cut', 'Cut']), section: 'Result' }] : []),
             ];
         },
         defaults: (ctx) => {
@@ -755,7 +803,7 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
                     initial={ctx.edit?.feature && (ctx.edit.feature.op === 'extrude' || ctx.edit.feature.op === 'revolve')
                         && ctx.edit.feature.sketchRef === api.values.sketch ? ctx.edit.feature.regions : undefined}
                 />
-                <p className="tb-note tb-hint">Or click a sketch in the view. Click areas of it to use only those (none: all).</p>
+                <p className="tb-note tb-hint">Or click a sketch in the view. Click areas of it to use only those.</p>
                 {ctx.part && api.values.sketch && (
                     <button type="button" className="tb-link" onClick={() => editItem(ctx.part!.id, api.values.sketch as string)}>
                         Edit sketch
@@ -838,7 +886,7 @@ const loftTool: ToolDef = {
 };
 
 const sketchStartTools: ToolDef[] = [
-    { id: 'sketch', label: 'Sketch', icon: 'sketch', hint: 'on a plane or a flat face', instant: (ctx) => beginSketch(ctx, 'extrude') },
+    { id: 'sketch', label: 'Sketch', icon: 'sketch', hint: 'on a plane or a flat face', instant: (ctx) => beginSketch(ctx, 'sketch') },
 ];
 
 const CONSTRAINT_TOOLS: { id: ConstraintTool; label: string; hint: string }[] = [
@@ -900,6 +948,7 @@ const linearSketchPattern: ToolDef = {
     icon: 'pattern',
     hint: 'copies of the selected curves in a row',
     width: 300,
+    panel: true,
     fields: () => [
         { key: 'count', label: 'Count', kind: 'number', unit: '×', min: 2, step: 1 },
         vecField('step', 'Spacing', 'mm'),
@@ -917,6 +966,7 @@ const circularSketchPattern: ToolDef = {
     icon: 'pattern-circular',
     hint: 'copies of the selected curves round a point',
     width: 300,
+    panel: true,
     fields: () => [
         { key: 'count', label: 'Count', kind: 'number', unit: '×', min: 2, step: 1 },
         { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg' },
@@ -962,13 +1012,11 @@ const sketchModeTools: ToolDef[] = [
     finishTool,
     {
         id: 'sk-cancel',
-        label: 'Cancel sketch',
+        label: 'Discard sketch',
         icon: 'cancel',
+        hint: 'leave without saving it',
         danger: true,
-        instant: () => {
-            closeSketch();
-            clearEditing();
-        },
+        instant: () => discardSketch(),
     },
 ];
 
@@ -1333,6 +1381,7 @@ const patternTool: ToolDef = {
     hint: 'copies of the whole part',
     needsPart: true,
     width: 300,
+    panel: true,
     fields: () => repeatFields('rep').map((f) => (f.key === 'repkind'
         ? { ...f, options: f.options!.filter((o) => o.value !== 'none') } : f)),
     defaults: ({ part }) => {
@@ -1768,6 +1817,7 @@ export const noEditTool: ToolDef = {
     label: 'Edit',
     icon: 'sketch',
     noApply: true,
+    panel: true,
     top: () => <p className="tb-note">This step has no editor here yet. Ask Jarvis to change it, e.g. “make the boss 2 mm taller”.</p>,
 };
 

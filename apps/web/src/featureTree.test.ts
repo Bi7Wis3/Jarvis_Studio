@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Feature, Sketch } from '@jarvis/core';
-import { blockIds, buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, reorderIds } from './featureTree';
+import {
+    blockIds, buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, nodeSketch, reorderIds, treeGuides,
+} from './featureTree';
 
 const sketch: Sketch = { plane: 'top', profiles: [] };
 const sk = (id: string, name?: string): Feature => ({ id, name, op: 'sketch', sketch });
@@ -122,5 +124,34 @@ describe('feature tree', () => {
         expect(filterKeys(tree, '')).toBeNull();
         expect([...filterKeys(tree, 'outline')!]).toEqual(['s1', 'e1']);
         expect([...filterKeys(tree, 'FILLET')!]).toEqual(['f1']);
+    });
+
+    it('finds the sketch a sketch node shows', () => {
+        const inline: Sketch = { plane: 'front', profiles: [] };
+        const features: Feature[] = [
+            sk('s1'),
+            { id: 'e1', op: 'extrude', distance: 5, mode: 'add', sketchRef: 's1' },
+            { id: 'e2', op: 'extrude', distance: 5, mode: 'cut', sketch: inline },
+        ];
+        const byId = new Map(features.map((f) => [f.id, f]));
+        const tree = buildFeatureTree(features);
+        expect(nodeSketch(tree[0].children[0], byId)).toBe(sketch);
+        expect(nodeSketch(tree[1].children[0], byId)).toBe(inline);
+        expect(nodeSketch(tree[0], byId)).toBeUndefined();
+    });
+});
+
+describe('tree connector lines', () => {
+    it('runs each line down to its last child and through deeper rows and gaps', () => {
+        // root, a, gap, b (open: b1, b2), gap, c, gap
+        const guides = treeGuides([0, 1, null, 1, 2, 2, null, 1, null]);
+        expect(guides.map((g) => g.last)).toEqual([true, false, true, false, false, true, true, true, true]);
+        expect(guides.map((g) => g.through)).toEqual([[], [], [1], [], [1], [1], [1], [], []]);
+    });
+
+    it('stops the parent line after the last top-level row', () => {
+        const guides = treeGuides([0, 1, 1, 2]);
+        expect(guides[2]).toEqual({ through: [], last: true });
+        expect(guides[3]).toEqual({ through: [], last: true });
     });
 });

@@ -1,7 +1,7 @@
 // The part history as a feature tree: which sketches nest under the step that uses them, and how tree positions map
 // to the real (flat) history for rollback and reorder. Nesting is display only; every action works on real steps.
 
-import type { Feature, SketchSource } from '@jarvis/core';
+import type { Feature, Sketch, SketchSource } from '@jarvis/core';
 import { featureName, stepRefs } from './historyText';
 
 /** What a nested sketch is to its parent. */
@@ -166,6 +166,52 @@ export function reorderIds(features: Feature[], nodes: TreeNode[], dragKey: stri
         : Math.min(...blockIds(target).map((id) => ids.indexOf(id)));
     ids.splice(at, 0, ...moving);
     return ids.every((id, i) => id === all[i]) ? null : ids;
+}
+
+/** The sketch a sketch node shows: a sketch step's own, or the inline sketch of its parent step. */
+export function nodeSketch(node: TreeNode, byId: Map<string, Feature>): Sketch | undefined {
+    const feature = node.stepId ? byId.get(node.stepId) : undefined;
+    if (feature) {
+        return feature.op === 'sketch' ? feature.sketch : undefined;
+    }
+    const parent = node.parentId ? byId.get(node.parentId) : undefined;
+    const n = /(\d+)$/.exec(node.key)?.[1];
+    return parent && n !== undefined ? sketchSources(parent)[Number(n)]?.source.sketch : undefined;
+}
+
+/** Connector lines of one tree line: the levels whose vertical line passes through it, and its own elbow. */
+export interface Guide {
+    /** Depths (1 and up) of the vertical lines that run through the whole line. */
+    through: number[];
+    /** Last child of its parent: its elbow stops at the middle of the line. */
+    last: boolean;
+}
+
+/**
+ * Connector lines for the visible lines in order, given their depths (0 is the root). A null depth is a spacer
+ * between top-level rows (the rollback gaps): only depth 1's line passes through it, when more rows follow.
+ */
+export function treeGuides(depths: (number | null)[]): Guide[] {
+    // more[k]: a later line at depth k follows before any shallower one, so the line at depth k continues.
+    const more: boolean[] = [];
+    const guides: Guide[] = new Array(depths.length);
+    for (let i = depths.length - 1; i >= 0; i--) {
+        const d = depths[i];
+        if (d === null) {
+            guides[i] = { through: more[1] ? [1] : [], last: true };
+            continue;
+        }
+        const through: number[] = [];
+        for (let k = 1; k < d; k++) {
+            if (more[k]) {
+                through.push(k);
+            }
+        }
+        guides[i] = { through, last: !more[d] };
+        more[d] = true;
+        more.length = d + 1;
+    }
+    return guides;
 }
 
 /** Keys of the nodes whose label contains `query` (any case), plus their parents. Null for an empty query. */

@@ -33,7 +33,7 @@ Real engineering. Every part is a real solid built by a CAD kernel (OpenCascade)
 - Real hardware joins real parts. Every screwed joint gets the actual fasteners as parts (shape kind fastener: socket cap, button head, countersunk, nuts, washers, heat-set inserts), placed exactly in their holes, using repeat to match the hole pattern. Pick holes by spec (clearance, tap, heatset, counterbore, countersink, nutTrap) and never guess diameters. Screw length: the clamped thickness plus the engagement (insert length, or about two diameters when tapping into plastic), rounded down to a standard length.
 - Common joints: lid to base with M3 socket caps in counterbores into heat-set inserts in bosses (boss outer diameter about twice the insert's, fillet the boss root); M3 through-bolt with a nut trap; M2.5 or M3 standoff bosses for circuit boards at the board's real hole positions.
 - Assemble everything in place, with mating faces touching exactly: the lid's underside on the base's top rim, screw heads seated in their counterbores, inserts flush with the boss tops, boards on their standoffs.
-- Bought parts (fasteners, circuit boards, displays, batteries, motors, magnets, bearings) are marked purchased and modelled at their real datasheet sizes.
+- Bought items (fasteners, circuit boards, displays, batteries, motors, magnets, bearings) are ordinary parts like any other, modelled at their real datasheet sizes. There is no separate hardware category.
 
 Design for 3D printing (FDM, unless told otherwise; read print_settings when it matters):
 - Walls 1.6 to 2.4 thick (multiples of the 0.4 nozzle); floors and roofs at least 1.2; nothing thinner than 0.8; ribs about 0.6 of the wall they support.
@@ -41,7 +41,7 @@ Design for 3D printing (FDM, unless told otherwise; read print_settings when it 
 - Overhangs no steeper than 45 degrees from vertical. On edges that face the bed, use a chamfer, not a fillet; fillets are fine on top and vertical edges. Bridges at most about 10 mm unsupported. Prefer designs that print without supports.
 - Fits: 0.2 to 0.3 clearance per side for parts that slide or drop together, 0.1 for press fits; hole specs already add the printer's hole tolerance.
 - Embossed or engraved text and logos at least 0.6 deep and 1 wide per stroke. Snap fits need a flexible cantilever with a 30 degree lead-in.
-- When the user asks to print or export, export_stl only the printed parts (leave purchased parts out unless asked) and say which face goes down on the bed.
+- When the user asks to print or export, pass export_stl the ids of the parts they mean to print (it exports every part otherwise) and say which face goes down on the bed.
 
 Form:
 - Proportion: one dominant mass, one secondary, then small details; consistent ratios; aligned edges and centres; equal spacing.
