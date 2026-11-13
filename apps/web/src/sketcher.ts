@@ -11,7 +11,8 @@ import { useStudio } from './state';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, loadSolver, measure, pointOf, solveGeometry, solverReady } from './solver';
 import { regionsOf } from './regionPick';
 import {
-    EMPTY_GEOMETRY, PICKS_NEEDED, addArc, addCircle, addConstraint, addLine, addPolygon, addRect, addSlot, constraintFromPicks,
+    EMPTY_GEOMETRY, PICKS_NEEDED, addArc, addCircle, addConstraint, addLine, addPerimeterCircle, addPolygon, addRect, addRect3, addSlot, addTangentArc,
+    relationsFromPicks, tangentAt,
     curveAt, dimensionFromPicks, evaluate, geometryEntities, geometryProfiles, pickAt, placePoint, profilesToGeometry, removeItemsKeepingPoints,
     toggleConstruction, type ConstraintTool, type NewConstraint, type Pick, type PointRef,
 } from './sketchGeometry';
@@ -19,7 +20,7 @@ import {
     addCentreArc, addCentreRect, chamferCorner, circularPattern, cornerOf, curvePoints, extendAt, filletCorner, linearPattern, mirrorCurves, offsetChain,
     offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type Transform,
 } from './sketchEdit';
-import { fixAll, fixProblem, fullyDefine, type Problem } from './sketchRepair';
+import { fixAll, fixProblem, fullyDefine, mergePoints, type Problem } from './sketchRepair';
 import { dist, mid, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
 import { snapCursor, type QuickSnap, type Snap, type SnapKind } from './snapping';
 
@@ -30,7 +31,8 @@ void loadSolver(wasmUrl);
 /** What the finish popup offers first: the operation the sketch was started for. */
 export type SketchIntent = 'extrude' | 'cut' | 'revolve' | 'sketch';
 
-export type DrawTool = 'line' | 'centerline' | 'point' | 'rect' | 'centerRect' | 'circle' | 'arc' | 'centerArc' | 'slot' | 'polygon';
+export type DrawTool = 'line' | 'centerline' | 'point' | 'rect' | 'centerRect' | 'circle' | 'arc' | 'centerArc' | 'slot' | 'polygon'
+    | 'tangentArc' | 'perimeterCircle' | 'rect3';
 /** Tools that change existing geometry. */
 export type EditTool = 'trim' | 'extend' | 'fillet' | 'chamfer' | 'offset' | 'mirror';
 /** xform: picking points for Move, Copy, Rotate or Scale while their form is open. */
@@ -86,6 +88,8 @@ interface SketcherState {
     dof: number;
     message: string | null;
     conflicting: string[];
+    /** Relations and dimensions that repeat what others already hold: the sketch is over defined. */
+    redundant: string[];
     /** Points placed so far for the entity in progress. */
     draft: PointRef[];
     /** Centre-point arc: the angle swept from the start toward the cursor so far (radians, + counter-clockwise). */
@@ -173,6 +177,7 @@ const IDLE = {
     notice: null,
     context: [],
     conflicting: [],
+    redundant: [],
     draft: [],
     arcSweep: 0,
     editPreview: [],
@@ -252,7 +257,7 @@ const set = (patch: Partial<SketcherState> | ((s: SketcherState) => Partial<Sket
 function commit(next: SketchGeometry, patch: Partial<SketcherState> = {}, message?: string): boolean {
     const s = get();
     if (!solverReady()) {
-        set({ ...patch, geometry: next, undo: [...s.undo.slice(-80), s.geometry], redo: [], dof: -1, message: null, conflicting: [] });
+        set({ ...patch, geometry: next, undo: [...s.undo.slice(-80), s.geometry], redo: [], dof: -1, message: null, conflicting: [], redundant: [] });
         return true;
     }
     const result = solveGeometry(next);
@@ -265,9 +270,20 @@ function commit(next: SketchGeometry, patch: Partial<SketcherState> = {}, messag
         return false;
     }
     set({
-        ...patch, geometry: result.geometry, undo: [...s.undo.slice(-80), s.geometry], redo: [], dof: result.dof, message: null, conflicting: [],
+        ...patch, geometry: result.geometry, undo: [...s.undo.slice(-80), s.geometry], redo: [], dof: result.dof, conflicting: [],
+        redundant: result.redundant, message: overDefinedMessage(next, result.redundant, s.redundant),
     });
     return true;
+}
+
+/** What the status line says when a change left relations that repeat others (SolidWorks: over defined). */
+function overDefinedMessage(g: SketchGeometry, redundant: string[], before: string[] = []): string | null {
+    const added = redundant.filter((id) => !before.includes(id));
+    if (!added.length) {
+        return null;
+    }
+    const names = [...new Set(added.map((id) => describe(g, id)).filter(Boolean))];
+    return `Over defined: ${names.join(', ')} ${added.length === 1 ? 'repeats' : 'repeat'} what other relations already hold. Delete one of the yellow relations.`;
 }
 
 /** Re-solves the current sketch (after loading, or a solver that was not ready yet). */
@@ -279,8 +295,8 @@ function resolve(): void {
     }
     const result = solveGeometry(s.geometry);
     set(result.ok
-        ? { geometry: result.geometry, dof: result.dof, message: null, conflicting: [] }
-        : { dof: result.dof, conflicting: result.conflicting, message: 'The sketch is over-constrained; delete one of the red constraints.' });
+        ? { geometry: result.geometry, dof: result.dof, message: overDefinedMessage(result.geometry, result.redundant), conflicting: [], redundant: result.redundant }
+        : { dof: result.dof, conflicting: result.conflicting, redundant: result.redundant, message: 'The sketch is over-constrained; delete one of the red constraints.' });
 }
 
 /** A short human name of a constraint, for messages. */
@@ -294,7 +310,7 @@ export function describe(g: SketchGeometry, id: string): string {
         const label = c.kind === 'diameter' ? 'Ø' : c.kind === 'radius' ? 'R' : c.kind === 'angle' ? 'angle ' : '';
         return `${label}${round(c.value, 0.01)}${unit}`;
     }
-    return c.kind;
+    return c.kind.replace(/Points$/, '').replace(/([A-Z])/g, ' $1').toLowerCase();
 }
 
 // ---- Session ------------------------------------------------------------------------------------------
@@ -601,7 +617,9 @@ function place(ref: PointRef, kind: SnapKind, typed?: number[]): void {
             out = addConstraint(out, { kind: 'length', line, value: Math.abs(typed[0]) }).g;
         }
         if (typed?.[1] !== undefined) {
-            out = addConstraint(out, { kind: 'angle', a: AXIS_U, b: line, value: Math.abs(typed[1]) % 180 }).g;
+            // The angle from +u to the line as drawn (from its start), 0-180 either side.
+            const value = Math.abs(Math.atan2(Math.sin((typed[1] * Math.PI) / 180), Math.cos((typed[1] * Math.PI) / 180))) * 180 / Math.PI;
+            out = addConstraint(out, { kind: 'angle', a: AXIS_U, b: line, value: round(value, 1e-6), reverseA: false, reverseB: false }).g;
         }
         return out;
     };
@@ -678,7 +696,12 @@ function place(ref: PointRef, kind: SnapKind, typed?: number[]): void {
                 return;
             }
             const r = addCentreArc(g, draft[0], draft[1], ref.at, get().arcSweep >= 0);
-            commit(r.g, { draft: [], typed: '', arcSweep: 0 });
+            // The end joins what it snapped to.
+            const arc = curveOf(r.g, r.id);
+            const end = arc?.kind === 'arc' ? (arc.start === placedStart(r.g, arc, draft[1]) ? arc.end : arc.start) : null;
+            const own = arc?.kind === 'arc' ? [arc.center, arc.start, arc.end] : [];
+            const joins = end && !(ref.point && own.includes(ref.point));
+            commit(joins ? attachPoint(r.g, end, ref) : r.g, { draft: [], typed: '', arcSweep: 0 });
             return;
         }
         case 'circle': {
@@ -687,7 +710,11 @@ function place(ref: PointRef, kind: SnapKind, typed?: number[]): void {
                 return;
             }
             const r = addCircle(g, last, round(dist(last.at, ref.at)));
-            const out = typed?.length ? addConstraint(r.g, { kind: 'diameter', curve: r.id, value: Math.abs(typed[0]) }).g : r.g;
+            let out = typed?.length ? addConstraint(r.g, { kind: 'diameter', curve: r.id, value: Math.abs(typed[0]) }).g : r.g;
+            // Sized on a point: the circle passes through it.
+            if (!typed?.length && ref.point && ref.point !== r.center) {
+                out = addConstraint(out, { kind: 'pointOnCurve', point: ref.point, curve: r.id }).g;
+            }
             commit(out, { draft: [], typed: '' });
             return;
         }
@@ -711,6 +738,49 @@ function place(ref: PointRef, kind: SnapKind, typed?: number[]): void {
             commit(out, { draft: [], typed: '' });
             return;
         }
+        case 'tangentArc': {
+            if (!last) {
+                if (!ref.point || !tangentAt(g, ref.point)) {
+                    set({ message: 'Start a tangent arc on the end of a line or arc.' });
+                    return;
+                }
+                set({ draft: [ref], typed: '', message: null });
+                return;
+            }
+            const r = addTangentArc(g, last.point!, ref);
+            if ('error' in r) {
+                set({ message: r.error });
+                return;
+            }
+            // Goes on from the new end, tangent again, until Enter, Esc or a double-click.
+            const end = r.g.points.find((p) => p.id === r.end)!;
+            commit(r.g, { draft: [{ at: [end.u, end.v], point: r.end }], typed: '' });
+            return;
+        }
+        case 'perimeterCircle': {
+            if (draft.length < 2) {
+                set({ draft: [...draft, ref], typed: '' });
+                return;
+            }
+            const r = addPerimeterCircle(g, [...draft, ref]);
+            if (!r) {
+                set({ message: 'Those three points are in a line; no circle passes through them.' });
+                return;
+            }
+            commit(r.g, { draft: [], typed: '' });
+            return;
+        }
+        case 'rect3': {
+            if (draft.length < 2) {
+                set({ draft: [...draft, ref], typed: '' });
+                return;
+            }
+            const r = addRect3(g, draft[0], draft[1], ref.at);
+            if (r) {
+                commit(r.g, { draft: [], typed: '' });
+            }
+            return;
+        }
         case 'slot': {
             if (draft.length < 2) {
                 set({ draft: [...draft, ref], typed: '' });
@@ -718,12 +788,39 @@ function place(ref: PointRef, kind: SnapKind, typed?: number[]): void {
             }
             const [a, b] = draft;
             const radius = typed?.length ? Math.abs(typed[0]) / 2 : Math.max(0.1, lineDistance(ref.at, a.at, b.at));
-            const r = addSlot(g, a.at, b.at, round(radius));
+            const r = addSlot(g, a, b, round(radius));
             const out = typed?.length ? addConstraint(r.g, { kind: 'radius', curve: r.arcs[0], value: radius }).g : r.g;
             commit(out, { draft: [], typed: '' });
             return;
         }
     }
+}
+
+/** The id the arc's start point got from its draft ref (the start click). */
+function placedStart(g: SketchGeometry, arc: Extract<SketchGeometry['curves'][number], { kind: 'arc' }>, start: PointRef): string {
+    const near = (id: string) => {
+        const p = pointOf(g, id);
+        return p ? dist([p.u, p.v], start.at) : Infinity;
+    };
+    return near(arc.start) <= near(arc.end) ? arc.start : arc.end;
+}
+
+/**
+ * Joins a newly drawn point to what the click snapped to: an existing point (they become one), a curve it lies on,
+ * or the middle of a line.
+ */
+function attachPoint(g: SketchGeometry, id: string, ref: PointRef): SketchGeometry {
+    if (ref.point) {
+        return ref.point === id ? g : mergePoints(g, ref.point, id);
+    }
+    let out = g;
+    if (ref.midOf) {
+        out = addConstraint(out, { kind: 'midpoint', point: id, line: ref.midOf }).g;
+    }
+    for (const curve of ref.onCurves ?? []) {
+        out = addConstraint(out, { kind: 'pointOnCurve', point: id, curve }).g;
+    }
+    return out;
 }
 
 function lineDistance(p: Pt, a: Pt, b: Pt): number {
@@ -737,6 +834,43 @@ function lineDistance(p: Pt, a: Pt, b: Pt): number {
 /** Ends a line chain (double-click). */
 export function endChain(): void {
     set({ draft: [], chainStart: null, typed: '' });
+}
+
+/**
+ * Enter while sketching: applies a typed value (an error goes to the status line), takes an edit tool's next step,
+ * or ends the line chain in progress. Returns 'exit' only when nothing was in progress, so Enter can then leave
+ * the sketch; 'done' when it was used here.
+ */
+export function enterKey(): 'done' | 'exit' {
+    const s = get();
+    if (s.stage !== 'draw' || s.dimDraft) {
+        return 'done';
+    }
+    if (s.typed) {
+        const error = applyTyped();
+        if (error) {
+            set({ message: error });
+        } else if (get().typed === s.typed && get().draft === s.draft && get().message === s.message) {
+            // Nothing took the value (a zero size, or a point on top of the last one).
+            set({ typed: '', message: 'That value cannot be drawn here; type a size above zero.' });
+        }
+        return 'done';
+    }
+    if (sketchEnter()) {
+        return 'done';
+    }
+    if (s.draft.length) {
+        if (s.tool === 'line' || s.tool === 'centerline' || s.tool === 'tangentArc') {
+            endChain();
+        } else {
+            set({ message: 'Finish the shape with a click, or press Esc to drop it.' });
+        }
+        return 'done';
+    }
+    if (s.picks.length || s.dimDrag || s.drag || s.offsetCurve || s.xform?.picks.length) {
+        return 'done';
+    }
+    return 'exit';
 }
 
 export function typeKey(key: string): boolean {
@@ -1023,17 +1157,83 @@ export function constraintTool(tool: ConstraintTool): void {
         return;
     }
     if (picks.length) {
-        const result = constraintFromPicks(s.geometry, tool, picks);
+        const result = relationsFromPicks(s.geometry, tool, picks);
         if (!('need' in result)) {
-            const r = addConstraint(s.geometry, result);
-            commit(r.g, { selection: [] });
+            applyRelations(tool, result, { selection: [] });
             return;
         }
+        // Not a set this relation takes: keep what fits as the first picks, and say what it needs.
+        setTool(`c:${tool}`);
+        set({ picks: picks.length < pickLimit(tool) ? picks : [], message: result.need });
+        return;
     }
     setTool(`c:${tool}`);
 }
 
-/** Locks the picked points, lines (both ends) and circles or arcs (their points) in place; unlocks them if all are locked. */
+/** Picks a relation tool collects in the view before it gives up on a set that does not fit. */
+function pickLimit(tool: ConstraintTool): number {
+    return Math.max(2, PICKS_NEEDED[tool]);
+}
+
+/**
+ * Adds the relations one tool made for the picks. Merge joins the points into the first. With several relations
+ * (Equal on four lines), any that only repeat what the others already hold are left out, as SolidWorks keeps one
+ * relation over all of them; a single relation that repeats others is added and the sketch reported over defined.
+ */
+function applyRelations(tool: ConstraintTool, relations: NewConstraint[], patch: Partial<SketcherState>): boolean {
+    const s = get();
+    if (tool === 'merge') {
+        let g = s.geometry;
+        for (const c of relations) {
+            if (c.kind === 'coincident') {
+                g = mergePoints(g, c.a, c.b);
+            }
+        }
+        const collapsed = g.curves.some((c) => (c.kind === 'line' ? c.a === c.b : c.kind === 'arc' && (c.start === c.end || c.center === c.start || c.center === c.end)));
+        if (collapsed) {
+            set({ message: 'Those points belong to one line or arc; merging them would collapse it.' });
+            return false;
+        }
+        return commit(g, patch);
+    }
+    if (relations.length === 1 || !solverReady()) {
+        let g = s.geometry;
+        for (const c of relations) {
+            g = addConstraint(g, c).g;
+        }
+        return commit(g, patch);
+    }
+    let g = s.geometry;
+    let repeats = 0;
+    const before = solveGeometry(g).redundant.length;
+    for (const c of relations) {
+        const next = addConstraint(g, c).g;
+        const r = solveGeometry(next);
+        if (r.ok && r.redundant.length > before) {
+            repeats += 1;
+        } else {
+            // A conflict is left in, so the commit refuses the whole set and names it.
+            g = next;
+        }
+    }
+    if (repeats === relations.length) {
+        let all = s.geometry;
+        for (const c of relations) {
+            all = addConstraint(all, c).g;
+        }
+        return commit(all, patch);
+    }
+    const ok = commit(g, patch);
+    if (ok && repeats) {
+        set({ message: `Added ${relations.length - repeats} of ${relations.length}; the others already held.` });
+    }
+    return ok;
+}
+
+/**
+ * Locks the picked points, lines (both ends), circles (centre and radius) and arcs (their points) in place; unlocks
+ * them if all are locked.
+ */
 export function toggleLock(picks: Pick[]): void {
     const s = get();
     const ids = [...new Set(picks.flatMap((pick) => {
@@ -1043,19 +1243,26 @@ export function toggleLock(picks: Pick[]): void {
         const c = curveOf(s.geometry, pick.id);
         return !c ? [] : c.kind === 'line' ? [c.a, c.b] : c.kind === 'circle' ? [c.center] : [c.center, c.start, c.end];
     }))].filter((id) => id !== ORIGIN && pointOf(s.geometry, id));
-    if (!ids.length) {
+    const circles = picks.filter((pick) => pick.type === 'curve' && curveOf(s.geometry, pick.id)?.kind === 'circle').map((pick) => pick.id);
+    if (!ids.length && !circles.length) {
         set({ message: 'Pick a point, a line, a circle or an arc to lock.' });
         return;
     }
-    const locked = new Set(s.geometry.constraints.flatMap((c) => (c.kind === 'fix' ? [c.point] : [])));
-    if (ids.every((id) => locked.has(id))) {
-        const gone = new Set(ids);
-        commit({ ...s.geometry, constraints: s.geometry.constraints.filter((c) => !(c.kind === 'fix' && gone.has(c.point))) }, { picks: [] });
+    const locked = new Set(s.geometry.constraints.flatMap((c) => (c.kind === 'fix' ? [c.point] : c.kind === 'fixRadius' ? [c.curve] : [])));
+    if ([...ids, ...circles].every((id) => locked.has(id))) {
+        const gone = new Set([...ids, ...circles]);
+        commit({
+            ...s.geometry,
+            constraints: s.geometry.constraints.filter((c) => !((c.kind === 'fix' && gone.has(c.point)) || (c.kind === 'fixRadius' && gone.has(c.curve)))),
+        }, { picks: [] });
         return;
     }
     let g = s.geometry;
     for (const id of ids.filter((x) => !locked.has(x))) {
         g = addConstraint(g, { kind: 'fix', point: id }).g;
+    }
+    for (const id of circles.filter((x) => !locked.has(x))) {
+        g = addConstraint(g, { kind: 'fixRadius', curve: id }).g;
     }
     commit(g, { picks: [] });
 }
@@ -1071,13 +1278,12 @@ function constraintClick(tool: ConstraintTool, raw: Pt, tolerance: number): void
         return;
     }
     const picks = [...s.picks.filter((p) => p.id !== pick.id), pick];
-    const result = constraintFromPicks(s.geometry, tool, picks);
+    const result = relationsFromPicks(s.geometry, tool, picks);
     if (!('need' in result)) {
-        const r = addConstraint(s.geometry, result);
-        commit(r.g, { picks: [] });
+        applyRelations(tool, result, { picks: [] });
         return;
     }
-    if (picks.length >= PICKS_NEEDED[tool]) {
+    if (picks.length >= pickLimit(tool)) {
         set({ picks: [], message: result.need });
     } else {
         set({ picks, message: null });

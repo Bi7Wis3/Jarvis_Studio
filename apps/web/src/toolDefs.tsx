@@ -416,9 +416,12 @@ const DRAW_TOOLS: { id: SketchTool; label: string; key?: string; icon?: string; 
     { id: 'line', label: 'Line', key: 'L', hint: 'click points; click the start to close' },
     { id: 'rect', label: 'Rectangle', key: 'R', icon: 'rectangle', hint: 'two corners; type w,h' },
     { id: 'centerRect', label: 'Centre rectangle', icon: 'center-rect', hint: 'centre, then a corner; type w,h' },
+    { id: 'rect3', label: '3 point rectangle', icon: 'rect-3pt', hint: 'two corners for one side at any angle, then the width' },
     { id: 'circle', label: 'Circle', key: 'C', hint: 'centre, then a point; type the diameter' },
+    { id: 'perimeterCircle', label: 'Perimeter circle', icon: 'perimeter-circle', hint: 'three points on the circle' },
     { id: 'arc', label: 'Arc', key: 'A', hint: 'start, end, then a point on the arc' },
     { id: 'centerArc', label: 'Centre arc', icon: 'center-arc', hint: 'centre, start, then where it ends' },
+    { id: 'tangentArc', label: 'Tangent arc', icon: 'tangent-arc', hint: 'from the end of a line or arc, tangent to it' },
     { id: 'slot', label: 'Slot', key: 'S', hint: 'two centres, then the width' },
     { id: 'polygon', label: 'Polygon', key: 'P', hint: 'centre, then a corner' },
 ];
@@ -1026,16 +1029,20 @@ const sketchStartTools: ToolDef[] = [
 ];
 
 const CONSTRAINT_TOOLS: { id: ConstraintTool; label: string; hint: string }[] = [
-    { id: 'coincident', label: 'Coincident', hint: 'two points, or a point onto a curve' },
-    { id: 'horizontal', label: 'Horizontal', hint: 'a line' },
-    { id: 'vertical', label: 'Vertical', hint: 'a line' },
-    { id: 'parallel', label: 'Parallel', hint: 'two lines' },
+    { id: 'coincident', label: 'Coincident', hint: 'two points, or points and a curve' },
+    { id: 'merge', label: 'Merge points', hint: 'two or more points become one' },
+    { id: 'horizontal', label: 'Horizontal', hint: 'one or more lines, or two or more points' },
+    { id: 'vertical', label: 'Vertical', hint: 'one or more lines, or two or more points' },
+    { id: 'collinear', label: 'Collinear', hint: 'two or more lines on one line' },
+    { id: 'parallel', label: 'Parallel', hint: 'two or more lines' },
     { id: 'perpendicular', label: 'Perpendicular', hint: 'two lines' },
     { id: 'tangent', label: 'Tangent', hint: 'a line and an arc/circle, or two arcs' },
-    { id: 'equal', label: 'Equal', hint: 'two lines, or two arcs/circles' },
+    { id: 'concentric', label: 'Concentric', hint: 'two or more arcs/circles, or a point and an arc/circle' },
+    { id: 'coradial', label: 'Coradial', hint: 'two or more arcs/circles: same centre and radius' },
+    { id: 'equal', label: 'Equal', hint: 'two or more lines, or two or more arcs/circles' },
     { id: 'midpoint', label: 'Midpoint', hint: 'a point and a line' },
     { id: 'symmetric', label: 'Symmetric', hint: 'two points and a line' },
-    { id: 'fix', label: 'Lock', hint: 'a point, line or circle stays where it is · click it again to unlock' },
+    { id: 'fix', label: 'Lock', hint: 'a point, line or circle stays where it is (a circle keeps its radius) · click it again to unlock' },
 ];
 
 const constrainTools: ToolDef[] = [

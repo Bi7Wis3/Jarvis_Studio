@@ -369,6 +369,15 @@
     color: #ffd0d5;
 }
 
+/* Over defined: repeats what other relations hold. */
+.sk-dim.over,
+.sk-glyph.over {
+    opacity: 1;
+    border-color: #f0e14a;
+    background: rgba(240, 225, 74, 0.2);
+    color: #fff6b0;
+}
+
 .sk-dim-input {
     position: relative;
     display: flex;
@@ -427,6 +436,11 @@
 .sk-dof.done {
     border-color: rgba(242, 245, 249, 0.6);
     color: var(--text);
+}
+
+.sk-dof.over {
+    border-color: rgba(240, 225, 74, 0.7);
+    color: #f0e14a;
 }
 
 .sk-message {

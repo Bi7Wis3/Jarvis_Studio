@@ -8,7 +8,8 @@ import { DoubleSide, MathUtils, Plane, Raycaster, Vector2, Vector3, type Group, 
 import type { SketchConstraint, SketchGeometry } from '@jarvis/core';
 import type { CameraControlsImpl } from '@react-three/drei';
 import { AXIS_U, AXIS_V, curveOf, isDimension, measure, pointOf } from './solver';
-import { arcMiddle, dimensionFromPicks, geometryEntities } from './sketchGeometry';
+import { arcMiddle, constraintRefs, dimensionFromPicks, geometryEntities, rectCorners3, tangentArcThrough, tangentAt } from './sketchGeometry';
+import { definedEntities } from './sketchStatus';
 import { circleThrough, dist, entityPoints, regularPolygon, type Entity, type NewEntity, type Pt } from './sketchMath';
 import {
     applyDimension, cancelDimension, dimensionAnchor, editDimension, endChain, isEditTool, moveLabel, selectConstraint, setDimText, sketchClick,
@@ -21,6 +22,8 @@ const CONSTRUCTION = '#ffb347';
 const SELECTED = '#c48bff';
 const PICKED = '#ffd166';
 const CONFLICT = '#ff5d6c';
+/** Over defined: geometry a redundant relation refers to (SolidWorks shows it yellow). */
+const OVER = '#f0e14a';
 const DRAFT = '#35e0ff';
 const SNAP_PX = 10;
 const CLICK_SLOP_PX = 4;
@@ -78,6 +81,14 @@ function draftEntity(tool: string, draft: Pt[], cursor: Pt, sides: number, sweep
             return dist(a, cursor) > 0 ? { kind: 'polygon', points: regularPolygon(a, cursor, sides) } : null;
         case 'arc':
             return draft.length === 1 ? { kind: 'line', a, b: cursor } : { kind: 'arc', a, b, m: cursor };
+        case 'perimeterCircle': {
+            const c = draft.length === 2 ? circleThrough(a, b, cursor) : null;
+            return c ? { kind: 'circle', c: c.c, r: c.r } : { kind: 'line', a: draft[draft.length - 1], b: cursor };
+        }
+        case 'rect3': {
+            const corners = draft.length === 2 ? rectCorners3(a, b, cursor) : null;
+            return corners ? { kind: 'polygon', points: corners } : { kind: 'line', a: draft[draft.length - 1], b: cursor };
+        }
         case 'slot': {
             if (draft.length === 1) {
                 return { kind: 'line', a, b: cursor };
@@ -88,6 +99,16 @@ function draftEntity(tool: string, draft: Pt[], cursor: Pt, sides: number, sweep
         }
     }
     return null;
+}
+
+/** A tangent arc from the end of the curve at `start` to the cursor. */
+function tangentPreview(g: SketchGeometry, start: string | undefined, from: Pt, cursor: Pt): NewEntity | null {
+    const t = start ? tangentAt(g, start) : null;
+    const arc = t && tangentArcThrough(from, t.dir, cursor);
+    if (!arc) {
+        return { kind: 'line', a: from, b: cursor };
+    }
+    return arc.ccw ? { kind: 'arc', a: from, b: cursor, m: arc.m } : { kind: 'arc', a: cursor, b: from, m: arc.m };
 }
 
 /** Live size of the entity in progress. */
@@ -224,8 +245,11 @@ function dimensionLines(g: SketchGeometry, c: SketchConstraint, at: Pt, size: nu
                 // Pick the line direction on the label's side.
                 return Math.cos(a - label) >= 0 ? a : a + Math.PI;
             };
-            const a0 = toward(p1, p2);
-            let a1 = toward(p3, p4);
+            // A dimension that knows which way along each line it measures draws that angle; older ones the label's side.
+            const along = (p: Pt, q: Pt, reverse: boolean) => Math.atan2(q[1] - p[1], q[0] - p[0]) + (reverse ? Math.PI : 0);
+            const known = c.reverseA !== undefined || c.reverseB !== undefined;
+            const a0 = known ? along(p1, p2, !!c.reverseA) : toward(p1, p2);
+            let a1 = known ? along(p3, p4, !!c.reverseB) : toward(p3, p4);
             while (a1 - a0 > Math.PI) {
                 a1 -= 2 * Math.PI;
             }
@@ -260,7 +284,7 @@ function dimensionText(c: Extract<SketchConstraint, { value: number }>): string 
 
 /** Driving dimensions: leaders and arrows, and their values (drag to move, click to select, double-click to edit). */
 function Dimensions({ size }: { size: number }) {
-    const { geometry: g, labels, selection, conflicting, dimDraft } = useSketcher();
+    const { geometry: g, labels, selection, conflicting, redundant, dimDraft } = useSketcher();
     // The label being dragged: where it was grabbed, relative to its centre.
     const grab = useRef<{ id: string; du: number; dv: number; x: number; y: number; moved: boolean } | null>(null);
     return (
@@ -272,7 +296,8 @@ function Dimensions({ size }: { size: number }) {
                 const at = labels[c.id] ?? dimensionAnchor(g, c);
                 const selected = selection.some((s) => s.id === c.id);
                 const bad = conflicting.includes(c.id);
-                const color = bad ? CONFLICT : selected ? SELECTED : '#d6dde8';
+                const over = !bad && redundant.includes(c.id);
+                const color = bad ? CONFLICT : selected ? SELECTED : over ? OVER : '#d6dde8';
                 return (
                     <group key={c.id}>
                         {dimensionLines(g, c, at, size).map((points, i) => (
@@ -281,7 +306,7 @@ function Dimensions({ size }: { size: number }) {
                         <Html position={v3(at)} center zIndexRange={[32, 0]} className="sk-label">
                             <button
                                 type="button"
-                                className={`sk-dim ${selected ? 'selected' : ''} ${bad ? 'bad' : ''}`}
+                                className={`sk-dim ${selected ? 'selected' : ''} ${bad ? 'bad' : over ? 'over' : ''}`}
                                 title="Drag to move · double-click to edit"
                                 onPointerDown={(e) => {
                                     e.stopPropagation();
@@ -407,7 +432,8 @@ function DimensionInput({ size }: { size: number }) {
 
 const GLYPHS: Partial<Record<SketchConstraint['kind'], string>> = {
     horizontal: 'H', vertical: 'V', parallel: '∥', perpendicular: '⊥', equal: '=', tangent: 'T', coincident: '●',
-    pointOnCurve: '⊙', midpoint: 'M', symmetric: '⇋', fix: '🔒',
+    pointOnCurve: '⊙', midpoint: 'M', symmetric: '⇋', fix: '🔒', fixRadius: '🔒', horizontalPoints: 'H', verticalPoints: 'V',
+    concentric: '◎', coradial: '◎=', collinear: '⋯',
 };
 
 /** Where to draw a constraint's glyph(s). */
@@ -442,7 +468,15 @@ function glyphSpots(g: SketchGeometry, c: SketchConstraint, offset: number): Pt[
         case 'perpendicular':
         case 'equal':
         case 'tangent':
-            return [curveMid(c.a), curveMid(c.b)].filter(Boolean) as Pt[];
+        case 'collinear':
+        case 'concentric':
+        case 'coradial':
+            return [c.a, c.b].map((id) => (curveOf(g, id) ? curveMid(id) : near(id))).filter(Boolean) as Pt[];
+        case 'horizontalPoints':
+        case 'verticalPoints':
+            return [near(c.a), near(c.b)];
+        case 'fixRadius':
+            return [curveMid(c.curve)].filter(Boolean) as Pt[];
         case 'coincident':
             return [near(c.a)];
         case 'pointOnCurve':
@@ -470,6 +504,12 @@ const GLYPH_MEANING: Partial<Record<SketchConstraint['kind'], string>> = {
     midpoint: 'Midpoint: this point stays in the middle of the line',
     symmetric: 'Symmetric: these mirror each other',
     fix: 'Locked: this point cannot move (the Lock tool unlocks it)',
+    fixRadius: 'Locked: this circle keeps its radius (the Lock tool unlocks it)',
+    horizontalPoints: 'Horizontal: these points stay level',
+    verticalPoints: 'Vertical: these points stay one above the other',
+    concentric: 'Concentric: these share a centre',
+    coradial: 'Coradial: these share a centre and radius',
+    collinear: 'Collinear: these lines stay on one line',
 };
 
 /**
@@ -477,16 +517,17 @@ const GLYPH_MEANING: Partial<Record<SketchConstraint['kind'], string>> = {
  * tools show them, plus any that is selected or in conflict.
  */
 function Glyphs({ offset }: { offset: number }) {
-    const { geometry: g, selection, conflicting, tool } = useSketcher();
+    const { geometry: g, selection, conflicting, redundant, tool } = useSketcher();
     const all = tool === 'select' || tool === 'dimension' || tool.startsWith('c:');
-    const shown = (c: SketchConstraint) => !isDimension(c) && (all || conflicting.includes(c.id) || selection.some((s) => s.id === c.id));
+    const shown = (c: SketchConstraint) => !isDimension(c)
+        && (all || conflicting.includes(c.id) || redundant.includes(c.id) || selection.some((s) => s.id === c.id));
     return (
         <>
             {g.constraints.filter(shown).flatMap((c) => glyphSpots(g, c, offset).map((at, i) => (
                 <Html key={`${c.id}-${i}`} position={v3(at)} center zIndexRange={[31, 0]} className="sk-label">
                     <button
                         type="button"
-                        className={`sk-glyph ${selection.some((s) => s.id === c.id) ? 'selected' : ''} ${conflicting.includes(c.id) ? 'bad' : ''}`}
+                        className={`sk-glyph ${selection.some((s) => s.id === c.id) ? 'selected' : ''} ${conflicting.includes(c.id) ? 'bad' : redundant.includes(c.id) ? 'over' : ''}`}
                         title={`${GLYPH_MEANING[c.kind] ?? c.kind} · click to select, Delete removes it`}
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => selectConstraint(c.id, e.shiftKey)}
@@ -505,14 +546,18 @@ function Glyphs({ offset }: { offset: number }) {
 export function Drawing() {
     const {
         geometry: g, draft, cursor, tool, selection, picks, hover, dimDrag, sides, typed, snapKind, snapGuides, snapHints, dof, conflicting,
-        arcSweep, editPreview, editText, highlight, xform,
+        redundant, arcSweep, editPreview, editText, highlight, xform,
     } = useSketcher();
     const camera = useThree((s) => s.camera) as PerspectiveCamera;
     const size = useThree((s) => s.size);
     // A size that reads about 9 px on screen, for arrows and glyph offsets.
     const unit = Math.max(0.2, (2 * camera.position.length() * Math.tan(MathUtils.degToRad(camera.fov) / 2) / size.height) * 9);
     const entities = useMemo(() => geometryEntities(g), [g]);
-    const curveColor = dof === 0 ? FIXED : FREE;
+    // Each entity's own state: probed again only when the relations change, not while something is dragged.
+    const structure = useMemo(() => JSON.stringify([g.curves.map(({ id, kind }) => [id, kind]), g.constraints, g.points.map((p) => [p.id, p.fixed])]), [g]);
+    const defined = useMemo(() => (dof > 0 ? definedEntities(g) : null), [structure, dof > 0]);
+    const isDefined = (id: string) => dof === 0 || !!defined?.has(id);
+    const overRefs = new Set(g.constraints.filter((c) => redundant.includes(c.id)).flatMap((c) => constraintRefs(c)));
     const selected = new Set(selection.map((s) => s.id));
     const picked = new Set((dimDrag?.picks ?? picks).map((p) => p.id));
     const picking = tool === 'dimension' || tool.startsWith('c:') || isEditTool(tool);
@@ -523,7 +568,7 @@ export function Drawing() {
     const conflictRefs = new Set(g.constraints.filter((c) => conflicting.includes(c.id)).flatMap((c) => Object.values(c).filter((v) => typeof v === 'string')));
     const at = draft.map((d) => d.at);
     const preview = cursor && draft.length && !['select', 'dimension'].includes(tool) && !tool.startsWith('c:') && !isEditTool(tool)
-        ? draftEntity(tool, at, cursor, sides, arcSweep) : null;
+        ? tool === 'tangentArc' ? tangentPreview(g, draft[0].point, at[0], cursor) : draftEntity(tool, at, cursor, sides, arcSweep) : null;
     const previewText = preview && draftText(preview);
     const last = at[at.length - 1];
     return (
@@ -531,7 +576,7 @@ export function Drawing() {
             {entities.map((e) => {
                 const on = picked.has(e.id) || hovered === e.id || lit.has(e.id);
                 const color = lit.has(e.id) ? PICKED : selected.has(e.id) ? SELECTED : on ? PICKED : conflictRefs.has(e.id) ? CONFLICT
-                    : e.construction ? CONSTRUCTION : curveColor;
+                    : overRefs.has(e.id) ? OVER : e.construction ? CONSTRUCTION : isDefined(e.id) ? FIXED : FREE;
                 return (
                     <EntityLine key={e.id} entity={e} color={color} dashed={e.construction} width={selected.has(e.id) || on ? 3.8 : e.construction ? 1.8 : 2.8} />
                 );
@@ -539,7 +584,7 @@ export function Drawing() {
             {g.points.map((p) => {
                 const state = lit.has(p.id) ? 'picked' : selected.has(p.id) ? 'selected' : picked.has(p.id) || hovered === p.id ? 'picked' : p.fixed ? 'fixed' : '';
                 return (
-                    <Label key={p.id} at={[p.u, p.v]} className={`pt ${state} ${dof === 0 ? 'done' : ''}`}>
+                    <Label key={p.id} at={[p.u, p.v]} className={`pt ${state} ${isDefined(p.id) ? 'done' : ''}`}>
                         <span />
                     </Label>
                 );

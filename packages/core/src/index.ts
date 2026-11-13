@@ -138,15 +138,27 @@ export type SketchCurve =
 export type SketchConstraint = { id: string } & (
     | { kind: 'coincident'; a: string; b: string }
     | { kind: 'horizontal' | 'vertical'; line: string }
-    | { kind: 'parallel' | 'perpendicular' | 'equal' | 'tangent'; a: string; b: string }
+    /** Two points level with each other (horizontal) or one above the other (vertical). */
+    | { kind: 'horizontalPoints' | 'verticalPoints'; a: string; b: string }
+    /**
+     * concentric: same centre (arcs/circles, or a point and an arc/circle); coradial: same centre and radius;
+     * collinear: two lines on one infinite line.
+     */
+    | { kind: 'parallel' | 'perpendicular' | 'equal' | 'tangent' | 'concentric' | 'coradial' | 'collinear'; a: string; b: string }
     | { kind: 'pointOnCurve'; point: string; curve: string }
     | { kind: 'midpoint'; point: string; line: string }
     | { kind: 'symmetric'; a: string; b: string; about: string }
     | { kind: 'fix'; point: string }
+    /** A locked circle or arc keeps its radius (its centre is locked by 'fix'). */
+    | { kind: 'fixRadius'; curve: string }
     /** Distance between two points, or from a point to a line (perpendicular); axis 'u' or 'v' measures one direction only. */
     | { kind: 'distance'; a: string; b: string; value: number; axis?: 'u' | 'v'; at?: [number, number] }
     | { kind: 'length'; line: string; value: number; at?: [number, number] }
-    | { kind: 'angle'; a: string; b: string; value: number; at?: [number, number] }
+    /**
+     * The angle between line a and line b, each taken from its first point to its second, or the other way round
+     * when reversed: the pair of directions picks which of the four angles at the crossing is dimensioned (0-180).
+     */
+    | { kind: 'angle'; a: string; b: string; value: number; at?: [number, number]; reverseA?: boolean; reverseB?: boolean }
     | { kind: 'radius' | 'diameter'; curve: string; value: number; at?: [number, number] }
 );
 
