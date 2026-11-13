@@ -1923,6 +1923,9 @@ const featureTools: Record<string, ToolDef> = {
             { key: 'end', label: 'End condition', kind: 'select', options: opts(['blind', 'Blind'], ['revolutions', 'Revolutions']), section: 'End condition' },
             { key: 'length', label: 'Depth', kind: 'number', unit: 'mm', min: 0, section: 'End condition', show: (v) => v.end !== 'revolutions' },
             { key: 'revolutions', label: 'Revolutions', kind: 'number', min: 0, section: 'End condition', show: (v) => v.end === 'revolutions' },
+            { key: 'second', label: 'Second direction', kind: 'check', section: 'Direction 2', show: (v) => v.start === 'edge' },
+            { key: 'length2', label: 'Depth', kind: 'number', unit: 'mm', min: 0, section: 'Direction 2',
+                show: (v) => v.start === 'edge' && !!v.second },
             { key: 'kind', label: 'Type', kind: 'select', options: opts(['external', 'External (shaft)'], ['internal', 'Internal (hole)']), section: 'Specification' },
             { key: 'size', label: 'Size', kind: 'select', options: [{ value: 'custom', label: 'Custom' }, ...SIZE_OPTIONS], section: 'Specification' },
             { key: 'override', label: 'Override diameter', kind: 'check', section: 'Specification', show: (v) => v.start === 'edge' },
@@ -1945,13 +1948,14 @@ const featureTools: Record<string, ToolDef> = {
                     end: f.revolutions !== undefined ? 'revolutions' : 'blind', length: fmt(f.length ?? 10), revolutions: fmt(f.revolutions ?? 8),
                     kind: f.kind, size: preset ?? 'custom', override: !!f.at && f.diameter !== undefined, diameter: fmt(f.diameter ?? 8),
                     pitch: fmt(f.pitch), hand: f.leftHanded ? 'left' : 'right', starts: String(f.starts ?? 1),
+                    second: f.length2 !== undefined, length2: fmt(f.length2 ?? 5),
                 };
             }
             const { centre: c, half: [, hy] } = partBox(ctx.part);
             return {
                 start: 'edge', ...exactVec('at', [0, 0, 0]), edge: '', ...vecValues('pos', [c[0], c[1] - hy, c[2]]), offset: '0',
                 startAngle: '0', end: 'blind', length: '10', revolutions: '8', kind: 'external', size: 'M8', override: false,
-                diameter: '8', pitch: '1.25', hand: 'right', starts: '1',
+                diameter: '8', pitch: '1.25', hand: 'right', starts: '1', second: false, length2: '5',
             };
         },
         onChange: (key, v) => {
@@ -1980,6 +1984,7 @@ const featureTools: Record<string, ToolDef> = {
             const starts = Math.round(num(v, 'starts', 'Starts', { min: 1 }));
             const startAngle = num(v, 'startAngle', 'Start angle');
             const offset = onEdge ? num(v, 'offset', 'Offset') : 0;
+            const length2 = onEdge && v.second ? num(v, 'length2', 'Direction 2 depth', { positive: true }) : undefined;
             const size = v.size !== 'custom' ? String(v.size) : diameter !== undefined ? `Ø${fmt(diameter)}` : '';
             const feature: Record<string, unknown> = {
                 op: 'thread',
@@ -1990,6 +1995,7 @@ const featureTools: Record<string, ToolDef> = {
                 ...(onEdge ? { at: vec(v, 'at', 'Edge') } : { position: vec(v, 'pos', 'Start') }),
                 ...(revolutions !== undefined ? { revolutions } : { length }),
                 ...(offset ? { offset } : {}),
+                ...(length2 !== undefined ? { length2 } : {}),
                 ...(startAngle ? { startAngle } : {}),
                 ...(v.hand === 'left' ? { leftHanded: true } : {}),
                 ...(starts > 1 ? { starts } : {}),
@@ -1999,6 +2005,7 @@ const featureTools: Record<string, ToolDef> = {
                 Object.assign(feature, {
                     diameter: diameter ?? null, at: onEdge ? feature.at : null, position: onEdge ? null : feature.position,
                     revolutions: revolutions ?? null, length: length ?? null, offset, startAngle, leftHanded: v.hand === 'left', starts,
+                    length2: length2 ?? null,
                 });
             }
             return saveFeature(ctx, feature);

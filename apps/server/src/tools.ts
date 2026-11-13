@@ -410,7 +410,9 @@ const feature = z.discriminatedUnion('op', [
         pitch: z.number().positive(),
         length: z.number().positive().optional().describe('Thread length (blind); or give revolutions'),
         revolutions: z.number().positive().optional().describe('End condition Revolutions: length = revolutions x lead'),
-        offset: z.number().optional().describe('Start this far from the edge along the thread'),
+        offset: z.number().optional().describe('Start this far from the edge along the thread; negative starts before the edge '
+            + '(the thread is trimmed to the hole or shaft)'),
+        length2: z.number().positive().optional().describe('Direction 2: also run this far the other way from the start'),
         leftHanded: z.boolean().optional(),
         starts: z.number().int().min(1).max(8).optional().describe('Multi-start thread; default 1'),
         startAngle: z.number().optional().describe('Degrees about the axis where the thread begins'),

@@ -427,6 +427,8 @@ export type Feature = FeatureBase & (
     | {
         op: 'thread'; kind: 'external' | 'internal'; diameter?: number; pitch: number; length?: number; position?: Vec3;
         at?: Vec3; revolutions?: number; offset?: number; leftHanded?: boolean; starts?: number; startAngle?: number;
+        /** Direction 2, on a picked edge: the thread also runs this far the other way from its start, as one thread. */
+        length2?: number;
     }
 );
 

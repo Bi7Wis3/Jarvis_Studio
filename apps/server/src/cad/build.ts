@@ -917,7 +917,12 @@ function threadFeature(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>, pr
     if (diameter === undefined) {
         throw new Error('thread needs a diameter, or the circular edge where it begins');
     }
-    const offset = f.offset ?? 0;
+    // Direction 2 is the same thread carried on the other way from its start: it starts that much earlier.
+    const back = f.at ? f.length2 ?? 0 : 0;
+    if (!(back >= 0)) {
+        throw new Error('thread direction 2 depth must be positive');
+    }
+    const offset = (f.offset ?? 0) - back;
     if (!Number.isFinite(offset)) {
         throw new Error('thread offset must be a number');
     }
@@ -925,19 +930,30 @@ function threadFeature(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>, pr
     if (f.revolutions !== undefined && !(f.revolutions > 0)) {
         throw new Error('thread revolutions must be positive');
     }
-    const asked = f.revolutions !== undefined ? f.revolutions * lead : f.length;
+    const forward = f.revolutions !== undefined ? f.revolutions * lead : f.length;
+    const asked = forward === undefined ? undefined : forward + back;
     if (!(pitch > 0 && asked !== undefined && asked >= pitch && diameter > 2 * pitch)) {
         throw new Error('thread needs pitch > 0, length >= pitch and diameter > 2 x pitch');
     }
-    let length = asked;
+    const length = asked;
+    // On a picked edge the thread may start before the edge (a negative offset, so it runs in at full depth) or be
+    // asked longer than the hole or shaft: it is trimmed to the cylinder, as with its end faces in SolidWorks.
+    // `trim` is the part kept, measured along the thread from where it starts.
+    let trim: [number, number] | null = null;
     if (f.at) {
-        if (offset < -1e-6 || offset > reach - pitch) {
-            throw new Error(`the thread starts off the cylinder: it is ${fmtMm(reach)} long from the edge, `
-                + `the thread starts ${fmtMm(offset)} along it`);
+        const from = Math.max(offset, 0);
+        const to = Math.min(offset + asked, reach);
+        if (to - from < pitch - 1e-6) {
+            throw new Error(`the thread misses the cylinder: it is ${fmtMm(reach)} long from the edge, `
+                + `the thread runs from ${fmtMm(offset)} to ${fmtMm(offset + asked)} along it`);
         }
-        // A thread asked longer than the hole or shaft stops at its far end.
-        length = Math.min(asked, reach - offset);
+        if (offset < -1e-6 || offset + asked > reach + 1e-6) {
+            trim = [from - offset, to - offset];
+        }
     }
+    const [low, high] = trim ?? [0, length];
+    const trimmed = (piece: Shape3D, radius: number): Shape3D => (trim
+        ? asSolid(piece.intersect(cylinderY(radius, trim[0], trim[1])), 'trimmed thread') : piece);
     const hand = { lead, leftHanded: !!f.leftHanded };
     const at = (s: Shape3D): Shape3D => placeOnAxis(s, origin, axis, f.startAngle ?? 0);
     /** The ridge and its copies for the other starts, evenly around the axis. */
@@ -951,17 +967,17 @@ function threadFeature(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>, pr
             throw new Error('thread is too short for its pitch');
         }
         const rod = asSolid(cylinderY(rRoot, 0, length).fuse(ridges(ridge), { simplify: false }), 'threaded rod');
-        const turned = shape.cut(at(revolve([[rRoot - 0.05, 0], [rMaj + 0.05, 0], [rMaj + 0.05, length],
-            [rRoot - 0.05, length]])));
-        return asSolid(turned.fuse(at(rod)), 'thread');
+        const turned = shape.cut(at(revolve([[rRoot - 0.05, low], [rMaj + 0.05, low], [rMaj + 0.05, high],
+            [rRoot - 0.05, high]])));
+        return asSolid(turned.fuse(at(trimmed(rod, rMaj + pitch))), 'thread');
     }
     const rMaj = (diameter + print.holeTolerance) / 2;
     const ridge = internalRidge(pitch, rMaj, 0, length, hand);
     if (!ridge) {
         throw new Error('thread is too short for its pitch');
     }
-    const bored = shape.cut(at(cylinderY(rMaj, 0, length)));
-    return asSolid(bored.fuse(at(ridges(ridge)), { simplify: false }), 'thread');
+    const bored = shape.cut(at(cylinderY(rMaj, low, high)));
+    return asSolid(bored.fuse(at(trimmed(ridges(ridge), rMaj + pitch)), { simplify: false }), 'thread');
 }
 
 const fmtMm = (mm: number): string => `${Math.round(mm * 100) / 100} mm`;

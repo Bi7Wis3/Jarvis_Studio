@@ -338,9 +338,19 @@ describe('features', () => {
         expect(openEdges(full)).toBe(0);
         expect(bounds(full).min[0]).toBeCloseTo(0, 1);
         expect(bounds(full).max[0]).toBeCloseTo(20, 1);
-        expect(volume(full)).toBeCloseTo(volume(whole), 0);
+        // Trimmed at the shaft's end, at full depth to the end: close to, not the same as, a thread of exactly 20.
+        expect(Math.abs(volume(full) - volume(whole))).toBeLessThan(volume(whole) * 0.02);
+        // Starting before the edge runs in at full depth and adds nothing outside the shaft.
+        const early = await mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 10, offset: -2 }]);
+        expect(openEdges(early)).toBe(0);
+        expect(bounds(early).max[0]).toBeCloseTo(20, 1);
+        expect(volume(early)).toBeLessThan(volume(plain));
+        // Direction 2 carries the same thread the other way from its start: 6 mm in, started 4 mm along, with 4 mm back
+        // towards the edge, is the thread of 10 mm from the edge.
+        const both = await mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 6, offset: 4, length2: 4 }]);
+        expect(volume(both)).toBeCloseTo(volume(threaded), 0);
         await expect(mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'external', at: [20, 5, 0], pitch: 1.5, length: 5, offset: 30 }]))
-            .rejects.toThrow(/starts off the cylinder/);
+            .rejects.toThrow(/misses the cylinder/);
         await expect(mesh({ kind: 'empty' }, [shaft, { id: 't', op: 'thread', kind: 'internal', at: [20, 5, 0], pitch: 1.5, length: 10 }]))
             .rejects.toThrow(/on a shaft: use an external thread/);
     }, SLOW);
@@ -355,6 +365,11 @@ describe('features', () => {
         expect(volume(tapped)).toBeLessThan(volume(drilled));
         expect(volume(tapped)).toBeGreaterThan(volume(drilled) - Math.PI * ((r + 0.82 + 0.1) ** 2 - r * r) * 12);
         expectBounds(tapped, [-10, -10, -10], [10, 10, 10]);
+        // Started 1 mm outside the hole and asked longer than it: trimmed to the hole, nothing sticks out of the block.
+        const through = await mesh(block, [hole, { id: 't', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5, length: 40, offset: -1 }]);
+        expectBounds(through, [-10, -10, -10], [10, 10, 10]);
+        expect(openEdges(through)).toBe(0);
+        expect(volume(through)).toBeLessThan(volume(tapped));
         await expect(mesh(block, [hole, { id: 't', op: 'thread', kind: 'external', at: [10, r, 0], pitch: 1.5, length: 12 }]))
             .rejects.toThrow(/on a hole: use an internal thread/);
         await expect(mesh(block, [hole, { id: 't', op: 'thread', kind: 'internal', at: [10, 10, 10], pitch: 1.5, length: 12 }]))
