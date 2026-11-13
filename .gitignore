@@ -7,3 +7,4 @@ projects
 .env
 .shots
 voices/stt
+.claude/worktrees

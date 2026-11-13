@@ -39,18 +39,18 @@ export function Browser() {
         return (
             <button type="button" className="br-toggle" onClick={() => setOpen(true)} title="Show browser">
                 <span className="br-toggle-icon">☰</span>
-                {part ? 'History' : 'Components'}
+                {part ? part.name : history.name}
             </button>
         );
     }
     return (
-        <nav className={`br ${editingFeature ? 'pm-on' : ''}`} aria-label={editingFeature ? 'Property manager' : part ? 'Part history' : 'Components'}>
+        <nav className={`br ${editingFeature ? 'pm-on' : ''}`} aria-label={editingFeature ? 'Property manager' : part ? `History of ${part.name}` : `Parts of ${history.name}`}>
             <div className="pm-slot" ref={setSlot} hidden={!editingFeature} />
             {open && (
                 <Hideable hidden={editingFeature}>
                     {part
                         ? <PartHistory key={part.id} part={part} parts={history.parts} onMinimise={() => setOpen(false)} />
-                        : <Components parts={history.parts} onMinimise={() => setOpen(false)} />}
+                        : <Components name={history.name} parts={history.parts} onMinimise={() => setOpen(false)} />}
                 </Hideable>
             )}
         </nav>
@@ -88,8 +88,9 @@ function Hideable({ hidden, children }: { hidden: boolean; children: ReactNode }
 
 // ---- Assembly workspace: the components list -----------------------------------------------------------
 
-function Components(props: { parts: Part[]; onMinimise: () => void }) {
-    const { parts, onMinimise } = props;
+/** The assembly: its name at the top (as a feature tree shows the document's name), then its parts by name. */
+function Components(props: { name: string; parts: Part[]; onMinimise: () => void }) {
+    const { name, parts, onMinimise } = props;
     const [collapsed, setCollapsed] = useState<Set<string>>(
         () => new Set(load(`${STORAGE_KEY}.collapsed`, '').split(',').filter(Boolean)),
     );
@@ -215,7 +216,7 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
     return (
         <>
             <div className="br-head">
-                <span className="br-title">Components</span>
+                <span className="br-title br-doc" title={`${name}: the assembly and its parts`}>{name}</span>
                 <span className="br-count">{parts.length}</span>
                 <button type="button" className="br-min" onClick={onMinimise} title="Minimise" aria-label="Minimise panel">–</button>
             </div>
