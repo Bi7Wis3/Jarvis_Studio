@@ -271,8 +271,12 @@ export function addArc(g: SketchGeometry, s: PointRef, e: PointRef, m: Pt): { g:
     return { g: { ...out, curves: [...out.curves, curve] }, id: curve.id };
 }
 
-/** Slot around the centre line a→b: two lines and two end arcs, tangent, with equal radii. */
-export function addSlot(g: SketchGeometry, a: Pt, b: Pt, radius: number): { g: SketchGeometry; lines: string[]; arcs: string[] } {
+/**
+ * Slot around the centre line a→b: two lines and two end arcs, tangent, with equal radii. Centres given as point
+ * refs use what they snapped to (an existing point, the origin, a curve).
+ */
+export function addSlot(g: SketchGeometry, ra: Pt | PointRef, rb: Pt | PointRef, radius: number): { g: SketchGeometry; lines: string[]; arcs: string[] } {
+    const [a, b] = [ra, rb].map((r) => (Array.isArray(r) ? r : r.at));
     const length = dist(a, b) || 1;
     const n: Pt = [-(b[1] - a[1]) / length * radius, (b[0] - a[0]) / length * radius];
     let out: SketchGeometry = { points: [...g.points], curves: [...g.curves], constraints: [...g.constraints] };
@@ -281,8 +285,16 @@ export function addSlot(g: SketchGeometry, a: Pt, b: Pt, radius: number): { g: S
         out = { ...out, points: [...out.points, { id, u: q[0], v: q[1] }] };
         return id;
     };
-    const ca = point(a);
-    const cb = point(b);
+    const centre = (r: Pt | PointRef) => {
+        if (Array.isArray(r)) {
+            return point(r);
+        }
+        const placed = placePoint(out, r);
+        out = placed.g;
+        return placed.id;
+    };
+    const ca = centre(ra);
+    const cb = centre(rb);
     const a1 = point([a[0] + n[0], a[1] + n[1]]);
     const a2 = point([a[0] - n[0], a[1] - n[1]]);
     const b1 = point([b[0] + n[0], b[1] + n[1]]);
@@ -346,6 +358,8 @@ export function constraintRefs(c: SketchConstraint): string[] {
             return [c.point, c.curve];
         case 'fix':
             return [c.point];
+        case 'fixRadius':
+            return [c.curve];
         case 'radius':
         case 'diameter':
             return [c.curve];
@@ -461,56 +475,95 @@ export function kindOf(g: SketchGeometry, pick: Pick): 'point' | 'line' | 'circl
 }
 
 export type ConstraintTool =
-    | 'coincident' | 'horizontal' | 'vertical' | 'parallel' | 'perpendicular' | 'tangent' | 'equal' | 'midpoint' | 'symmetric' | 'fix';
+    | 'coincident' | 'horizontal' | 'vertical' | 'parallel' | 'perpendicular' | 'tangent' | 'equal' | 'midpoint' | 'symmetric' | 'fix'
+    | 'concentric' | 'collinear' | 'coradial' | 'merge';
 
-/** Builds a constraint from picked geometry, or says what is still needed. */
-export function constraintFromPicks(g: SketchGeometry, tool: ConstraintTool, picks: Pick[]): NewConstraint | { need: string } {
+const isAxisId = (id: string) => id === AXIS_U || id === AXIS_V;
+
+/**
+ * The relations a tool adds for the picked geometry, as the SolidWorks relation table describes it: horizontal and
+ * vertical take one or more lines (each one) or two or more points; parallel, collinear, equal, concentric and
+ * coradial take two or more (each related to the first); the rest take a fixed set. Merge gives the coincidences
+ * that merging the points means. Says what is needed when the picks do not fit.
+ */
+export function relationsFromPicks(g: SketchGeometry, tool: ConstraintTool, picks: Pick[]): NewConstraint[] | { need: string } {
     const kinds = picks.map((p) => kindOf(g, p));
     const ids = picks.map((p) => p.id);
-    const curves = (k: string[]) => k.every((x) => x !== 'point');
+    const points = ids.filter((_, i) => kinds[i] === 'point');
+    const lines = ids.filter((_, i) => kinds[i] === 'line');
+    const drawnLines = lines.filter((id) => !isAxisId(id));
+    const rounds = ids.filter((_, i) => kinds[i] === 'circle' || kinds[i] === 'arc');
+    const curves = [...lines, ...rounds];
+    const only = (...groups: string[][]) => groups.reduce((n, list) => n + list.length, 0) === picks.length;
+    // An axis goes first, so the others are related to it.
+    const axisFirst = (list: string[]) => [...list.filter(isAxisId), ...list.filter((id) => !isAxisId(id))];
+    const pairs = <K extends 'coincident' | 'parallel' | 'equal' | 'concentric' | 'coradial' | 'collinear' | 'horizontalPoints' | 'verticalPoints'>(
+        kind: K, list: string[]) => list.slice(1).map((b) => ({ kind, a: list[0], b }) as NewConstraint);
     switch (tool) {
         case 'coincident':
-            if (picks.length < 2) {
-                return { need: 'Pick two points, or a point and a curve' };
+            if (points.length === 1 && curves.length >= 1 && only(points, curves)) {
+                return curves.map((curve) => ({ kind: 'pointOnCurve', point: points[0], curve }));
             }
-            if (kinds[0] === 'point' && kinds[1] === 'point') {
-                return { kind: 'coincident', a: ids[0], b: ids[1] };
+            if (points.length >= 2 && curves.length === 1) {
+                return points.map((point) => ({ kind: 'pointOnCurve', point, curve: curves[0] }));
             }
-            {
-                const pi = kinds.indexOf('point');
-                return pi < 0 ? { need: 'One of the two must be a point' } : { kind: 'pointOnCurve', point: ids[pi], curve: ids[1 - pi] };
+            if (points.length >= 2 && only(points)) {
+                return pairs('coincident', points);
             }
+            return { need: 'Pick two points, or a point and a curve' };
+        case 'merge':
+            return points.length >= 2 && only(points) ? pairs('coincident', points) : { need: 'Pick two or more points to merge' };
         case 'horizontal':
         case 'vertical':
-            return kinds[0] === 'line' ? { kind: tool, line: ids[0] } : { need: 'Pick a line' };
+            if (drawnLines.length && only(drawnLines)) {
+                return drawnLines.map((line) => ({ kind: tool, line }));
+            }
+            if (points.length >= 2 && only(points)) {
+                return pairs(tool === 'horizontal' ? 'horizontalPoints' : 'verticalPoints', points);
+            }
+            return { need: 'Pick one or more lines, or two or more points' };
         case 'parallel':
+            return lines.length >= 2 && drawnLines.length >= 1 && only(lines) ? pairs('parallel', axisFirst(lines)) : { need: 'Pick two or more lines' };
+        case 'collinear':
+            return lines.length >= 2 && drawnLines.length >= lines.length - 1 && only(lines)
+                ? pairs('collinear', axisFirst(lines)) : { need: 'Pick two or more lines' };
         case 'perpendicular':
-            return picks.length >= 2 && kinds[0] === 'line' && kinds[1] === 'line' ? { kind: tool, a: ids[0], b: ids[1] } : { need: 'Pick two lines' };
+            return lines.length === 2 && drawnLines.length >= 1 && only(lines)
+                ? [{ kind: 'perpendicular', a: lines[0], b: lines[1] }] : { need: 'Pick two lines' };
         case 'tangent':
-            return picks.length >= 2 && curves(kinds.slice(0, 2)) && !(kinds[0] === 'line' && kinds[1] === 'line')
-                ? { kind: 'tangent', a: ids[0], b: ids[1] } : { need: 'Pick a line and an arc or circle, or two arcs/circles' };
+            return curves.length === 2 && rounds.length >= 1 && drawnLines.length === lines.length && only(curves)
+                ? [{ kind: 'tangent', a: ids[0], b: ids[1] }] : { need: 'Pick a line and an arc or circle, or two arcs/circles' };
         case 'equal':
-            return picks.length >= 2 && curves(kinds.slice(0, 2)) && (kinds[0] === 'line') === (kinds[1] === 'line')
-                ? { kind: 'equal', a: ids[0], b: ids[1] } : { need: 'Pick two lines, or two arcs/circles' };
-        case 'midpoint': {
-            const pi = kinds.indexOf('point');
-            const li = kinds.indexOf('line');
-            return pi >= 0 && li >= 0 ? { kind: 'midpoint', point: ids[pi], line: ids[li] } : { need: 'Pick a point and a line' };
-        }
-        case 'symmetric': {
-            const points = picks.filter((_, i) => kinds[i] === 'point');
-            const line = picks.find((_, i) => kinds[i] === 'line');
-            return points.length >= 2 && line ? { kind: 'symmetric', a: points[0].id, b: points[1].id, about: line.id }
-                : { need: 'Pick two points and a line to mirror them about' };
-        }
+            if (drawnLines.length >= 2 && only(drawnLines)) {
+                return pairs('equal', drawnLines);
+            }
+            return rounds.length >= 2 && only(rounds) ? pairs('equal', rounds) : { need: 'Pick two or more lines, or two or more arcs/circles' };
+        case 'concentric':
+            return rounds.length >= 1 && points.length <= 1 && rounds.length + points.length >= 2 && only(rounds, points)
+                ? pairs('concentric', [...rounds, ...points]) : { need: 'Pick two or more arcs/circles, or a point and an arc/circle' };
+        case 'coradial':
+            return rounds.length >= 2 && only(rounds) ? pairs('coradial', rounds) : { need: 'Pick two or more arcs/circles' };
+        case 'midpoint':
+            return points.length === 1 && drawnLines.length === 1 && only(points, drawnLines)
+                ? [{ kind: 'midpoint', point: points[0], line: drawnLines[0] }] : { need: 'Pick a point and a line' };
+        case 'symmetric':
+            return points.length === 2 && lines.length === 1 && only(points, lines)
+                ? [{ kind: 'symmetric', a: points[0], b: points[1], about: lines[0] }] : { need: 'Pick two points and a line to mirror them about' };
         case 'fix':
-            return kinds[0] === 'point' ? { kind: 'fix', point: ids[0] } : { need: 'Pick a point' };
+            return points.length ? points.map((point) => ({ kind: 'fix', point })) : { need: 'Pick a point' };
     }
 }
 
-/** How many picks a constraint tool needs at most (it applies as soon as it has a valid set). */
+/** The first relation `relationsFromPicks` gives, or what is still needed. */
+export function constraintFromPicks(g: SketchGeometry, tool: ConstraintTool, picks: Pick[]): NewConstraint | { need: string } {
+    const result = relationsFromPicks(g, tool, picks);
+    return 'need' in result ? result : result[0];
+}
+
+/** How many picks a constraint tool needs at least (picked in the view, it applies as soon as it has a valid set). */
 export const PICKS_NEEDED: Record<ConstraintTool, number> = {
     coincident: 2, horizontal: 1, vertical: 1, parallel: 2, perpendicular: 2, tangent: 2, equal: 2, midpoint: 2, symmetric: 3, fix: 1,
+    concentric: 2, collinear: 2, coradial: 2, merge: 2,
 };
 
 /** Where a dimension's value applies, from the picks and the placement point (Fusion style). */
@@ -527,6 +580,18 @@ export function dimensionFromPicks(g: SketchGeometry, picks: Pick[], place: Pt):
             return { kind: 'radius', curve: picks[0].id, value: 0 };
         }
         return null;
+    }
+    // An arc or circle measures from its centre (SolidWorks' default), so it stands for its centre point.
+    const centred = picks.map((pick, i): Pick => {
+        const curve = kinds[i] === 'circle' || kinds[i] === 'arc' ? curveOf(g, pick.id) : null;
+        return curve && curve.kind !== 'line' ? { type: 'point', id: curve.center } : pick;
+    });
+    if (centred.some((pick, i) => pick !== picks[i])) {
+        const [a, b] = centred;
+        if (a.id === b.id || kinds.filter((k) => k === 'line').length > 1) {
+            return null;
+        }
+        return dimensionFromPicks(g, centred, place);
     }
     const [a, b] = picks;
     if (kinds[0] === 'point' && kinds[1] === 'point') {
@@ -562,13 +627,46 @@ export function dimensionFromPicks(g: SketchGeometry, picks: Pick[], place: Pt):
                 return { kind: 'distance', a: line.a, b: other.id, value: 0 };
             }
         }
-        return { kind: 'angle', a: a.id, b: b.id, value: 0 };
+        return da && db ? angleBetween(a.id, b.id, da, db, lineThrough(g, a.id), lineThrough(g, b.id), place) : { kind: 'angle', a: a.id, b: b.id, value: 0 };
     }
     const pi = kinds.indexOf('point');
     if (pi >= 0 && kinds[1 - pi] === 'line') {
         return { kind: 'distance', a: picks[pi].id, b: picks[1 - pi].id, value: 0 };
     }
     return null;
+}
+
+/** A point on a line (an end, or the origin for an axis). */
+function lineThrough(g: SketchGeometry, id: string): Pt {
+    const line = curveOf(g, id);
+    const p = line?.kind === 'line' ? pointOf(g, line.a) : null;
+    return p ? [p.u, p.v] : [0, 0];
+}
+
+/**
+ * The angle dimension between two lines for a label placed at `place`: of the four angles at their crossing, the
+ * one the label sits in, given by which way along each line it is measured.
+ */
+function angleBetween(a: string, b: string, da: Pt, db: Pt, pa: Pt, pb: Pt, place: Pt): NewConstraint {
+    const den = da[0] * db[1] - da[1] * db[0];
+    const t = ((pb[0] - pa[0]) * db[1] - (pb[1] - pa[1]) * db[0]) / den;
+    const o: Pt = [pa[0] + da[0] * t, pa[1] + da[1] * t];
+    const label = Math.atan2(place[1] - o[1], place[0] - o[0]);
+    const angleOf = (d: Pt, reverse: boolean) => Math.atan2(reverse ? -d[1] : d[1], reverse ? -d[0] : d[0]);
+    const gap = (x: number, y: number) => Math.abs(Math.atan2(Math.sin(y - x), Math.cos(y - x)));
+    let best: { reverseA: boolean; reverseB: boolean; miss: number } | null = null;
+    for (const reverseA of [false, true]) {
+        for (const reverseB of [false, true]) {
+            const x = angleOf(da, reverseA);
+            const y = angleOf(db, reverseB);
+            // Inside the angle from x to y the label's gaps to both sides add up to the angle itself.
+            const miss = gap(x, label) + gap(label, y) - gap(x, y);
+            if (!best || miss < best.miss) {
+                best = { reverseA, reverseB, miss };
+            }
+        }
+    }
+    return { kind: 'angle', a, b, value: 0, reverseA: best!.reverseA, reverseB: best!.reverseB };
 }
 
 /** Evaluates a typed value: numbers with + - * / and parentheses, e.g. "40/2" or "25.4*2". */

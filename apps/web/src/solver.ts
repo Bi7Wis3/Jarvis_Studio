@@ -73,6 +73,25 @@ export function curveOf(g: SketchGeometry, id: string): SketchCurve | undefined 
     return g.curves.find((c) => c.id === id);
 }
 
+/** The end point two lines or arcs share, if any. */
+function sharedEnd(g: SketchGeometry, a: string, b: string): string | null {
+    const ends = (id: string): string[] => {
+        const c = curveOf(g, id);
+        return c?.kind === 'line' ? [c.a, c.b] : c?.kind === 'arc' ? [c.start, c.end] : [];
+    };
+    const other = ends(b);
+    return ends(a).find((p) => other.includes(p)) ?? null;
+}
+
+/** The centre point of a circle or arc, or the point itself. */
+function centreOf(g: SketchGeometry, id: string): string | null {
+    const curve = curveOf(g, id);
+    if (!curve) {
+        return pointOf(g, id) ? id : null;
+    }
+    return curve.kind === 'line' ? null : curve.center;
+}
+
 const isLine = (g: SketchGeometry, id: string) => id === AXIS_U || id === AXIS_V || curveOf(g, id)?.kind === 'line';
 
 /** Wraps an angle to (-π, π]. */
@@ -92,6 +111,36 @@ function translate(g: SketchGeometry, c: SketchConstraint, temporary = false): S
             return [{ ...base, type: 'horizontal_l', l_id: curveId(c.line) }];
         case 'vertical':
             return [{ ...base, type: 'vertical_l', l_id: curveId(c.line) }];
+        case 'horizontalPoints':
+            return [{ ...base, type: 'horizontal_pp', p1_id: pid(c.a), p2_id: pid(c.b) }];
+        case 'verticalPoints':
+            return [{ ...base, type: 'vertical_pp', p1_id: pid(c.a), p2_id: pid(c.b) }];
+        case 'concentric':
+        case 'coradial': {
+            const ca = centreOf(g, c.a);
+            const cb = centreOf(g, c.b);
+            if (!ca || !cb) {
+                return [];
+            }
+            const same: SketchPrimitive = { ...base, type: 'p2p_coincident', p1_id: pid(ca), p2_id: pid(cb) };
+            return c.kind === 'concentric' ? [same] : [same, ...translate(g, { id: `${c.id}:r`, kind: 'equal', a: c.a, b: c.b }, temporary)];
+        }
+        case 'collinear': {
+            // The other line's two ends on the first one's infinite line (an axis can only be the first).
+            const [on, other] = c.b === AXIS_U || c.b === AXIS_V ? [c.b, c.a] : [c.a, c.b];
+            const line = curveOf(g, other);
+            return line?.kind === 'line' ? [
+                { ...base, type: 'point_on_line_pl', p_id: pid(line.a), l_id: curveId(on) },
+                { ...base, id: `${id}:b`, type: 'point_on_line_pl', p_id: pid(line.b), l_id: curveId(on) },
+            ] : [];
+        }
+        case 'fixRadius': {
+            const r = curveRadius(g, c.curve);
+            const kind = kindOf(c.curve);
+            return r === null ? [] : kind === 'arc'
+                ? [{ ...base, type: 'arc_radius', a_id: cid(c.curve), radius: r }]
+                : [{ ...base, type: 'circle_radius', c_id: cid(c.curve), radius: r }];
+        }
         case 'parallel':
             return [{ ...base, type: 'parallel', l1_id: curveId(c.a), l2_id: curveId(c.b) }];
         case 'perpendicular':
@@ -112,6 +161,18 @@ function translate(g: SketchGeometry, c: SketchConstraint, temporary = false): S
         }
         case 'tangent': {
             const [ka, kb] = [kindOf(c.a), kindOf(c.b)];
+            // Joined at an end: tangent there (the distance form is flat at a shared end, so the solver cannot use it).
+            const joined = sharedEnd(g, c.a, c.b);
+            if (joined) {
+                const [ca, cb] = [curveOf(g, c.a)!, curveOf(g, c.b)!];
+                if (ca.kind === 'arc' && cb.kind === 'arc') {
+                    return [{ ...base, type: 'point_on_line_ppp', p_id: pid(joined), lp1_id: pid(ca.center), lp2_id: pid(cb.center) }];
+                }
+                const [line, arc] = ca.kind === 'line' ? [ca, cb] : [cb, ca];
+                if (line.kind === 'line' && arc.kind === 'arc') {
+                    return [{ ...base, type: 'perpendicular_pppp', l1p1_id: pid(line.a), l1p2_id: pid(line.b), l2p1_id: pid(arc.center), l2p2_id: pid(joined) }];
+                }
+            }
             if (ka === 'line' || kb === 'line') {
                 const [line, other] = ka === 'line' ? [c.a, c.b] : [c.b, c.a];
                 return kindOf(other) === 'arc'
@@ -175,6 +236,16 @@ function translate(g: SketchGeometry, c: SketchConstraint, temporary = false): S
                 : [];
         }
         case 'angle': {
+            if (c.reverseA !== undefined || c.reverseB !== undefined) {
+                // The dimensioned directions are fixed; keep the turn from one to the other the way it goes now.
+                const da = lineAngle(g, c.a);
+                const db = lineAngle(g, c.b);
+                const value = (c.value * Math.PI) / 180;
+                const shift = (c.reverseA ? Math.PI : 0) - (c.reverseB ? Math.PI : 0);
+                const now = da !== null && db !== null ? wrap(db - da - shift) : value;
+                const target = wrap((now < 0 ? -value : value) + shift);
+                return [{ ...base, type: 'l2l_angle_ll', l1_id: curveId(c.a), l2_id: curveId(c.b), angle: target }];
+            }
             // The solver's angle is signed and depends on line direction: aim for the variant nearest to now.
             const a = lineAngle(g, c.a);
             const b = lineAngle(g, c.b);
@@ -231,7 +302,7 @@ function primitives(g: SketchGeometry): SketchPrimitive[] {
     return out;
 }
 
-const ownId = (id: string) => (id.startsWith('k:') ? id.slice(2).replace(/:(bisector|y)$/, '') : null);
+const ownId = (id: string) => (id.startsWith('k:') ? id.slice(2).replace(/:(bisector|y|b|r)$/, '') : null);
 
 export interface Drag {
     /** Points pulled toward a position, with lower priority than the real constraints. */
@@ -264,7 +335,7 @@ export function solveGeometry(g: SketchGeometry, drag?: Drag): SolveResult {
     for (const c of g.constraints) {
         try {
             // A lock holds its point where it was, not where a drag is pulling it.
-            gcs.push_primitives_and_params(translate(c.kind === 'fix' ? g : start, c));
+            gcs.push_primitives_and_params(translate(c.kind === 'fix' || c.kind === 'fixRadius' ? g : start, c));
         } catch {
             // A constraint that refers to deleted geometry is skipped.
         }
@@ -353,6 +424,10 @@ export function measure(g: SketchGeometry, c: SketchConstraint): number | null {
             const b = lineAngle(g, c.b);
             if (a === null || b === null) {
                 return null;
+            }
+            if (c.reverseA !== undefined || c.reverseB !== undefined) {
+                const turn = b - a + (c.reverseB ? Math.PI : 0) - (c.reverseA ? Math.PI : 0);
+                return (Math.abs(wrap(turn)) * 180) / Math.PI;
             }
             // Lines have no preferred direction: report the reading (θ or 180° − θ) nearer the dimension's value.
             const deg = (Math.abs(wrap(b - a)) * 180) / Math.PI;

@@ -1,5 +1,5 @@
 // Sketch definition state for the feature tree, SolidWorks style: "(-) " under-defined, "(+) " over-defined (a
-// conflict), nothing when fully defined. Solved once per sketch geometry and cached; display only.
+// conflict or a redundant relation), nothing when fully defined. Solved once per sketch geometry and cached; display only.
 
 import type { Feature, SketchGeometry } from '@jarvis/core';
 import { solveGeometry, solverReady } from './solver';
@@ -10,9 +10,9 @@ const byObject = new WeakMap<SketchGeometry, DefinitionMark>();
 const byText = new Map<string, DefinitionMark>();
 const TEXT_CACHE = 300;
 
-/** The mark from a solve result: a conflict wins over free degrees of freedom. */
-export function markFor(result: { ok: boolean; dof: number; conflicting: string[] }): DefinitionMark {
-    if (result.conflicting.length) {
+/** The mark from a solve result: a conflict or a redundant relation (over defined) wins over free degrees of freedom. */
+export function markFor(result: { ok: boolean; dof: number; conflicting: string[]; redundant?: string[] }): DefinitionMark {
+    if (result.conflicting.length || result.redundant?.length) {
         return '(+) ';
     }
     return result.ok && result.dof > 0 ? '(-) ' : '';

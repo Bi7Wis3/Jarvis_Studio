@@ -378,6 +378,32 @@ const PATHS: Record<string, ReactNode> = {
         </>
     ),
     'c-equal': <path d="M5 9h14M5 15h14" />,
+    'c-merge': (
+        <>
+            <path d="M4 6l7 6M4 18l7-6M12 12h8" />
+            <circle cx="12" cy="12" r="1.8" fill="currentColor" />
+        </>
+    ),
+    'c-collinear': (
+        <>
+            <path d="M3 17L10 12.5M14 10l7-4.5" />
+            <path d="M10 12.5l4-2.5" strokeDasharray="1.5 1.5" opacity="0.6" />
+        </>
+    ),
+    'c-concentric': (
+        <>
+            <circle cx="12" cy="12" r="7.5" />
+            <circle cx="12" cy="12" r="3.5" />
+            <circle cx="12" cy="12" r="0.8" fill="currentColor" />
+        </>
+    ),
+    'c-coradial': (
+        <>
+            <path d="M5 12a7 7 0 0 1 12.5-4.3" />
+            <path d="M19 12a7 7 0 0 1-12.5 4.3" />
+            <circle cx="12" cy="12" r="0.8" fill="currentColor" />
+        </>
+    ),
     'c-midpoint': (
         <>
             <path d="M3 17L21 7" />

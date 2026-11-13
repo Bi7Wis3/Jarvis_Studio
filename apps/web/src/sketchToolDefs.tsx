@@ -222,6 +222,8 @@ export const moreModifyTools: ToolDef[] = [
 const KIND_NAMES: Record<SketchConstraint['kind'], string> = {
     coincident: 'Coincident', horizontal: 'Horizontal', vertical: 'Vertical', parallel: 'Parallel', perpendicular: 'Perpendicular',
     tangent: 'Tangent', equal: 'Equal', pointOnCurve: 'On curve', midpoint: 'Midpoint', symmetric: 'Symmetric', fix: 'Lock',
+    fixRadius: 'Lock radius', horizontalPoints: 'Horizontal', verticalPoints: 'Vertical', concentric: 'Concentric', coradial: 'Coradial',
+    collinear: 'Collinear',
     distance: 'Distance', length: 'Length', angle: 'Angle', radius: 'Radius', diameter: 'Diameter',
 };
 

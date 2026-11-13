@@ -4,7 +4,7 @@ import type { Feature } from '@jarvis/core';
 import { Icon } from './icons';
 import { clearEditing, clearPicked, runTool, select, setRollback, setWorkspace, useStudio } from './state';
 import {
-    applyTyped, closeSketch, deleteSelected, fitSketch, redoSketch, setTool, toggleConstructionSelected, sketchEnter, sketchEscape, startSketch, typeKey,
+    closeSketch, deleteSelected, enterKey, fitSketch, redoSketch, setTool, toggleConstructionSelected, sketchEscape, startSketch, typeKey,
     undoSketch,
     useSketcher,
     type SketchTool,
@@ -120,15 +120,15 @@ function sketchHint(tool: SketchTool): string {
 
 const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}`>, string> = {
     select: 'Click to select, Shift adds · drag points, lines or dimension values to move · double-click a dimension to edit · Delete removes',
-    dimension: 'Drag a line or circle outwards to dimension it · or click two points, a point and a line/axis/origin, or two lines, then where the value goes',
-    line: 'Click points · type a length (or length,angle) + Enter · click the start to close · Esc stops',
-    centerline: 'Click points for a construction line · type a length (or length,angle) + Enter · Esc stops',
+    dimension: 'Drag a line or circle outwards to dimension it · or click two items (points, lines, circles: to the centre), then where the value goes · for an angle, the side picks which angle',
+    line: 'Click points · type a length (or length,angle) + Enter · click the start to close · Enter or double-click ends the chain',
+    centerline: 'Click points for a construction line · type a length (or length,angle) + Enter · Enter ends the chain',
     point: 'Click to place a sketch point · it snaps to points, middles and curves',
     xform: 'Click points in the view for the form (move: from, then to) · Shift+click changes the selection',
     rect: 'Click two corners · type width,height + Enter',
     circle: 'Click the centre, then a point · type the diameter + Enter',
     arc: 'Click start and end, then a point on the arc · type a radius + Enter',
-    slot: 'Click both centres, then the width · type a length, then the width',
+    slot: 'Click both centres (they snap to points), then the width · type a length, then the width',
     polygon: 'Click the centre, then a corner · sides in sketch settings',
     centerRect: 'Click the centre, then a corner · type width,height + Enter',
     centerArc: 'Click the centre, then the start, then where it ends · type the radius, then the angle + Enter',
@@ -177,7 +177,8 @@ function WorkspaceSwitch() {
 
 /** One line under the toolbar while sketching: what the tool expects, the plane and the profile status, and the way out. */
 function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void }) {
-    const { active, stage, tool, plane, offset, edit, dof, message, notice, geometry } = useSketcher();
+    const { active, stage, tool, plane, offset, edit, dof, message, notice, geometry, redundant, conflicting } = useSketcher();
+    const over = redundant.length > 0 || conflicting.length > 0;
     if (!active) {
         return null;
     }
@@ -194,8 +195,8 @@ function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void 
             <b>{edit ? 'Editing sketch' : 'Sketch'}</b>
             <span className="sk-plane">{planeLabel(plane)}{offset ? ` ${offset > 0 ? '+' : ''}${offset} mm` : ''}</span>
             <span className={message ? 'sk-message' : notice ? 'sk-notice' : ''}>{message ?? notice ?? sketchHint(tool)}</span>
-            <span className={`sk-dof ${dof === 0 ? 'done' : ''}`} title="Degrees of freedom left">
-                {!geometry.curves.length ? 'empty' : dof < 0 ? '…' : dof === 0 ? 'Fully constrained' : `${dof} DOF`}
+            <span className={`sk-dof ${dof === 0 && !over ? 'done' : ''} ${over ? 'over' : ''}`} title="Sketch status and degrees of freedom left">
+                {!geometry.curves.length ? 'empty' : dof < 0 ? '…' : over ? 'Over defined' : dof === 0 ? 'Fully defined' : `Under defined · ${dof} DOF`}
             </span>
             <button type="button" className="sk-done" onClick={onFinish} title="Save the sketch and go back to the part (Enter)">
                 Exit sketch
@@ -425,11 +426,8 @@ export function Toolbar() {
                 }
                 if (event.key === 'Enter') {
                     event.preventDefault();
-                    if (sk.typed) {
-                        applyTyped();
-                    } else if (sketchEnter()) {
-                        // An edit tool's next step.
-                    } else if (!openPopup) {
+                    // Enter ends what is in progress first; only an idle tool leaves the sketch.
+                    if (enterKey() === 'exit' && !openPopup) {
                         openById(finishTool.id);
                     }
                     return;

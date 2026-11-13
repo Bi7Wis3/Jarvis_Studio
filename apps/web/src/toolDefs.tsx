@@ -1017,16 +1017,20 @@ const sketchStartTools: ToolDef[] = [
 ];
 
 const CONSTRAINT_TOOLS: { id: ConstraintTool; label: string; hint: string }[] = [
-    { id: 'coincident', label: 'Coincident', hint: 'two points, or a point onto a curve' },
-    { id: 'horizontal', label: 'Horizontal', hint: 'a line' },
-    { id: 'vertical', label: 'Vertical', hint: 'a line' },
-    { id: 'parallel', label: 'Parallel', hint: 'two lines' },
+    { id: 'coincident', label: 'Coincident', hint: 'two points, or points and a curve' },
+    { id: 'merge', label: 'Merge points', hint: 'two or more points become one' },
+    { id: 'horizontal', label: 'Horizontal', hint: 'one or more lines, or two or more points' },
+    { id: 'vertical', label: 'Vertical', hint: 'one or more lines, or two or more points' },
+    { id: 'collinear', label: 'Collinear', hint: 'two or more lines on one line' },
+    { id: 'parallel', label: 'Parallel', hint: 'two or more lines' },
     { id: 'perpendicular', label: 'Perpendicular', hint: 'two lines' },
     { id: 'tangent', label: 'Tangent', hint: 'a line and an arc/circle, or two arcs' },
-    { id: 'equal', label: 'Equal', hint: 'two lines, or two arcs/circles' },
+    { id: 'concentric', label: 'Concentric', hint: 'two or more arcs/circles, or a point and an arc/circle' },
+    { id: 'coradial', label: 'Coradial', hint: 'two or more arcs/circles: same centre and radius' },
+    { id: 'equal', label: 'Equal', hint: 'two or more lines, or two or more arcs/circles' },
     { id: 'midpoint', label: 'Midpoint', hint: 'a point and a line' },
     { id: 'symmetric', label: 'Symmetric', hint: 'two points and a line' },
-    { id: 'fix', label: 'Lock', hint: 'a point, line or circle stays where it is · click it again to unlock' },
+    { id: 'fix', label: 'Lock', hint: 'a point, line or circle stays where it is (a circle keeps its radius) · click it again to unlock' },
 ];
 
 const constrainTools: ToolDef[] = [
