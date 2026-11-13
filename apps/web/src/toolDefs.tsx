@@ -18,6 +18,8 @@ import { evaluateTools } from './evaluateToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { stepAtBar } from './historyOps';
 import { designCopy } from './partCopy';
+import { CHAMFER_TYPES, chamferTypeFields, chamferTypeValues } from './chamferForm';
+import { BOX_DEFAULTS, boxShape, boxValues, CYLINDER_DEFAULTS, cylinderShape, cylinderValues } from './primitiveForm';
 import { circularPatternTool, linearPatternTool, mirrorTool, patternEditor } from './patternToolDefs';
 import { Icon } from './icons';
 import {
@@ -339,25 +341,26 @@ const primitiveTools: ToolDef[] = [
         { key: 'w', label: 'Width X', kind: 'number', unit: 'mm', min: 0 },
         { key: 'h', label: 'Height Y', kind: 'number', unit: 'mm', min: 0 },
         { key: 'd', label: 'Depth Z', kind: 'number', unit: 'mm', min: 0 },
-        { key: 'r', label: 'Edge round', kind: 'number', unit: 'mm', min: 0, step: 0.5 },
-    ], { w: '40', h: '20', d: '30', r: '0.5' },
-    (s) => (s.kind === 'box' ? { w: fmt(s.size[0]), h: fmt(s.size[1]), d: fmt(s.size[2]), r: fmt(s.radius ?? 0) } : null),
+        { key: 'autoR', label: 'Automatic edge round', kind: 'check' },
+        { key: 'r', label: 'Edge round', kind: 'number', unit: 'mm', min: 0, step: 0.5, show: (v) => !v.autoR },
+    ], BOX_DEFAULTS,
+    (s) => (s.kind === 'box' ? boxValues(s) : null),
     (v) => {
-        const h = num(v, 'h', 'Height', { positive: true });
-        return {
-            shape: { kind: 'box', size: [num(v, 'w', 'Width', { positive: true }), h, num(v, 'd', 'Depth', { positive: true })],
-                radius: num(v, 'r', 'Edge round', { min: 0 }) },
-            halfHeight: h / 2,
-        };
+        const shape = boxShape(v);
+        return { shape, halfHeight: shape.size[1] / 2 };
     }),
     createTool('cylinder', 'Cylinder', [
         { key: 'r', label: 'Radius', kind: 'number', unit: 'mm', min: 0 },
+        { key: 'taper', label: 'Taper', kind: 'check' },
+        { key: 'rt', label: 'Top radius', kind: 'number', unit: 'mm', min: 0, show: (v) => !!v.taper },
         { key: 'h', label: 'Height', kind: 'number', unit: 'mm', min: 0 },
-    ], { r: '15', h: '30' },
-    (s) => (s.kind === 'cylinder' ? { r: fmt(s.radius), h: fmt(s.height) } : null),
+        { key: 'autoBevel', label: 'Automatic edge bevel', kind: 'check' },
+        { key: 'bevel', label: 'Edge bevel', kind: 'number', unit: 'mm', min: 0, step: 0.5, show: (v) => !v.autoBevel },
+    ], CYLINDER_DEFAULTS,
+    (s) => (s.kind === 'cylinder' ? cylinderValues(s) : null),
     (v) => {
-        const h = num(v, 'h', 'Height', { positive: true });
-        return { shape: { kind: 'cylinder', radius: num(v, 'r', 'Radius', { positive: true }), height: h }, halfHeight: h / 2 };
+        const shape = cylinderShape(v);
+        return { shape, halfHeight: shape.height / 2 };
     }),
     createTool('sphere', 'Sphere', [
         { key: 'r', label: 'Radius', kind: 'number', unit: 'mm', min: 0 },
@@ -1252,16 +1255,22 @@ const featureTools: Record<string, ToolDef> = {
         op: 'chamfer',
         needsPart: true,
         fields: () => [
-            { key: 's', label: 'Size', kind: 'number', unit: 'mm', min: 0, step: 0.5 },
+            { key: 'ctype', label: 'Chamfer type', kind: 'select', options: CHAMFER_TYPES },
+            { key: 's', label: 'Distance', kind: 'number', unit: 'mm', min: 0, step: 0.5 },
+            { key: 'd2', label: 'Distance 2', kind: 'number', unit: 'mm', min: 0, step: 0.5, show: (v) => v.ctype === 'distances' },
+            { key: 'angle', label: 'Angle', kind: 'number', unit: '°', min: 0, max: 90, show: (v) => v.ctype === 'angle' },
             { key: 'edges', label: 'Edges', kind: 'select', options: EDGES },
         ],
         defaults: (ctx) => {
             const f = edited(ctx, 'chamfer');
-            return f ? { s: fmt(f.size), edges: f.edges ?? 'all' } : { s: '1', edges: 'top' };
+            return f ? { s: fmt(f.size), edges: f.edges ?? 'all', ...chamferTypeValues(f) } : { s: '1', edges: 'top', ...chamferTypeValues(null) };
         },
         apply: (v, ctx) => attempt(() => {
-            const s = num(v, 's', 'Size', { positive: true });
-            return saveFeature(ctx, { op: 'chamfer', name: `Chamfer ${fmt(s)} mm ${v.edges} edges`, size: s, edges: v.edges });
+            const s = num(v, 's', 'Distance', { positive: true });
+            const type = chamferTypeFields(v);
+            // A new chamfer has no fields to remove.
+            const extra = ctx.edit?.feature ? type : Object.fromEntries(Object.entries(type).filter(([, x]) => x !== null));
+            return saveFeature(ctx, { op: 'chamfer', name: `Chamfer ${fmt(s)} mm ${v.edges} edges`, size: s, edges: v.edges, ...extra });
         }),
     },
     shell: {
