@@ -47,7 +47,7 @@ function usePick(part: Part, step: Feature) {
                 return;
             }
             const sketcher = useSketcher.getState();
-            if (step.op === 'plane' && sketcher.active && sketcher.stage === 'plane') {
+            if (step.op === 'plane' && sketcher.active && sketcher.stage === 'plane' && sketcher.partId === part.id) {
                 e.stopPropagation();
                 choosePlane({ planeRef: step.id }, 0);
                 return;
@@ -268,7 +268,8 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
         <group ref={outer}>
             <group matrixAutoUpdate={false} matrix={matrix}>
                 {features.map((f, i) => {
-                    if (f.suppressed || f.id === editing || hiddenSet.has(`${part.id}/${f.id}`)) {
+                    // A plane or axis being edited is drawn as the form's preview instead.
+                    if (f.suppressed || (f.id === editing && f.op !== 'point') || hiddenSet.has(`${part.id}/${f.id}`)) {
                         return null;
                     }
                     const before = features.slice(0, i);
