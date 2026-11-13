@@ -646,7 +646,7 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
     const camera = useThree((s) => s.camera) as PerspectiveCamera;
     const controls = useThree((s) => s.controls) as CameraControlsImpl | null;
     const size = useThree((s) => s.size);
-    const fit = useRef({ angles: '', first: true, refit: 0, asked: '', ids: '', settleUntil: 0 });
+    const fit = useRef({ angles: '', first: true, refit: 0, asked: '', ids: '', settling: false });
     const refit = useStudio((s) => s.refit);
     const workspace = useStudio((s) => s.workspace);
     const activePart = useStudio((s) => s.activePart);
@@ -676,16 +676,16 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
         const state = fit.current;
         // Parts added or removed reframe the assembly, but not the part being edited.
         const partsChanged = ids !== state.ids && workspace === 'assembly';
-        // Real sizes of sketch-built parts arrive after the first framing: follow them for a moment.
-        const settling = performance.now() < state.settleUntil;
-        const wanted = state.first || asked !== state.asked || partsChanged || settling;
+        // The real size of a sketch-built part is only known once its mesh has loaded, which can take a while. A
+        // framing made before that is redone as the sizes arrive, until they are all known or the user moves the
+        // camera; otherwise the first view would sit inside the part.
+        const requested = state.first || asked !== state.asked || partsChanged;
+        const wanted = requested || state.settling;
         state.ids = ids;
         if (!wanted) {
             return;
         }
-        if (!settling || state.first || asked !== state.asked || partsChanged) {
-            state.settleUntil = performance.now() + 4000;
-        }
+        state.settling = project.parts.some((p) => (p.shape.kind === 'empty' || p.shape.kind === 'sketch') && !kernelBounds.has(p.id));
         state.asked = asked;
         if (refit !== state.refit) {
             // An explicit Fit or view button: apply the stored angles again even if they did not change.
@@ -721,6 +721,18 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
         moveTo(position, sphere.center, !state.first);
         state.first = false;
     }, [asked, ids, boundsVersion, controls]);
+
+    // Once the user takes the camera, a framing still waiting for part sizes is dropped.
+    useEffect(() => {
+        if (!controls) {
+            return;
+        }
+        const stop = () => {
+            fit.current.settling = false;
+        };
+        controls.addEventListener('controlstart', stop);
+        return () => controls.removeEventListener('controlstart', stop);
+    }, [controls]);
 
     // Choosing a sketch plane: the three planes must be on screen and big enough to click. The camera only moves
     // when they are not (off to the side, tiny, or filling the view), and keeps its direction.
