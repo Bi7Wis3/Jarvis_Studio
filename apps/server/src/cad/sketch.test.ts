@@ -183,7 +183,7 @@ describe('sketch errors', () => {
         await expect(mesh(body({ plane: 'top', profiles: [rect([0, 0], 10, 10), rect([5, 0], 10, 10)] }, { distance: 1 })))
             .rejects.toThrow(/profile 0 \(rect\) and profile 1 \(rect\) overlap/);
         await expect(mesh(body({ plane: 'front', profiles: [rect([0, 0], 10, 10)] }, undefined, { axis: 'v' })))
-            .rejects.toThrow(/crosses the v axis/);
+            .rejects.toThrow(/crosses the Sketch V \(vertical\) axis/);
     }, SLOW);
 
     it('needs exactly one of extrude or revolve', async () => {
@@ -394,6 +394,56 @@ describe('custom sketch planes', () => {
             profiles: [rect([7.5, 5], 5, 10)] }, undefined, { axis: 'v' }));
         expectBounds(m, [-10, -5, -10], [10, 5, 10]);
         expect(volume(m) / (Math.PI * 75 * 10)).toBeCloseTo(1, 2);
+    }, SLOW);
+});
+
+describe('revolve axes and directions', () => {
+    // A 5 x 10 rectangle at u 15..20, v 0..10 on the front plane (u = +X, v = +Y), and a vertical centreline at u = 10.
+    const sketch: Sketch = {
+        plane: 'front',
+        profiles: [rect([17.5, 5], 5, 10)],
+        geometry: {
+            points: [{ id: 'c0', u: 10, v: 0 }, { id: 'c1', u: 10, v: 10 }],
+            curves: [{ id: 'cl', kind: 'line', a: 'c0', b: 'c1', construction: true }],
+            constraints: [],
+        },
+    };
+    const empty: Shape = { kind: 'empty' };
+    const tube = Math.PI * (100 - 25) * 10;
+
+    it('revolves about a centreline of the sketch and about an axis step', async () => {
+        const about = await mesh(body(sketch, undefined, { axis: { line: 'cl' } }));
+        expectBounds(about, [0, 0, -10], [20, 10, 10]);
+        expect(volume(about) / tube).toBeCloseTo(1, 2);
+        const step = await mesh(empty, [
+            { id: 'ax', op: 'axis', definition: { kind: 'twoPoints', a: [10, 0, 0], b: [10, 1, 0] } },
+            { id: 'sk', op: 'sketch', sketch },
+            { id: 'r', op: 'revolve', mode: 'add', sketchRef: 'sk', axis: { axisRef: 'ax' } },
+        ]);
+        expect(volume(step) / tube).toBeCloseTo(1, 2);
+        await expect(mesh(body(sketch, undefined, { axis: { line: 'nope' } }))).rejects.toThrow(/no line "nope"/);
+        // The centreline at u = 10 runs through a profile at u 5..15.
+        await expect(mesh(body({ ...sketch, profiles: [rect([10, 5], 10, 10)] }, undefined, { axis: { line: 'cl' } })))
+            .rejects.toThrow(/crosses the axis line/);
+    }, SLOW);
+
+    it('revolves blind one way or reversed, mid plane, and in two directions', async () => {
+        const at = (extra: { angle?: number; reverse?: boolean; type?: 'midPlane'; angle2?: number }) => mesh(empty, [{
+            id: 'r', op: 'revolve', mode: 'add', axis: 'v', angle: 90, sketch: { plane: 'front', profiles: [rect([7.5, 5], 5, 10)] }, ...extra,
+        } as Feature]);
+        const quarter = Math.PI * 75 * 10 / 4;
+        // +X turned +90 degrees about +Y points to -Z.
+        const blind = await at({});
+        expectBounds(blind, [0, 0, -10], [10, 10, 0]);
+        expect(volume(blind) / quarter).toBeCloseTo(1, 2);
+        expectBounds(await at({ reverse: true }), [0, 0, 0], [10, 10, 10]);
+        const mid = await at({ type: 'midPlane', angle: 180 });
+        expectBounds(mid, [0, 0, -10], [10, 10, 10]);
+        expect(volume(mid) / (2 * quarter)).toBeCloseTo(1, 2);
+        const two = await at({ angle2: 90 });
+        expectBounds(two, [0, 0, -10], [10, 10, 10]);
+        expect(volume(two) / (2 * quarter)).toBeCloseTo(1, 2);
+        await expect(at({ angle: 300, angle2: 90 })).rejects.toThrow(/more than 360/);
     }, SLOW);
 });
 

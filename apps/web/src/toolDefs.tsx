@@ -15,6 +15,7 @@ import { showError } from './menus';
 import { addPicture, PicturePicker } from './DecalPanel';
 import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchToolDefs';
 import { evaluateTools } from './evaluateToolDefs';
+import { referenceEditor, referenceTools } from './referenceToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { Icon } from './icons';
 import {
@@ -26,6 +27,9 @@ import { evaluate, type ConstraintTool } from './sketchGeometry';
 import { angledPlane, planeLabel } from './sketchMath';
 import { itemsOf, pickItems, type PickEntity, type PickItem } from './pickField';
 import { chamferFeature, draftFeature, filletFeature, shellFeature } from './pickFeatures';
+import {
+    axisOptions, axisValue, defaultAxis, readRevolve, revolveAxisKey, revolveStepFields, revolveValues, type RevolveOptionValues,
+} from './revolveAxis';
 
 export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
@@ -469,6 +473,17 @@ const sketchPlaneTool: ToolDef = {
                         {plane[0].toUpperCase() + plane.slice(1)}
                     </button>
                 ))}
+                {/* The part's reference planes (not tilted: a tilted plane is made with the Plane tool). */}
+                {useSketcher.getState().context.filter((f) => f.op === 'plane' && !f.suppressed).map((f) => (
+                    <button
+                        key={f.id}
+                        type="button"
+                        title="A reference plane of the part (click it in the view too)"
+                        onClick={() => choosePlane({ planeRef: f.id }, evaluate(String(api.values.offset)) ?? 0)}
+                    >
+                        {f.name ?? f.id}
+                    </button>
+                ))}
             </div>
         </>
     ),
@@ -615,6 +630,36 @@ function extrudeResets(stored: Feature | null | undefined, fields: Record<string
     return Object.fromEntries(Object.entries(resets).filter(([k]) => (stored as unknown as Record<string, unknown>)[k] !== undefined && !(k in fields)));
 }
 
+// ---- Revolve options (axis of revolution, Direction 1, Direction 2), shared by Revolve and the sketch finish panel ----
+
+/**
+ * The revolve fields, SolidWorks style: Axis of revolution, Direction 1 (type, reverse, angle) and Direction 2.
+ * `axisFields` are the axis select(s); `full` false: axis and angle only (a base body's revolve).
+ */
+function revolveFields(isRevolve: (v: Values) => boolean, axisFields: Field[], full = true): Field[] {
+    const blind = (v: Values) => isRevolve(v) && v.revolveType !== 'midPlane';
+    return [
+        ...axisFields,
+        ...(full ? [
+            { key: 'revolveType', label: 'Revolve type', kind: 'select' as const, options: opts(['blind', 'Blind'], ['midPlane', 'Mid plane']),
+                section: 'Direction 1', show: isRevolve },
+            { key: 'reverse', label: 'Reverse direction', kind: 'check' as const, section: 'Direction 1', show: blind },
+        ] : []),
+        { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', min: 0, max: 360, section: 'Direction 1', show: isRevolve },
+        ...(full ? [
+            { key: 'revSecond', label: 'Direction 2', kind: 'check' as const, section: 'Direction 2', show: blind },
+            { key: 'angle2', label: 'Angle', kind: 'number' as const, unit: 'deg', min: 0, max: 360, section: 'Direction 2',
+                show: (v: Values) => blind(v) && !!v.revSecond },
+        ] : []),
+    ];
+}
+
+/** The revolve options in the form. `strict` checks the numbers (OK); the live preview reads them leniently. */
+function revolveOptions(v: Values, axis: unknown, strict = false): RevolveOptionValues {
+    const read = (key: string, label: string): number => (strict ? num(v, key, label, { positive: true }) : Number(v[key]) || 0);
+    return readRevolve(v, axis, read, strict);
+}
+
 function finishOp(v: Values): FinishOp {
     const choice = v.op as FinishChoice;
     const mode = choice === 'sketch' ? 'sketch' : choice === 'cut' ? 'cut' : v.result === 'new' ? 'new' : (v.result as 'add' | 'cut') ?? 'add';
@@ -623,8 +668,7 @@ function finishOp(v: Values): FinishOp {
         mode,
         distance: Number(v.distance) || 0,
         direction: v.direction as FinishOp['direction'],
-        axis: v.axis as 'u' | 'v',
-        angle: Number(v.angle) || 360,
+        ...revolveOptions(v, v.axis),
         ...extrudeOptions(v, mode === 'cut'),
     };
 }
@@ -654,8 +698,9 @@ function nextSketch(part: Part | null | undefined): { id: string; name: string }
     return { id: `sketch-${n}`, name: nextFeatureName(part?.features, { op: 'sketch' }) };
 }
 
-/** An extrude or revolve step that builds from a sketch (inline or by reference). */
-function sketchOpFeature(op: FinishOp, source: { sketchRef: string } | { sketch: unknown }, label: string, distance: number, angle: number): Record<string, unknown> {
+/** An extrude or revolve step that builds from a sketch (inline or by reference); `stored` is the step being edited. */
+function sketchOpFeature(op: FinishOp, source: { sketchRef: string } | { sketch: unknown }, label: string, distance: number, angle: number,
+    stored?: Feature | null): Record<string, unknown> {
     if (op.op === 'extrude') {
         const verb = op.mode === 'cut' ? 'Cut' : 'Extrude';
         const upToNext = op.end === 'upToNext';
@@ -668,7 +713,7 @@ function sketchOpFeature(op: FinishOp, source: { sketchRef: string } | { sketch:
     }
     return {
         op: 'revolve', name: `${op.mode === 'cut' ? 'Revolve cut' : 'Revolve'} ${fmt(angle)}° · ${label}`, ...source,
-        mode: op.mode === 'cut' ? 'cut' : 'add', axis: op.axis, ...(angle !== 360 ? { angle } : {}),
+        mode: op.mode === 'cut' ? 'cut' : 'add', ...revolveStepFields({ ...op, angle }, stored),
     };
 }
 
@@ -737,9 +782,12 @@ const finishTool: ToolDef = {
             ...(choices.length > 1 ? [{ key: 'op', label: 'Operation', kind: 'select' as const, options: opts(...choices) }] : []),
             // A base body's extrude has only a distance and a direction.
             ...extrudeFields((v) => v.op === 'extrude' || v.op === 'cut', (v) => v.op === 'cut', !target?.base),
-            { key: 'axis', label: 'Axis', kind: 'select', options: opts(['v', 'Sketch V (vertical)'], ['u', 'Sketch U (horizontal)']),
-                section: 'Revolve', show: (v) => v.op === 'revolve' },
-            { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Revolve', show: (v) => v.op === 'revolve' },
+            // A base body has no history, so no axis steps.
+            ...revolveFields((v) => v.op === 'revolve', [{
+                key: 'axis', label: 'Axis', kind: 'select', section: 'Axis of revolution', show: (v) => v.op === 'revolve',
+                options: axisOptions(useSketcher.getState().geometry, target?.base ? [] : useSketcher.getState().context,
+                    target?.feature?.op === 'revolve' ? axisValue(target.feature.axis) : undefined),
+            }], !target?.base),
             ...(results.length ? [{ key: 'result', label: 'Result', kind: 'select' as const, options: results, section: 'Result',
                 show: (v: Values) => v.op === 'extrude' || v.op === 'revolve' }] : []),
         ];
@@ -753,9 +801,11 @@ const finishTool: ToolDef = {
         if (direction !== op.direction) {
             queueMicrotask(() => useSketcher.setState({ finishing: { ...op, direction } }));
         }
+        // Lines are picked as the axis by selecting them in the sketch.
+        queueMicrotask(() => setTool('select'));
         return {
             op: choice, result: op.mode === 'new' ? 'new' : op.mode === 'cut' && op.op === 'revolve' ? 'cut' : 'add',
-            distance: fmt(op.distance), direction, axis: op.axis, angle: fmt(op.angle), ...extrudeValues(op),
+            distance: fmt(op.distance), direction, axis: axisValue(op.axis), ...revolveValues(op), ...extrudeValues(op),
         };
     },
     onChange: (key, v) => {
@@ -776,7 +826,10 @@ const finishTool: ToolDef = {
         return (
             <>
                 <RegionPickSession sketchKey={null} initial={f && (f.op === 'extrude' || f.op === 'revolve') ? f.regions : undefined} />
-                <p className="tb-note tb-hint">Click areas in the view to use only those.</p>
+                {api.values.op === 'revolve' && <SketchAxisListener api={api} />}
+                <p className="tb-note tb-hint">
+                    Click areas in the view to use only those.{api.values.op === 'revolve' ? ' Click a line or centreline to revolve about it.' : ''}
+                </p>
             </>
         );
     },
@@ -802,7 +855,13 @@ const finishTool: ToolDef = {
         const regions = op.mode === 'sketch' ? [] : useRegionPick.getState().picked;
         const s = useSketcher.getState();
         const distance = op.op === 'extrude' && op.mode !== 'sketch' && isBlind(op.end) ? num(v, 'distance', 'Depth', { positive: true }) : 0;
-        const angle = op.op === 'revolve' && op.mode !== 'sketch' ? num(v, 'angle', 'Angle', { positive: true }) : 360;
+        if (op.op === 'revolve' && op.mode !== 'sketch') {
+            Object.assign(op, revolveOptions(v, v.axis, true));
+            if (target?.base && typeof op.axis === 'object' && !('line' in op.axis)) {
+                throw new Error('A base body can only revolve about the sketch axes or a line of the sketch.');
+            }
+        }
+        const angle = op.op === 'revolve' && op.mode !== 'sketch' ? op.angle : 360;
         const done = (result: Result) => {
             if (!result.isError) {
                 closeSketch();
@@ -818,7 +877,7 @@ const finishTool: ToolDef = {
         if (target?.feature) {
             const ref = 'sketchRef' in target.feature ? target.feature.sketchRef : undefined;
             const mode = op.mode === 'cut' ? 'cut' : 'add';
-            let fields: Record<string, unknown> = { mode, axis: op.axis, angle, regions };
+            let fields: Record<string, unknown> = { mode, ...revolveStepFields(op, target.feature), regions };
             if (op.op === 'extrude') {
                 const extras = extrudeExtras(op, mode === 'cut');
                 fields = { mode, direction: op.direction, through: op.through, ...(isBlind(op.end) ? { distance } : {}), regions, ...extras };
@@ -830,7 +889,7 @@ const finishTool: ToolDef = {
         if (target?.base) {
             const shape = op.op === 'extrude'
                 ? { kind: 'sketch', sketch, extrude: { distance, direction: op.direction } }
-                : { kind: 'sketch', sketch, revolve: { axis: op.axis, angle } };
+                : { kind: 'sketch', sketch, revolve: { axis: op.axis, ...(angle !== 360 ? { angle } : {}) } };
             return done(await runTool('parts_update', { updates: [{ id: target.partId, shape }] }));
         }
 
@@ -882,6 +941,19 @@ function SketchPickListener({ api, keyName }: { api: PopupApi; keyName: string }
     return null;
 }
 
+/** Finish panel, Revolve: a line or centreline selected in the open sketch becomes the axis of revolution. */
+function SketchAxisListener({ api }: { api: PopupApi }) {
+    const selection = useSketcher((s) => s.selection);
+    useEffect(() => {
+        const only = selection.length === 1 && selection[0].type === 'curve' ? selection[0].id : null;
+        const curve = only && useSketcher.getState().geometry.curves.find((c) => c.id === only);
+        if (curve && curve.kind === 'line' && api.values.axis !== `line:${curve.id}`) {
+            api.set({ axis: `line:${curve.id}` });
+        }
+    }, [selection]);
+    return null;
+}
+
 /** Extrude, Cut or Revolve an existing sketch step of the part (or start a new sketch when it has none). */
 function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): ToolDef {
     const label = kind === 'extrude' ? 'Extrude' : kind === 'cut' ? 'Cut' : 'Revolve';
@@ -900,12 +972,21 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
         popupIf: (ctx) => !!ctx.edit || sketchSteps(ctx.part).length > 0,
         fields: (ctx) => {
             const steps = sketchSteps(ctx.part);
+            const features = ctx.part?.features ?? [];
+            const stored = ctx.edit?.feature?.op === 'revolve' ? ctx.edit.feature : null;
+            // One axis field per sketch step, shown for the chosen sketch: its lines, and the axis steps before the revolve.
+            const axisFields: Field[] = op === 'revolve' ? steps.map((s) => {
+                const end = stored ? features.indexOf(stored) : features.length;
+                return {
+                    key: revolveAxisKey(s.id), label: 'Axis', kind: 'select', section: 'Axis of revolution', show: (v: Values) => v.sketch === s.id,
+                    options: axisOptions(s.sketch.geometry, features.slice(0, end < 0 ? features.length : end),
+                        stored?.sketchRef === s.id ? axisValue(stored.axis) : undefined),
+                };
+            }) : [];
             return [
                 { key: 'sketch', label: 'Sketch', kind: 'select', options: steps.map((f) => ({ value: f.id, label: f.name ?? f.id })) },
                 ...extrudeFields(() => op === 'extrude', (v) => v.mode === 'cut'),
-                { key: 'axis', label: 'Axis', kind: 'select', options: opts(['v', 'Sketch V (vertical)'], ['u', 'Sketch U (horizontal)']),
-                    section: 'Revolve', show: () => op === 'revolve' },
-                { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Revolve', show: () => op === 'revolve' },
+                ...(op === 'revolve' ? revolveFields(() => true, axisFields) : []),
                 ...(kind === 'revolve' || ctx.edit
                     ? [{ key: 'mode', label: 'Result', kind: 'select' as const, options: opts(['add', 'Join'], ['cut', 'Cut']), section: 'Result' }] : []),
             ];
@@ -917,14 +998,16 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
             const values: Values = {
                 sketch: last?.id ?? '', mode: kind === 'cut' ? 'cut' : 'add', distance: '10',
                 direction: kind === 'cut' && last && (typeof last.sketch.plane !== 'string' || (last.sketch.offset ?? 0) > 0) ? 'reverse' : 'normal',
-                axis: 'v', angle: '360', ...extrudeValues({ through: kind === 'cut' }),
+                ...revolveValues({}), ...extrudeValues({ through: kind === 'cut' }),
+                // Each sketch's own default axis: its centreline when it has exactly one.
+                ...Object.fromEntries(steps.map((s) => [revolveAxisKey(s.id), defaultAxis(s.sketch.geometry)])),
             };
             if (f && (f.op === 'extrude' || f.op === 'revolve')) {
                 Object.assign(values, { sketch: f.sketchRef ?? values.sketch, mode: f.mode });
                 if (f.op === 'extrude') {
                     Object.assign(values, { distance: fmt(f.distance ?? 10), direction: f.direction ?? 'normal', ...extrudeValues(f) });
                 } else {
-                    Object.assign(values, { axis: f.axis, angle: fmt(f.angle ?? 360) });
+                    Object.assign(values, { [revolveAxisKey(f.sketchRef)]: axisValue(f.axis), ...revolveValues(f) });
                 }
             }
             return values;
@@ -939,7 +1022,10 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
                     initial={ctx.edit?.feature && (ctx.edit.feature.op === 'extrude' || ctx.edit.feature.op === 'revolve')
                         && ctx.edit.feature.sketchRef === api.values.sketch ? ctx.edit.feature.regions : undefined}
                 />
-                <p className="tb-note tb-hint">Or click a sketch in the view. Click areas of it to use only those.</p>
+                <p className="tb-note tb-hint">
+                    Or click a sketch in the view. Click areas of it to use only those.
+                    {op === 'revolve' ? ' Click a line, centreline or axis to revolve about it.' : ''}
+                </p>
                 {ctx.part && api.values.sketch && (
                     <button type="button" className="tb-link" onClick={() => editItem(ctx.part!.id, api.values.sketch as string)}>
                         Edit sketch
@@ -955,13 +1041,12 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
             const mode = (v.mode as 'add' | 'cut') ?? 'add';
             const finish: FinishOp = {
                 op, mode, distance: Number(v.distance) || 0, direction: v.direction as FinishOp['direction'],
-                axis: v.axis as 'u' | 'v', angle: Number(v.angle) || 360,
+                ...revolveOptions(v, v[revolveAxisKey(sketchRef)], op === 'revolve'),
                 ...(op === 'extrude' ? extrudeOptions(v, mode === 'cut', true) : { through: false }),
             };
             const distance = op === 'extrude' && isBlind(finish.end) ? num(v, 'distance', 'Depth', { positive: true }) : 0;
-            const angle = op === 'revolve' ? num(v, 'angle', 'Angle', { positive: true }) : 360;
             const name = sketchSteps(ctx.part).find((f) => f.id === sketchRef)?.name?.split(' · ')[0] ?? sketchRef;
-            const feature = sketchOpFeature(finish, { sketchRef }, name, distance, angle);
+            const feature = sketchOpFeature(finish, { sketchRef }, name, distance, finish.angle, ctx.edit?.feature);
             if (ctx.edit?.feature && op === 'extrude') {
                 // Switching between a distance and through-all: send both explicitly; options turned off are reset.
                 feature.through = finish.through;
@@ -2064,6 +2149,7 @@ export const noEditTool: ToolDef = {
 export const PART_GROUPS: ToolGroup[] = [
     { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchStartTools },
     { id: 'solid', label: 'Solid', icon: 'extrude', collapse: 4, tools: solidTools },
+    { id: 'reference', label: 'Reference geometry', icon: 'ref-plane', collapse: 2, tools: referenceTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
     { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, othersTool, sketchesTool, sketchVisibilityTool] },
@@ -2103,6 +2189,10 @@ export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketc
     }
     if (feature?.op === 'loft') {
         return feature.sections.every((s) => s.sketchRef) ? loftTool : noEditTool;
+    }
+    const reference = referenceEditor(feature);
+    if (reference) {
+        return reference;
     }
     if (feature ? feature.op === 'extrude' || feature.op === 'revolve' || feature.op === 'sketch' : part.shape.kind === 'sketch') {
         return 'sketch';

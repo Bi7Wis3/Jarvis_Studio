@@ -47,19 +47,38 @@ export type PlaneRef = SketchPlaneName | { planeRef: string };
 /** A part-frame axis through the origin, or an earlier axis step by id. */
 export type AxisRef = 'x' | 'y' | 'z' | { axisRef: string };
 
+/** A point in the part frame: coordinates, or an earlier point step by id. */
+export type PointRef = Vec3 | { pointRef: string };
+
 export type PlaneDefinition =
     | { kind: 'offset'; base: PlaneRef; distance: number }
     /** The base plane turned about one of its own axes (u or v, through its origin) or about an axis, in degrees. */
     | { kind: 'angle'; base: PlaneRef; about: 'u' | 'v' | AxisRef; angle: number }
-    | { kind: 'threePoints'; points: [Vec3, Vec3, Vec3] }
+    | { kind: 'threePoints'; points: [PointRef, PointRef, PointRef] }
     /** Through a point with a normal, e.g. tangent to a curved face where the user clicked. */
-    | { kind: 'pointNormal'; point: Vec3; normal: Vec3; xDir?: Vec3 }
-    | { kind: 'midplane'; a: PlaneRef; b: PlaneRef };
+    | { kind: 'pointNormal'; point: PointRef; normal: Vec3; xDir?: Vec3 }
+    | { kind: 'midplane'; a: PlaneRef; b: PlaneRef }
+    /** Parallel to a plane, through a point. */
+    | { kind: 'parallel'; base: PlaneRef; point: PointRef }
+    /** Perpendicular to an axis, through a point (default: the axis's own point). */
+    | { kind: 'normal'; axis: AxisRef; point?: PointRef };
 
 export type AxisDefinition =
-    | { kind: 'twoPoints'; a: Vec3; b: Vec3 }
-    | { kind: 'pointDirection'; point: Vec3; direction: Vec3 }
-    | { kind: 'planeIntersection'; a: PlaneRef; b: PlaneRef };
+    | { kind: 'twoPoints'; a: PointRef; b: PointRef }
+    | { kind: 'pointDirection'; point: PointRef; direction: Vec3 }
+    | { kind: 'planeIntersection'; a: PlaneRef; b: PlaneRef }
+    /** Along a line or centreline (curve id `line`) of an earlier sketch step. */
+    | { kind: 'sketchLine'; sketchRef: string; line: string }
+    /** Through a point, normal to a plane. */
+    | { kind: 'pointPlane'; point: PointRef; plane: PlaneRef };
+
+/**
+ * What a revolve turns about: the sketch's own u or v axis (through its origin), a line or centreline of its sketch
+ * (by curve id), a part axis or an earlier axis step.
+ */
+export type RevolveAxis = 'u' | 'v' | { line: string } | AxisRef;
+/** How a revolve's Direction 1 angle is measured: one way from the sketch plane, or half to each side. */
+export type RevolveType = 'blind' | 'midPlane';
 
 /** A helix around an axis, used as a sweep path (springs, coils, spiral grooves). */
 export interface HelixPath {
@@ -199,12 +218,12 @@ export interface RegionPicks {
     regions?: [number, number][];
 }
 
-/** A new body made from a sketch: extruded by `extrude`, or revolved about the sketch's u or v axis. */
+/** A new body made from a sketch: extruded by `extrude`, or revolved about the sketch's u or v axis or one of its lines. */
 export interface SketchShape {
     kind: 'sketch';
     sketch: Sketch;
     extrude?: { distance: number; direction?: ExtrudeDirection };
-    revolve?: { axis: 'u' | 'v'; angle?: number };
+    revolve?: { axis: 'u' | 'v' | { line: string }; angle?: number };
 }
 
 /**
@@ -319,8 +338,15 @@ export type Feature = FeatureBase & (
         op: 'extrude'; distance?: number; through?: boolean; direction?: ExtrudeDirection; mode: 'add' | 'cut';
         end?: ExtrudeEnd; from?: number; draft?: number; draftOutward?: boolean; flipSide?: boolean; second?: ExtrudeSide | null;
     } & SketchSource & RegionPicks)
-    /** Sketch revolved about its u or v axis (through the sketch origin) by `angle` degrees (default 360). */
-    | ({ op: 'revolve'; axis: 'u' | 'v'; angle?: number; mode: 'add' | 'cut' } & SketchSource & RegionPicks)
+    /**
+     * Sketch revolved about `axis`. Direction 1: `angle` degrees (default 360) one way (`reverse`: the other way), or
+     * with type midPlane split evenly to both sides of the sketch plane. `angle2` (blind only): also revolve that many
+     * degrees the other way (Direction 2; null: none).
+     */
+    | ({
+        op: 'revolve'; axis: RevolveAxis; angle?: number; mode: 'add' | 'cut';
+        type?: RevolveType; reverse?: boolean; angle2?: number | null;
+    } & SketchSource & RegionPicks)
     /** A sketch as its own history step. It builds nothing; extrude, revolve and loft steps after it use it by id. */
     | { op: 'sketch'; sketch: Sketch }
     /**

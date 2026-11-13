@@ -1,7 +1,7 @@
 // Short, engineer-style text for the history browser: names, icons and parameter summaries of bodies and features.
 
 import type {
-    AxisRef, EdgeSelect, Feature, FastenerType, Part, PlaneRef, Repeat, Shape, Sketch, SketchPlane, SketchSource, Vec3,
+    AxisRef, EdgeSelect, Feature, FastenerType, Part, PlaneRef, PointRef, Repeat, RevolveAxis, Shape, Sketch, SketchPlane, SketchSource, Vec3,
 } from '@jarvis/core';
 
 /** Number in mm without trailing zeros: 4, 2.5, 0.25. */
@@ -135,6 +135,11 @@ export function axisRefText(axis: AxisRef | Vec3, part?: Part): string {
     return Array.isArray(axis) ? `(${axis.map(mm).join(', ')})` : stepName(part, axis.axisRef);
 }
 
+/** Coordinates, or a point step's name. */
+export function pointRefText(point: PointRef, part?: Part): string {
+    return Array.isArray(point) ? `(${point.map(mm).join(', ')})` : stepName(part, point.pointRef);
+}
+
 /** Named plane, a plane step, or "face" for a custom plane picked from a part face. */
 export function planeText(plane: SketchPlane, part?: Part): string {
     if (typeof plane === 'string') {
@@ -153,8 +158,12 @@ function planeIds(plane: PlaneRef | SketchPlane | undefined): string[] {
     return plane && typeof plane === 'object' && 'planeRef' in plane ? [plane.planeRef] : [];
 }
 
-function axisIds(axis: AxisRef | Vec3 | 'u' | 'v' | undefined): string[] {
-    return axis && typeof axis === 'object' && !Array.isArray(axis) ? [axis.axisRef] : [];
+function axisIds(axis: AxisRef | Vec3 | RevolveAxis | undefined): string[] {
+    return axis && typeof axis === 'object' && !Array.isArray(axis) && 'axisRef' in axis ? [axis.axisRef] : [];
+}
+
+function pointIds(point: PointRef | undefined): string[] {
+    return point && !Array.isArray(point) ? [point.pointRef] : [];
 }
 
 function sourceIds(source: SketchSource): string[] {
@@ -169,8 +178,10 @@ export function stepRefs(feature: Feature): string[] {
     const ids: string[] = [];
     switch (feature.op) {
         case 'extrude':
-        case 'revolve':
             ids.push(...sourceIds(feature));
+            break;
+        case 'revolve':
+            ids.push(...sourceIds(feature), ...axisIds(feature.axis));
             break;
         case 'loft':
             feature.sections.forEach((s) => ids.push(...sourceIds(s)));
@@ -200,14 +211,32 @@ export function stepRefs(feature: Feature): string[] {
                 ids.push(...planeIds(d.base), ...(d.about === 'u' || d.about === 'v' ? [] : axisIds(d.about)));
             } else if (d.kind === 'midplane') {
                 ids.push(...planeIds(d.a), ...planeIds(d.b));
+            } else if (d.kind === 'threePoints') {
+                d.points.forEach((p) => ids.push(...pointIds(p)));
+            } else if (d.kind === 'pointNormal') {
+                ids.push(...pointIds(d.point));
+            } else if (d.kind === 'parallel') {
+                ids.push(...planeIds(d.base), ...pointIds(d.point));
+            } else if (d.kind === 'normal') {
+                ids.push(...axisIds(d.axis), ...pointIds(d.point));
             }
             break;
         }
-        case 'axis':
-            if (feature.definition.kind === 'planeIntersection') {
-                ids.push(...planeIds(feature.definition.a), ...planeIds(feature.definition.b));
+        case 'axis': {
+            const d = feature.definition;
+            if (d.kind === 'planeIntersection') {
+                ids.push(...planeIds(d.a), ...planeIds(d.b));
+            } else if (d.kind === 'twoPoints') {
+                ids.push(...pointIds(d.a), ...pointIds(d.b));
+            } else if (d.kind === 'pointDirection') {
+                ids.push(...pointIds(d.point));
+            } else if (d.kind === 'sketchLine') {
+                ids.push(d.sketchRef);
+            } else if (d.kind === 'pointPlane') {
+                ids.push(...pointIds(d.point), ...planeIds(d.plane));
             }
             break;
+        }
     }
     return [...new Set(ids)];
 }
@@ -310,8 +339,13 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
             ];
             return [`Extrude ${amount}${dir}`, ...extras, feature.mode, sourceText(feature, part)].join(' · ');
         }
-        case 'revolve':
-            return `Revolve ${mm(feature.angle ?? 360)}° about ${feature.axis} · ${feature.mode} · ${sourceText(feature, part)}`;
+        case 'revolve': {
+            const axis = feature.axis === 'u' || feature.axis === 'v' ? `sketch ${feature.axis.toUpperCase()}`
+                : typeof feature.axis === 'object' && 'line' in feature.axis ? 'a sketch line' : axisRefText(feature.axis, part);
+            const angle = `${mm(feature.angle ?? 360)}°${feature.type === 'midPlane' ? ' mid plane' : feature.reverse ? ' reversed' : ''}`;
+            const second = feature.type !== 'midPlane' && feature.angle2 ? [`2nd ${mm(feature.angle2)}°`] : [];
+            return [`Revolve ${angle} about ${axis}`, ...second, feature.mode, sourceText(feature, part)].join(' · ');
+        }
         case 'mirror':
             return `Mirror across ${feature.plane}${feature.offset ? ` +${mm(feature.offset)}` : ''}`
                 + (feature.keepOriginal === false ? ' · replace' : '');
@@ -336,13 +370,26 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                     return 'Tangent at point';
                 case 'midplane':
                     return `Midplane of ${planeRefText(d.a, part)} and ${planeRefText(d.b, part)}`;
+                case 'parallel':
+                    return `Parallel to ${planeRefText(d.base, part)} through ${pointRefText(d.point, part)}`;
+                case 'normal':
+                    return `Normal to ${axisRefText(d.axis, part)}${d.point ? ` through ${pointRefText(d.point, part)}` : ''}`;
             }
         }
         case 'axis': {
             const d = feature.definition;
-            return d.kind === 'twoPoints' ? 'Through 2 points'
-                : d.kind === 'pointDirection' ? `Through point along (${d.direction.map(mm).join(', ')})`
-                    : `Where ${planeRefText(d.a, part)} meets ${planeRefText(d.b, part)}`;
+            switch (d.kind) {
+                case 'twoPoints':
+                    return `Through ${pointRefText(d.a, part)} and ${pointRefText(d.b, part)}`;
+                case 'pointDirection':
+                    return `Through ${pointRefText(d.point, part)} along (${d.direction.map(mm).join(', ')})`;
+                case 'planeIntersection':
+                    return `Where ${planeRefText(d.a, part)} meets ${planeRefText(d.b, part)}`;
+                case 'sketchLine':
+                    return `Along a line of ${stepName(part, d.sketchRef)}`;
+                case 'pointPlane':
+                    return `Through ${pointRefText(d.point, part)}, normal to ${planeRefText(d.plane, part)}`;
+            }
         }
         case 'point':
             return `At (${feature.position.map(mm).join(', ')})`;

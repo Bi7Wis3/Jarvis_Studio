@@ -475,6 +475,19 @@ const PATHS: Record<string, ReactNode> = {
         </>
     ),
     centerline: <path d="M3 21L21 3" strokeDasharray="5 2.5 1 2.5" />,
+    'ref-plane': <path d="M2.5 18l5.5-10h13.5l-5.5 10z" />,
+    'ref-axis': (
+        <>
+            <path d="M4 20L20 4" strokeDasharray="3 2.5" />
+            <circle cx="12" cy="12" r="1.8" fill="currentColor" />
+        </>
+    ),
+    'ref-point': (
+        <>
+            <path d="M12 5v14M5 12h14" opacity="0.45" />
+            <circle cx="12" cy="12" r="2.6" fill="currentColor" />
+        </>
+    ),
     scale: (
         <>
             <rect x="3.5" y="11.5" width="9" height="9" rx="1" />

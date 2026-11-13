@@ -11,7 +11,10 @@ import {
 import {
     shapeHalfExtents, type Feature, type Part, type Sketch, type SketchPlane, type SketchPlaneName, type SketchRegion, type Vec3,
 } from '@jarvis/core';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { resolveRevolveAxis } from '@jarvis/core/reference';
 import { anim } from './Scene';
+import { latheProfile, revolveSpan } from './revolveAxis';
 import {
     circleThrough, dist, entitiesToProfiles, entityPoints, nestProfiles, planeFrame, profilePoints, rectCorners, regularPolygon, type Entity,
     type NewEntity, type Pt,
@@ -126,6 +129,9 @@ function RegionFills({ regions, picked, onToggle }: { regions: SketchRegion[]; p
 function Profiles() {
     const geometry = useSketcher((s) => s.geometry);
     const finishing = useSketcher((s) => s.finishing);
+    const plane = useSketcher((s) => s.plane);
+    const offset = useSketcher((s) => s.offset);
+    const context = useSketcher((s) => s.context);
     const ownPicks = useRegionPick((s) => s.sketchKey === null);
     const picks = useRegionPick((s) => s.picked);
     const open = !!finishing;
@@ -145,12 +151,29 @@ function Profiles() {
             const start = finishing.direction === 'reverse' ? -depth : finishing.direction === 'symmetric' ? -depth / 2 : 0;
             return geometry.translate(0, 0, start);
         }
-        const outer = used[0].outer;
-        const along = finishing.axis === 'v';
-        const points = outer.map(([u, v]) => new Vector2(Math.abs(along ? u : v), along ? v : u));
-        const lathe = new LatheGeometry([...points, points[0]], 64, 0, MathUtils.degToRad(finishing.angle || 360));
-        return along ? lathe : lathe.rotateZ(-Math.PI / 2);
-    }, [finishing, used]);
+        // Revolve: a lathe of each outline about the axis, when the axis lies in the sketch plane.
+        let axis: ReturnType<typeof resolveRevolveAxis>['inPlane'] = null;
+        try {
+            axis = resolveRevolveAxis(finishing.axis, { plane, offset, geometry }, context).inPlane;
+        } catch {
+            return null;
+        }
+        if (!axis) {
+            return null;
+        }
+        const [start, sweep] = revolveSpan(finishing.angle || 360, finishing.type, !!finishing.reverse, finishing.angle2 ?? 0);
+        const lathes = used.map(({ outer }) => {
+            const { points, side } = latheProfile(outer, axis!);
+            const lathe = new LatheGeometry([...points, points[0]].map(([r, h]) => new Vector2(r, h)), 64,
+                MathUtils.degToRad(Math.min(start, start + sweep)), MathUtils.degToRad(Math.abs(sweep)));
+            // Lathe frame: y along the axis, z towards the profile at angle 0, x = y × z.
+            const y = new Vector3(axis!.direction[0], axis!.direction[1], 0);
+            const z = new Vector3(side[0], side[1], 0);
+            return lathe.applyMatrix4(new Matrix4().makeBasis(new Vector3().crossVectors(y, z), y, z)
+                .setPosition(axis!.point[0], axis!.point[1], 0)).toNonIndexed();
+        });
+        return lathes.length === 1 ? lathes[0] : mergeGeometries(lathes);
+    }, [finishing, used, plane, offset, geometry, context]);
     useEffect(() => () => fill.dispose(), [fill]);
     useEffect(() => () => solid?.dispose(), [solid]);
     const cut = finishing?.mode === 'cut';

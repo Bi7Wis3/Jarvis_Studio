@@ -4,8 +4,10 @@
 
 import { create } from 'zustand';
 import type {
-    ExtrudeDirection, ExtrudeEnd, ExtrudeSide, Feature, Sketch, SketchConstraint, SketchGeometry, SketchPlane, SketchProfile,
+    ExtrudeDirection, ExtrudeEnd, ExtrudeSide, Feature, RevolveAxis, RevolveType, Sketch, SketchConstraint, SketchGeometry, SketchPlane,
+    SketchProfile,
 } from '@jarvis/core';
+import { sketchCentrelines } from '@jarvis/core/reference';
 import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { useStudio } from './state';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, loadSolver, measure, pointOf, solveGeometry, solverReady } from './solver';
@@ -51,8 +53,12 @@ export interface FinishOp {
     distance: number;
     direction: ExtrudeDirection;
     through: boolean;
-    axis: 'u' | 'v';
+    axis: RevolveAxis;
     angle: number;
+    /** Revolve options beyond axis and angle (see the revolve feature); absent: the defaults. */
+    type?: RevolveType;
+    reverse?: boolean;
+    angle2?: number | null;
     /** Extrude options beyond distance and direction (see the extrude feature); absent: the defaults. */
     end?: ExtrudeEnd;
     from?: number;
@@ -1734,15 +1740,17 @@ export function currentSketch(): Sketch {
 }
 
 /** Defaults for the finish popup: the edited item's values, else the intent's. */
-export function finishDefaults(feature: Feature | null, base: { extrude?: { distance: number; direction?: ExtrudeDirection }; revolve?: { axis: 'u' | 'v'; angle?: number } } | null): FinishOp {
+export function finishDefaults(feature: Feature | null, base: { extrude?: { distance: number; direction?: ExtrudeDirection }; revolve?: { axis: RevolveAxis; angle?: number } } | null): FinishOp {
     const s = get();
+    // A sketch with exactly one centreline revolves about it by default.
+    const centrelines = sketchCentrelines(s);
     const op: FinishOp = {
         op: s.intent === 'revolve' ? 'revolve' : 'extrude',
         mode: s.intent === 'sketch' ? 'sketch' : s.intent === 'cut' ? 'cut' : 'add',
         distance: 10,
         direction: 'normal',
         through: false,
-        axis: 'v',
+        axis: centrelines.length === 1 ? { line: centrelines[0] } : 'v',
         angle: 360,
     };
     if (feature?.op === 'sketch') {
@@ -1755,7 +1763,10 @@ export function finishDefaults(feature: Feature | null, base: { extrude?: { dist
             draft: feature.draft ?? 0, draftOutward: !!feature.draftOutward, flipSide: !!feature.flipSide, second: feature.second ?? null };
     }
     if (feature?.op === 'revolve') {
-        return { ...op, op: 'revolve', mode: feature.mode, axis: feature.axis, angle: feature.angle ?? 360 };
+        return {
+            ...op, op: 'revolve', mode: feature.mode, axis: feature.axis, angle: feature.angle ?? 360,
+            type: feature.type ?? 'blind', reverse: !!feature.reverse, angle2: feature.angle2 ?? null,
+        };
     }
     if (base?.extrude) {
         return { ...op, op: 'extrude', mode: 'new', distance: base.extrude.distance, direction: base.extrude.direction ?? 'normal' };

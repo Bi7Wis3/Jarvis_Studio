@@ -254,7 +254,7 @@ export function Manipulators({ offsets }: { offsets: Record<string, Vec3> }) {
         sketch: finishing ? {
             plane, offset: planeOffset, context, regions,
             points: geometry.points.filter((p) => p.id !== 'origin').map((p) => [p.u, p.v]),
-            part: parts?.find((p) => p.id === sketchPart) ?? null,
+            part: parts?.find((p) => p.id === sketchPart) ?? null, geometry,
         } : null,
     }), [picks, pickKey, finishing, plane, planeOffset, context, geometry, sketchPart, regions, parts]);
     const handles = useMemo(() => handlesFor(toolId, values, ctx, env), [toolId, values, ctx, env]);

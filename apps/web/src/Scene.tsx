@@ -16,6 +16,7 @@ import { edgeSegments, faceSoup, nearestEdge, pixelSize, type P3, type PickedEnt
 import { clearPicked, pickEntity, select, setWorkspace, useStudio } from './state';
 import { chooseFace, useSketcher } from './sketcher';
 import { planePickerSize, SketchLayer, SketchSteps, sketchView } from './SketchLayer';
+import { ReferenceGeometry } from './ReferenceGeometry';
 import { PartDecals } from './Decals';
 import { Manipulators } from './Manipulators';
 import { usePartPicks } from './pickView';
@@ -912,6 +913,10 @@ export function Scene({ project }: { project: Project }) {
                 <GhostPart key={part.id} part={part} meshKey={preview?.keys[part.id] ?? null} offset={offsets[part.id] ?? NO_OFFSET} />
             ))}
             <SketchSteps
+                part={(workspace === 'part' && project.parts.find((p) => p.id === activePart)) || null}
+                offset={(activePart && offsets[activePart]) || [0, 0, 0]}
+            />
+            <ReferenceGeometry
                 part={(workspace === 'part' && project.parts.find((p) => p.id === activePart)) || null}
                 offset={(activePart && offsets[activePart]) || [0, 0, 0]}
             />

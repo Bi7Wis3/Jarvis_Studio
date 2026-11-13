@@ -6,9 +6,9 @@ import {
     type Shape3D, type Wire,
 } from 'replicad';
 import type {
-    ExtrudeDirection, ExtrudeEnd, ExtrudeSide, Sketch, SketchPlaneName, SketchProfile, SketchRegion, Vec3,
+    ExtrudeDirection, ExtrudeEnd, ExtrudeSide, Feature, RevolveAxis, RevolveType, Sketch, SketchPlaneName, SketchProfile, SketchRegion, Vec3,
 } from '@jarvis/core';
-import { resolvePlane } from '@jarvis/core/reference';
+import { resolvePlane, resolveRevolveAxis } from '@jarvis/core/reference';
 
 type P2 = [number, number];
 
@@ -431,27 +431,87 @@ export function extrudeSketch(sketch: Sketch, range: [number, number], regions?:
     return asShape(solids);
 }
 
-/** Revolves the sketch (or the regions picked by `regions`) about its u or v axis through the sketch origin. */
-export function revolveSketch(sketch: Sketch, axis: 'u' | 'v', angle = 360, regions?: P2[]): Shape3D {
-    const parts = selectedRegions(sketch, regions);
-    if (parts.length > 1 || parts[0] !== sketch) {
-        return fuseRegions(parts.map((part) => revolveSketch(part, axis, angle)));
-    }
-    if (axis !== 'u' && axis !== 'v') {
-        throw new Error('revolve axis must be "u" or "v"');
-    }
+/** Revolve options beyond axis and angle (see the revolve feature). */
+export interface RevolveOptions {
+    /** The part's steps before the revolve, for an axis step. */
+    features?: Feature[];
+    type?: RevolveType;
+    reverse?: boolean;
+    angle2?: number | null;
+}
+
+/** What the user sees the axis called, for messages. */
+function axisName(axis: RevolveAxis): string {
+    if (axis === 'u') return 'Sketch U (horizontal) axis';
+    if (axis === 'v') return 'Sketch V (vertical) axis';
+    if (typeof axis === 'string') return `${axis.toUpperCase()} axis`;
+    return 'line' in axis ? 'axis line' : `axis "${axis.axisRef}"`;
+}
+
+/** OpenCascade's validity check (an axis outside the sketch plane can still pass through the profile). */
+function checked(shape: Shape3D): boolean {
+    const analyzer = new (getOC().BRepCheck_Analyzer)(shape.wrapped, true, false);
+    const ok = analyzer.IsValid();
+    analyzer.delete();
+    return ok;
+}
+
+function validAxis(axis: unknown): axis is RevolveAxis {
+    if (axis === 'u' || axis === 'v' || axis === 'x' || axis === 'y' || axis === 'z') return true;
+    const o = axis as { line?: unknown; axisRef?: unknown } | null;
+    return !!o && typeof o === 'object' && (typeof o.line === 'string' || typeof o.axisRef === 'string');
+}
+
+/** Start and sweep (degrees) of a revolve from its Direction 1 angle, type, reverse and Direction 2 angle. */
+export function revolveRange(angle: number, options: Omit<RevolveOptions, 'features'> = {}): [number, number] {
     if (!(Math.abs(angle) > 1e-6 && Math.abs(angle) <= 360)) {
         throw new Error('revolve angle must be between 0 and 360 degrees');
     }
-    const { faces, frame, outlines } = sketchFaces(sketch);
-    // Profiles must stay on one side of the axis (touching it is fine).
-    const across = axis === 'u' ? 1 : 0;
-    const values = outlines.flat().map((p) => p[across]);
-    if (Math.min(...values) < -1e-6 && Math.max(...values) > 1e-6) {
-        throw new Error(`the sketch crosses the ${axis} axis; keep it on one side to revolve`);
+    if (options.type === 'midPlane') {
+        return [-Math.abs(angle) / 2, Math.abs(angle)];
     }
-    const direction = axis === 'u' ? frame.u : frame.v;
-    return asShape(faces.map((face) => revolution(face, frame.origin, direction, angle)));
+    const sign = (options.reverse ? -1 : 1) * Math.sign(angle);
+    const second = options.angle2 ?? 0;
+    if (!(second >= 0)) {
+        throw new Error('the Direction 2 angle must be positive');
+    }
+    if (Math.abs(angle) + second > 360 + 1e-9) {
+        throw new Error('the two directions add up to more than 360 degrees');
+    }
+    return [-sign * second, sign * (Math.abs(angle) + second)];
+}
+
+/**
+ * Revolves the sketch (or the regions picked by `regions`) about `axis`: its u or v axis through the sketch origin,
+ * one of its lines or centrelines, or an axis of the part.
+ */
+export function revolveSketch(sketch: Sketch, axis: RevolveAxis, angle = 360, regions?: P2[], options: RevolveOptions = {}): Shape3D {
+    if (!validAxis(axis)) {
+        throw new Error('revolve axis must be "u", "v", { line: id }, a part axis or { axisRef: id }');
+    }
+    const [start, sweep] = revolveRange(angle, options);
+    // Resolved on the whole sketch: its picked regions carry no lines.
+    const resolved = resolveRevolveAxis(axis, sketch, options.features ?? []);
+    const name = axisName(axis);
+    return fuseRegions(selectedRegions(sketch, regions).map((part) => {
+        const { faces, outlines } = sketchFaces(part);
+        if (resolved.inPlane) {
+            // Profiles must stay on one side of the axis (touching it is fine).
+            const { point: [pu, pv], direction: [du, dv] } = resolved.inPlane;
+            const sides = outlines.flat().map(([u, v]) => du * (v - pv) - dv * (u - pu));
+            if (Math.min(...sides) < -1e-6 && Math.max(...sides) > 1e-6) {
+                throw new Error(`the sketch crosses the ${name}; keep it on one side to revolve`);
+            }
+        }
+        return asShape(faces.map((face) => {
+            const from = Math.abs(start) > 1e-9 ? face.rotate(start, resolved.point, resolved.direction) : face;
+            const solid = revolution(from, resolved.point, resolved.direction, sweep);
+            if (!resolved.inPlane && !checked(solid)) {
+                throw new Error(`the sketch crosses the ${name}; keep it on one side to revolve`);
+            }
+            return solid;
+        }));
+    }));
 }
 
 /** Range along the sketch normal that passes the whole of `shape` for a through extrusion. */
