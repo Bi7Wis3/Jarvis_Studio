@@ -1107,7 +1107,10 @@ function stepTool(shape: Shape3D | null, f: Feature, state: BuildState, index: n
         case 'revolve': {
             const sketch = resolveSketch(f, state, index);
             if (f.mode === 'cut') needBody(shape);
-            return { tool: revolveSketch(sketch, f.axis, f.angle ?? 360, f.regions), mode: f.mode, what: 'revolve' };
+            const tool = revolveSketch(sketch, f.axis, f.angle ?? 360, f.regions, {
+                features: before(state, index), type: f.type, reverse: f.reverse, angle2: f.angle2,
+            });
+            return { tool, mode: f.mode, what: 'revolve' };
         }
         case 'loft': {
             const sections = (f.sections ?? []).map((source, i) => {

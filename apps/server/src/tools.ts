@@ -56,6 +56,9 @@ const planeRef = z.union([z.enum(['top', 'front', 'right']), z.object({ planeRef
     .describe('A base plane, or { planeRef: id } of an earlier plane step');
 const axisRef = z.union([z.enum(['x', 'y', 'z']), z.object({ axisRef: z.string() })])
     .describe('A part axis through the origin, or { axisRef: id } of an earlier axis step');
+const pointRef = z.union([vec3, z.object({ pointRef: z.string() })])
+    .describe('A point [x, y, z] in the part frame, or { pointRef: id } of an earlier point step');
+const sketchLineAxis = z.object({ line: z.string() }).describe('A line or centreline of the sketch, by curve id (sketch geometry)');
 const sketchProfile = z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('rect'), center: point2, width: z.number().positive(), height: z.number().positive(),
         radius: z.number().min(0).optional().describe('Corner radius') }),
@@ -153,7 +156,10 @@ const shape = z.discriminatedUnion('kind', [
         kind: z.literal('sketch'),
         sketch,
         extrude: z.object({ distance: z.number(), direction: extrudeDirection.optional() }).optional(),
-        revolve: z.object({ axis: z.enum(['u', 'v']), angle: z.number().optional().describe('Degrees, default 360') }).optional(),
+        revolve: z.object({
+            axis: z.union([z.enum(['u', 'v']), sketchLineAxis]),
+            angle: z.number().optional().describe('Degrees, default 360'),
+        }).optional(),
     }).describe('A body from a 2D sketch, extruded or revolved (set exactly one). Exact CAD body, no automatic rounding'),
 ]);
 
@@ -267,10 +273,17 @@ const feature = z.discriminatedUnion('op', [
         op: z.literal('revolve'),
         ...sketchSource,
         regions: regionPicks,
-        axis: z.enum(['u', 'v']),
-        angle: z.number().optional(),
+        axis: z.union([z.enum(['u', 'v']), sketchLineAxis, axisRef])
+            .describe('Axis of revolution: the sketch\'s u or v axis through its origin, { line: id } of the sketch, '
+                + 'a part axis or { axisRef: id }'),
+        angle: z.number().optional().describe('Direction 1 angle, degrees, default 360'),
+        type: z.enum(['blind', 'midPlane']).optional()
+            .describe('Direction 1: blind (one way, default) or midPlane (the angle split evenly to both sides)'),
+        reverse: z.boolean().optional().describe('Blind: revolve the other way'),
+        angle2: z.number().positive().nullable().optional()
+            .describe('Blind only: also revolve this many degrees the opposite way (Direction 2); null removes it'),
         mode: z.enum(['add', 'cut']),
-    }),
+    }).describe('A sketch revolved about an axis (boss or cut), with Blind or Mid plane angle and an optional second direction'),
     z.object({
         ...featureBase,
         op: z.literal('sketch'),
@@ -297,18 +310,24 @@ const feature = z.discriminatedUnion('op', [
         definition: z.discriminatedUnion('kind', [
             z.object({ kind: z.literal('offset'), base: planeRef, distance: z.number() }),
             z.object({ kind: z.literal('angle'), base: planeRef, about: z.union([z.enum(['u', 'v']), axisRef]), angle: z.number() }),
-            z.object({ kind: z.literal('threePoints'), points: z.tuple([vec3, vec3, vec3]) }),
-            z.object({ kind: z.literal('pointNormal'), point: vec3, normal: vec3, xDir: vec3.optional() }),
+            z.object({ kind: z.literal('threePoints'), points: z.tuple([pointRef, pointRef, pointRef]) }),
+            z.object({ kind: z.literal('pointNormal'), point: pointRef, normal: vec3, xDir: vec3.optional() }),
             z.object({ kind: z.literal('midplane'), a: planeRef, b: planeRef }),
+            z.object({ kind: z.literal('parallel'), base: planeRef, point: pointRef }).describe('Parallel to a plane, through a point'),
+            z.object({ kind: z.literal('normal'), axis: axisRef, point: pointRef.optional() })
+                .describe('Perpendicular to an axis, through a point (default: on the axis)'),
         ]),
     }).describe('Construction plane; sketches and other steps use it with { planeRef: id }'),
     z.object({
         ...featureBase,
         op: z.literal('axis'),
         definition: z.discriminatedUnion('kind', [
-            z.object({ kind: z.literal('twoPoints'), a: vec3, b: vec3 }),
-            z.object({ kind: z.literal('pointDirection'), point: vec3, direction: vec3 }),
+            z.object({ kind: z.literal('twoPoints'), a: pointRef, b: pointRef }),
+            z.object({ kind: z.literal('pointDirection'), point: pointRef, direction: vec3 }),
             z.object({ kind: z.literal('planeIntersection'), a: planeRef, b: planeRef }),
+            z.object({ kind: z.literal('sketchLine'), sketchRef: z.string(), line: z.string() })
+                .describe('Along a line or centreline (curve id) of an earlier sketch step'),
+            z.object({ kind: z.literal('pointPlane'), point: pointRef, plane: planeRef }).describe('Through a point, normal to a plane'),
         ]),
     }).describe('Construction axis for revolves, coils and circular patterns: { axisRef: id }'),
     z.object({ ...featureBase, op: z.literal('point'), position: vec3 }),
@@ -396,6 +415,9 @@ export function checkHistory(part: Pick<Part, 'id' | 'features'>): void {
             }
             if (typeof o.axisRef === 'string') {
                 expect(where, o.axisRef, 'axis');
+            }
+            if (typeof o.pointRef === 'string') {
+                expect(where, o.pointRef, 'point');
             }
             Object.values(o).forEach((v) => scan(where, v));
         }

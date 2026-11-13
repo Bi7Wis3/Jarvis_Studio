@@ -3,8 +3,10 @@
 // Manipulators.tsx draws them and runs the drags.
 
 import { Euler, MathUtils, Matrix4, Quaternion, Vector3 } from 'three';
-import type { Feature, Part, SketchPlane, SketchRegion, Vec3 } from '@jarvis/core';
+import type { Feature, Part, SketchGeometry, SketchPlane, SketchRegion, Vec3 } from '@jarvis/core';
+import { resolveRevolveAxis } from '@jarvis/core/reference';
 import { pickedRegions } from './regionPick';
+import { axisFromValue, revolveAxisKey } from './revolveAxis';
 import { planeFrame, profilePoints, type Pt } from './sketchMath';
 import type { Ctx, Values } from './toolDefs';
 
@@ -26,7 +28,9 @@ export interface HandleEnv {
     picks: Pt[];
     pickKey: string | null;
     /** The open sketch (Exit sketch form). */
-    sketch?: { plane: SketchPlane; offset: number; context: Feature[]; regions: SketchRegion[]; points: Pt[]; part: Part | null } | null;
+    sketch?: {
+        plane: SketchPlane; offset: number; context: Feature[]; regions: SketchRegion[]; points: Pt[]; part: Part | null; geometry?: SketchGeometry;
+    } | null;
 }
 
 type HandleFn = (values: Values, ctx: Ctx, env: HandleEnv) => Handle[];
@@ -134,6 +138,10 @@ interface SketchPlace {
     offset: number;
     before: Feature[];
     centre: Pt;
+    /** The sketch's curves (for a line used as a revolve axis). */
+    geometry?: SketchGeometry;
+    /** The steps an axis step resolves against (default: `before`). */
+    steps?: Feature[];
 }
 
 /** The distance arrow of an extrude or cut: at the profile centre, along the plane normal (or against it). */
@@ -152,22 +160,27 @@ function extrudeHandle(place: SketchPlace, values: Values, label: string): Handl
     }];
 }
 
-/** The angle arc of a revolve: about the sketch u or v axis, starting at the profile centre. */
-function revolveHandle(place: SketchPlace, values: Values): Handle[] {
+/**
+ * The Direction 1 angle arc of a revolve: about its axis (sketch u or v, a line of the sketch or an axis step),
+ * starting at the profile centre, turning the other way when reversed. None for Mid plane (the arc would have to
+ * move its start while dragged).
+ */
+function revolveHandle(place: SketchPlace, values: Values, axisRaw: unknown): Handle[] {
     const angle = numberOf(values, 'angle');
-    if (angle === null) {
+    if (angle === null || values.revolveType === 'midPlane') {
         return [];
     }
     const f = planeFrame(place.plane, place.offset, place.before);
-    const axisLocal = values.axis === 'u' ? f.u : f.v;
+    const axis = resolveRevolveAxis(axisFromValue(axisRaw), { plane: place.plane, offset: place.offset, geometry: place.geometry },
+        place.steps ?? place.before);
+    const d = values.reverse ? scale(axis.direction, -1) : axis.direction;
     const centre = add(f.origin, add(scale(f.u, place.centre[0]), scale(f.v, place.centre[1])));
-    const along = dot(sub(centre, f.origin), axisLocal);
-    const foot = add(f.origin, scale(axisLocal, along));
+    const foot = add(axis.point, scale(d, dot(sub(centre, axis.point), d)));
     const out = sub(centre, foot);
-    // A profile centred on the axis: start along the other sketch axis.
-    const startLocal = len(out) > 1e-6 ? unit(out) : values.axis === 'u' ? f.v : f.u;
+    // A profile centred on the axis: start across the axis in the sketch plane.
+    const startLocal = len(out) > 1e-6 ? unit(out) : unit(cross(f.n, d));
     return [{
-        kind: 'angle', key: 'angle', origin: point(place.matrix, foot), axis: unit(direction(place.matrix, axisLocal)),
+        kind: 'angle', key: 'angle', origin: point(place.matrix, foot), axis: unit(direction(place.matrix, d)),
         start: unit(direction(place.matrix, startLocal)), radius: len(out), value: angle, min: 0, max: 360, step: DEFAULT_STEP.angle,
     }];
 }
@@ -183,9 +196,11 @@ function stepPlace(values: Values, ctx: Ctx, env: HandleEnv): SketchPlace | null
     }
     const sketch = step.sketch;
     const picks = env.pickKey === `${part.id}/${step.id}` ? env.picks : [];
+    const edited = ctx.edit?.feature ? features.findIndex((f) => f.id === ctx.edit!.feature!.id) : -1;
     return {
         matrix: partMatrix(part), plane: sketch.plane, offset: sketch.offset ?? 0, before: features.slice(0, index),
         centre: profileCentre(sketch.regions ?? [], picks, sketch.profiles.flatMap(profilePoints)),
+        geometry: sketch.geometry, steps: edited >= 0 ? features.slice(0, edited) : features,
     };
 }
 
@@ -196,7 +211,7 @@ function sketcherPlace(env: HandleEnv): SketchPlace | null {
     }
     return {
         matrix: partMatrix(s.part), plane: s.plane, offset: s.offset, before: s.context,
-        centre: profileCentre(s.regions, env.pickKey === null ? env.picks : [], s.points),
+        centre: profileCentre(s.regions, env.pickKey === null ? env.picks : [], s.points), geometry: s.geometry,
     };
 }
 
@@ -215,7 +230,7 @@ export const TOOL_HANDLES: Record<string, HandleFn> = {
     },
     revolve: (values, ctx, env) => {
         const place = stepPlace(values, ctx, env);
-        return place ? revolveHandle(place, values) : [];
+        return place ? revolveHandle(place, values, values[revolveAxisKey(values.sketch)]) : [];
     },
     'sk-finish': (values, _ctx, env) => {
         const place = sketcherPlace(env);
@@ -225,7 +240,7 @@ export const TOOL_HANDLES: Record<string, HandleFn> = {
         if (values.op === 'extrude' || (values.op === 'cut' && !values.through)) {
             return extrudeHandle(place, values, values.op === 'cut' ? 'Depth' : 'Distance');
         }
-        return values.op === 'revolve' ? revolveHandle(place, values) : [];
+        return values.op === 'revolve' ? revolveHandle(place, values, values.axis) : [];
     },
     move: (values) => {
         const position = vecOf(values, 'pos');

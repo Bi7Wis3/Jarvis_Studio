@@ -107,6 +107,36 @@ describe('handle registry', () => {
         expect(arc.radius).toBeCloseTo(20);
     });
 
+    it('turns the revolve arc about a centreline or an axis step, reversed, and shows none for mid plane', () => {
+        const geometry = {
+            points: [{ id: 'a', u: 10, v: 0 }, { id: 'b', u: 10, v: 10 }],
+            curves: [{ id: 'cl', kind: 'line' as const, a: 'a', b: 'b', construction: true }],
+            constraints: [],
+        };
+        const env: HandleEnv = {
+            picks: [], pickKey: null,
+            sketch: { plane: 'front', offset: 0, context: [], regions: [rect([20, 5], 10, 10)], points: [], part: null, geometry },
+        };
+        const [arc] = handlesFor('sk-finish', { op: 'revolve', axis: 'line:cl', angle: '90' }, ctxOf(null), env);
+        if (arc?.kind !== 'angle') throw new Error('angle handle expected');
+        close(arc.origin, [10, 5, 0]);
+        close(arc.axis, [0, 1, 0]);
+        expect(arc.radius).toBeCloseTo(10);
+        const [back] = handlesFor('sk-finish', { op: 'revolve', axis: 'line:cl', angle: '90', reverse: true }, ctxOf(null), env);
+        if (back?.kind !== 'angle') throw new Error('angle handle expected');
+        close(back.axis, [0, -1, 0]);
+        expect(handlesFor('sk-finish', { op: 'revolve', axis: 'line:cl', angle: '90', revolveType: 'midPlane' }, ctxOf(null), env)).toEqual([]);
+        // Revolve on a sketch step: the axis is that sketch's own field; here an axis step along Z at x = 30.
+        const p = part([
+            sketchStep([rect([5, -3], 20, 10)]),
+            { id: 'ax', op: 'axis', definition: { kind: 'twoPoints', a: [30, 10, 0], b: [30, 10, 1] } } as Feature,
+        ], [0, 0, 0]);
+        const [step] = handlesFor('revolve', { sketch: 'sketch-1', axis_sketch_1: 'v', 'axis_sketch-1': 'axis:ax', angle: '45' }, ctxOf(p), noEnv);
+        if (step?.kind !== 'angle') throw new Error('angle handle expected');
+        close(step.axis, [0, 0, 1]);
+        close(step.origin, [30, 10, 3]);
+    });
+
     it('describes Move, Rotate, Duplicate and Hole', () => {
         const p0 = part([], [1, 2, 3], [10, 20, 30]);
         expect(handlesFor('move', { pos0: '4', pos1: '5', pos2: '6', step: '10' }, ctxOf(p0), noEnv))
