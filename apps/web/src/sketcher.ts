@@ -20,6 +20,7 @@ import {
     offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type Transform,
 } from './sketchEdit';
 import { fixAll, fixProblem, fullyDefine, type Problem } from './sketchRepair';
+import { unmetConstraints } from './sketchCheck';
 import { dist, mid, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
 import { snapCursor, type QuickSnap, type Snap, type SnapKind } from './snapping';
 
@@ -261,6 +262,16 @@ function commit(next: SketchGeometry, patch: Partial<SketcherState> = {}, messag
         set({
             message: message ?? `Over-constrained${names.length ? `: conflicts with ${names.join(', ')}` : ''}. Not applied.`,
             conflicting: result.conflicting,
+        });
+        return false;
+    }
+    // A solve can report success without meeting every relation: refuse that too.
+    const unmet = unmetConstraints(result.geometry);
+    if (unmet.length) {
+        const names = unmet.map((id) => describe(next, id)).filter(Boolean);
+        set({
+            message: message ?? `Cannot solve${names.length ? `: ${names.join(', ')} would not hold` : ''}. Not applied.`,
+            conflicting: unmet,
         });
         return false;
     }
@@ -1178,7 +1189,9 @@ function editClick(tool: EditTool, raw: Pt, tolerance: number): void {
                     : 'Nothing to extend to: the end must be free and point at another curve.' });
                 return;
             }
-            commit(plan.g, { editPreview: [], selection: [] });
+            if (commit(plan.g, { editPreview: [], selection: [] }) && 'dropped' in plan && plan.dropped) {
+                set({ message: `Extended; removed ${plan.dropped} relation${plan.dropped === 1 ? '' : 's'} that held the end or the line's length.` });
+            }
             return;
         }
         case 'fillet':

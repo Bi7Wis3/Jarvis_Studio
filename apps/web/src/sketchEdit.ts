@@ -277,6 +277,8 @@ export interface ExtendPlan {
     g: SketchGeometry;
     /** The piece that gets added, to highlight. */
     added: NewEntity;
+    /** How many relations and dimensions on the moved end (or the line's length) had to go. */
+    dropped: number;
 }
 
 /** Lengthens the line or arc at its end nearer `at` to the next curve it meets. */
@@ -335,11 +337,20 @@ export function extendAt(g: SketchGeometry, curveId: string, at: Pt): ExtendPlan
     }
     const target = hit;
     let out: SketchGeometry = { ...g, points: g.points.map((p) => (p.id === end ? { ...p, u: target.at[0], v: target.at[1] } : p)) };
-    // Its length and the dimensions and locks on the moved end would pull it back.
-    out = dropConstraints(out, (k) => (k.kind === 'length' && k.line === c.id) || (k.kind === 'fix' && k.point === end)
-        || (k.kind === 'distance' && (k.a === end || k.b === end)));
+    // What held the end where it was would pull it back: its locks, dimensions, the curves it was held on (e.g. where
+    // a trim cut it) and points coincident with it; as with Trim, a line's length, middle and equal length go too.
+    const before = out.constraints.length;
+    out = dropConstraints(out, (k) => (k.kind === 'fix' && k.point === end)
+        || (k.kind === 'distance' && (k.a === end || k.b === end))
+        || (k.kind === 'pointOnCurve' && k.point === end)
+        || (k.kind === 'coincident' && (k.a === end || k.b === end))
+        || (k.kind === 'midpoint' && k.point === end)
+        || (k.kind === 'symmetric' && (k.a === end || k.b === end))
+        || (c.kind === 'line' && ((k.kind === 'length' && k.line === c.id) || (k.kind === 'midpoint' && k.line === c.id)
+            || (k.kind === 'equal' && (k.a === c.id || k.b === c.id)))));
+    const dropped = before - out.constraints.length;
     out = addConstraint(out, { kind: 'pointOnCurve', point: end, curve: target.by }).g;
-    return { g: out, added };
+    return { g: out, added, dropped };
 }
 
 // ---- Fillet and chamfer -------------------------------------------------------------------------------
