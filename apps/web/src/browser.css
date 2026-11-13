@@ -175,7 +175,14 @@
 }
 
 .pm .tb-field {
-    grid-template-columns: 76px 1fr;
+    grid-template-columns: 64px 1fr;
+}
+
+.pm .tb-field select {
+    min-width: 0;
+    padding-left: 6px;
+    padding-right: 4px;
+    font-size: 11.5px;
 }
 
 .pm .tb-check {
@@ -1245,11 +1252,40 @@
     list-style: none;
 }
 
-.br-caret {
-    width: 10px;
-    margin-left: -12px;
+.br .br-caret {
+    flex: none;
+    width: 14px;
+    margin-left: -16px;
+    padding: 0;
     color: var(--muted);
     font-size: 9px;
+    cursor: pointer;
+}
+
+.br .br-caret:hover {
+    color: var(--text);
+}
+
+.br-pattern-icon {
+    flex: none;
+    width: 12px;
+    color: #86d5c9;
+    font-size: 12px;
+    line-height: 1;
+    text-align: center;
+}
+
+.br-row.component.pattern .br-name {
+    color: #b9e6de;
+}
+
+.br-tag {
+    flex: none;
+    padding: 0 5px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 9.5px;
 }
 
 .br-row.component.nested {
@@ -1574,4 +1610,95 @@
 .ft-row.recent.empty .ft-name {
     color: var(--muted);
     font-style: italic;
+}
+
+/* While a tool's form is open the panel is a little wider: forms need more room than the tree. */
+.br.pm-on {
+    width: 288px;
+}
+
+/* Evaluate tools (measure, mass properties): result lists in the property manager. */
+.ev {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ev-block {
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.16);
+    padding: 6px 8px;
+}
+
+.ev-title {
+    margin-bottom: 4px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.ev-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+}
+
+.ev-list > div {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 8px;
+    font-size: 11.5px;
+    line-height: 1.4;
+}
+
+.ev-list dt {
+    color: var(--muted);
+}
+
+.ev-list dd {
+    margin: 0;
+    color: #dfe5ee;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+
+.ev-small {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.ev-error {
+    color: #ffb4b4;
+}
+
+.ev-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.br .ev-actions button {
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    color: #c6cedb;
+    font-size: 11.5px;
+}
+
+.br .ev-actions button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text);
+}
+
+.br .ev-actions button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.ev-busy {
+    color: var(--muted);
+    font-size: 11px;
 }

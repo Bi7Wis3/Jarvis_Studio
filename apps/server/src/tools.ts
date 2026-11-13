@@ -42,6 +42,14 @@ export async function callTool(tool: AnyTool, args: unknown) {
 }
 
 const vec3 = z.tuple([z.number(), z.number(), z.number()]);
+/** A face picked in the view: a point on it and its outward normal (part frame). */
+const facePick = z.object({ at: vec3, normal: vec3.optional() });
+/** Edges picked in the view (a point on each), the edges of picked faces, and whether to follow smooth chains. */
+const edgePicks = {
+    at: z.array(vec3).optional().describe('Picked edges: a point on each, in the part frame'),
+    faces: z.array(facePick).optional().describe('Picked faces: all their edges are used'),
+    tangent: z.boolean().optional().describe('Follow each picked edge along its smooth chain'),
+};
 
 const point2 = z.tuple([z.number(), z.number()]);
 const planeRef = z.union([z.enum(['top', 'front', 'right']), z.object({ planeRef: z.string() })])
@@ -86,6 +94,7 @@ const regionPicks = z.array(point2).optional()
     .describe('Sketcher-made sketches only: points in sketch (u, v); the step uses just the closed areas containing '
         + 'them, so one sketch can feed several extrudes and cuts. Leave out for the whole sketch');
 const extrudeDirection = z.enum(['normal', 'reverse', 'symmetric']);
+const extrudeEnd = z.enum(['blind', 'throughAll', 'upToNext']);
 /** Give exactly one: an inline sketch, or the id of an earlier sketch step of the same part. */
 const sketchSource = {
     sketch: sketch.optional(),
@@ -193,13 +202,31 @@ const featureBase = {
     suppressed: z.boolean().optional(),
 };
 const feature = z.discriminatedUnion('op', [
-    z.object({ ...featureBase, op: z.literal('fillet'), radius: z.number().positive(), edges: edgeSelect.optional() }),
-    z.object({ ...featureBase, op: z.literal('chamfer'), size: z.number().positive(), edges: edgeSelect.optional() }),
+    z.object({
+        ...featureBase,
+        op: z.literal('fillet'),
+        radius: z.number().positive(),
+        edges: edgeSelect.optional().describe('An edge group; ignored when edges or faces are picked'),
+        ...edgePicks,
+        radius2: z.number().positive().optional().describe('Radius at the far end of each edge (variable fillet)'),
+    }),
+    z.object({
+        ...featureBase,
+        op: z.literal('chamfer'),
+        size: z.number().positive(),
+        edges: edgeSelect.optional().describe('An edge group; ignored when edges or faces are picked'),
+        ...edgePicks,
+        distance2: z.number().positive().optional().describe('Second distance, for an unequal chamfer'),
+        angle: z.number().gt(0).lt(90).optional().describe('Degrees, for a distance-angle chamfer'),
+        side: vec3.optional().describe('Normal of the face that size is measured on'),
+    }),
     z.object({
         ...featureBase,
         op: z.literal('shell'),
         thickness: z.number().positive().describe('Wall thickness; for printing use a multiple of the nozzle, 1.6-2.4'),
         open: z.array(faceSelect).optional().describe('Faces removed to open the shell, e.g. ["top"] for a tray'),
+        remove: z.array(facePick).optional().describe('Faces to remove, picked in the view'),
+        outward: z.boolean().optional().describe('Grow the wall outside the body instead of inside'),
     }),
     z.object({ ...featureBase, op: z.literal('add'), shape, ...placement }),
     z.object({ ...featureBase, op: z.literal('cut'), shape, ...placement }),
@@ -218,10 +245,23 @@ const feature = z.discriminatedUnion('op', [
         ...sketchSource,
         regions: regionPicks,
         distance: z.number().positive().optional(),
-        through: z.boolean().optional().describe('Through the whole part instead of a distance'),
+        through: z.boolean().optional().describe('Through the whole part instead of a distance (same as end throughAll)'),
         direction: extrudeDirection.optional(),
         mode: z.enum(['add', 'cut']),
-    }),
+        end: extrudeEnd.optional().describe('Where direction 1 stops: blind (distance, default), throughAll, or upToNext '
+            + '(a boss grows until it meets the body ahead; a cut goes through the first wall of material it meets)'),
+        from: z.number().optional().describe('Start this far from the sketch plane along direction 1, mm (default 0)'),
+        draft: z.number().min(0).max(89).optional().describe('Taper of the side walls in degrees, narrowing along the extrusion'),
+        draftOutward: z.boolean().optional().describe('The draft widens instead'),
+        flipSide: z.boolean().optional().describe('Cut only: remove what is outside the profile (within the depth) instead'),
+        second: z.object({
+            end: extrudeEnd,
+            distance: z.number().positive().optional().describe('For end blind'),
+            draft: z.number().min(0).max(89).optional(),
+            draftOutward: z.boolean().optional(),
+        }).nullable().optional().describe('Also extrude the opposite way from the same start (not with direction symmetric); null removes it'),
+    }).describe('A sketch extruded into the part (boss or cut), with SolidWorks-style end conditions, offset start, draft, '
+        + 'flip side and a second direction'),
     z.object({
         ...featureBase,
         op: z.literal('revolve'),
@@ -313,9 +353,13 @@ const feature = z.discriminatedUnion('op', [
     z.object({
         ...featureBase,
         op: z.literal('draft'),
-        faces: z.array(faceSelect).min(1),
+        faces: z.array(faceSelect).optional(),
+        picked: z.array(facePick).optional().describe('Faces to draft, picked in the view'),
+        tangent: z.boolean().optional(),
         angle: z.number(),
-        neutral: planeRef,
+        neutral: planeRef.optional(),
+        neutralFace: facePick.optional().describe('A flat face picked as the neutral plane'),
+        flip: z.boolean().optional().describe('Reverse the pull direction'),
     }),
     z.object({
         ...featureBase,

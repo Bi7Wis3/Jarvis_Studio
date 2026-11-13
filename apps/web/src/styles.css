@@ -1546,3 +1546,17 @@ footer {
         display: none;
     }
 }
+
+/* Value next to a drag handle in the 3D view while it is dragged. */
+.mp-label {
+    transform: translate(14px, -50%);
+    padding: 2px 6px;
+    border: 1px solid rgba(53, 224, 255, 0.45);
+    border-radius: 4px;
+    background: rgba(8, 11, 17, 0.86);
+    color: #e6ebf3;
+    font: 600 11px ui-monospace, 'JetBrains Mono', Menlo, monospace;
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+}

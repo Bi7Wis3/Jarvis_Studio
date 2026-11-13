@@ -132,6 +132,7 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
         { label: 'Edit part', hint: 'double-click', onSelect: () => setWorkspace('part', part.id, 'isolated') },
         { label: 'Edit in place', onSelect: () => setWorkspace('part', part.id, 'inContext') },
         { label: 'Insert instance', onSelect: () => insertInstance(part) },
+        ...patternEntries(part),
         'separator',
         { label: 'Rename', onSelect: () => setRenaming(part.id) },
         { label: 'Duplicate as new part', onSelect: () => duplicate(part) },
@@ -143,11 +144,30 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
             onSelect: () => setConfirming(part.id),
         },
     ];
+    /** Opens the Pattern form for a part (the toolbar owns the form). */
+    const editPattern = (part: Part) => {
+        select(part.id);
+        window.setTimeout(() => window.dispatchEvent(new CustomEvent('jarvis:open-tool', { detail: 'pattern' })), 0);
+    };
+    const removePattern = (part: Part) => void tool('parts_update', { updates: [{ id: part.id, repeat: null }] });
+    const patternEntries = (part: Part): MenuEntry[] => (part.repeat
+        ? [
+            { label: 'Edit pattern', onSelect: () => editPattern(part) },
+            { label: 'Remove pattern', onSelect: () => removePattern(part) },
+        ]
+        : [{ label: 'Pattern this part', onSelect: () => editPattern(part) }]);
+    const patternMenu = (part: Part): MenuEntry[] => [
+        { label: 'Edit pattern', hint: 'double-click', onSelect: () => editPattern(part) },
+        'separator',
+        { label: 'Remove pattern', danger: true, onSelect: () => removePattern(part) },
+    ];
     const instanceMenu = (part: Part): MenuEntry[] => [
-        { label: 'Edit part', hint: 'double-click', onSelect: () => setWorkspace('part', part.id, 'isolated') },
+        { label: 'Edit the shared design', hint: 'double-click', onSelect: () => setWorkspace('part', part.id, 'isolated') },
         { label: 'Edit in place', onSelect: () => setWorkspace('part', part.id, 'inContext') },
+        ...patternEntries(part),
+        'separator',
         { label: 'Rename', onSelect: () => setRenaming(part.id) },
-        { label: 'Zoom to part', onSelect: () => focusPart(part.id) },
+        { label: 'Zoom to instance', onSelect: () => focusPart(part.id) },
         'separator',
         { label: 'Delete instance', danger: true, onSelect: () => setConfirming(part.id) },
     ];
@@ -155,13 +175,25 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
     const designs = parts.filter((p) => !p.instanceOf || !parts.some((q) => q.id === p.instanceOf));
     // Every component is a part: screws, nuts and bearings sit in the same list as the rest.
     const groups = [{ id: 'parts', label: 'Parts', parts: designs }];
-    const row = (part: Part, design: Part, nested: boolean) => {
+    const toggleOpen = (id: string) => setExpanded((e) => {
+        const next = new Set(e);
+        if (next.has(id)) {
+            next.delete(id);
+        } else {
+            next.add(id);
+        }
+        return next;
+    });
+    /** A part's row; `open` (when it has things under it) adds the expander. */
+    const row = (part: Part, design: Part, nested: boolean, open?: boolean) => {
         const all = part.id === design.id ? [design, ...instancesOf(design.id)] : [part];
         return (
             <ComponentRow
                 key={part.id}
                 part={effectivePart(part, parts)}
                 nested={nested}
+                open={open}
+                onToggle={() => toggleOpen(part.id)}
                 renaming={renaming === part.id}
                 confirming={confirming === part.id}
                 deleteIds={all.map((p) => p.id)}
@@ -171,6 +203,14 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
             />
         );
     };
+    const patternRow = (part: Part) => (
+        <PatternRow
+            key={`${part.id}:pattern`}
+            part={part}
+            onEdit={() => editPattern(part)}
+            onMenu={(event) => setMenu(menuAt(event, patternMenu(part)))}
+        />
+    );
 
     return (
         <>
@@ -199,33 +239,21 @@ function Components(props: { parts: Part[]; onMinimise: () => void }) {
                             <ul>
                                 {group.parts.map((design) => {
                                     const instances = instancesOf(design.id);
-                                    if (instances.length === 0) {
+                                    // What sits under a part: its pattern, then the other places it is used.
+                                    if (!design.repeat && instances.length === 0) {
                                         return row(design, design, false);
                                     }
                                     const open = expanded.has(design.id);
                                     return (
                                         <li key={design.id} className="br-instances">
-                                            <InstanceHead
-                                                part={design}
-                                                members={[design, ...instances]}
-                                                open={open}
-                                                confirming={confirming === design.id}
-                                                onToggle={() => setExpanded((e) => {
-                                                    const next = new Set(e);
-                                                    if (open) {
-                                                        next.delete(design.id);
-                                                    } else {
-                                                        next.add(design.id);
-                                                    }
-                                                    return next;
-                                                })}
-                                                onConfirmed={() => setConfirming(null)}
-                                                onMenu={(event) => setMenu(menuAt(event, designMenu(design)))}
-                                            />
+                                            <ul>{row(design, design, false, open)}</ul>
                                             {open && (
                                                 <ul>
-                                                    {row(design, design, true)}
-                                                    {instances.map((inst) => row(inst, design, true))}
+                                                    {design.repeat && patternRow(design)}
+                                                    {instances.flatMap((inst) => [
+                                                        row(inst, design, true),
+                                                        ...(inst.repeat ? [patternRow(inst)] : []),
+                                                    ])}
                                                 </ul>
                                             )}
                                         </li>
@@ -251,74 +279,35 @@ async function removeParts(ids: string[]): Promise<void> {
     }
 }
 
-/** Header of a design placed several times: "Wheel ×4", expandable to each instance. */
-function InstanceHead(props: {
-    part: Part;
-    members: Part[];
-    open: boolean;
-    confirming: boolean;
-    onToggle: () => void;
-    onConfirmed: () => void;
-    onMenu: (event: MouseEvent) => void;
-}) {
-    const { part, members, open, confirming, onToggle, onConfirmed, onMenu } = props;
-    const hiddenIds = useStudio((s) => s.history?.view.hidden ?? NONE);
-    const error = useStudio((s) => members.some((m) => s.meshes.errors[m.id]));
-    const allHidden = members.every((m) => hiddenIds.includes(m.id));
-    if (confirming) {
-        return (
-            <div className="br-row confirm">
-                <span className="br-confirm-text">Delete {part.name} and its {members.length - 1} instance{members.length > 2 ? 's' : ''}?</span>
-                <button
-                    type="button"
-                    className="danger"
-                    autoFocus
-                    onClick={() => {
-                        onConfirmed();
-                        void removeParts(members.map((m) => m.id));
-                    }}
-                >
-                    Delete all
-                </button>
-                <button type="button" onClick={onConfirmed}>Keep</button>
-            </div>
-        );
-    }
+/** A part's pattern as its own item under the part: double-click edits it. */
+function PatternRow({ part, onEdit, onMenu }: { part: Part; onEdit: () => void; onMenu: (event: MouseEvent) => void }) {
+    const r = part.repeat!;
+    const detail = r.kind === 'linear'
+        ? `step ${r.step.map((n) => Math.round(n * 100) / 100).join(', ')} mm`
+        : `over ${r.angle ?? 360}°`;
     return (
-        <div
-            className={`br-row component group ${allHidden ? 'hidden' : ''}`}
-            onClick={onToggle}
-            onDoubleClick={() => setWorkspace('part', part.id, 'isolated')}
+        <li
+            className="br-row component nested pattern"
+            onDoubleClick={onEdit}
             onContextMenu={onMenu}
-            title={`${part.name}: one design placed ${members.length} times (double-click to edit the design)`}
+            title={`${r.kind === 'linear' ? 'Linear' : 'Circular'} pattern of ${part.name}: ${r.count} in all, ${detail} (double-click to edit)`}
         >
-            <span className="br-caret">{open ? '▾' : '▸'}</span>
-            <span className="br-swatch" style={{ background: part.material.color }} />
-            <span className="br-text one-line"><span className="br-name">{part.name}</span></span>
-            <span className="br-count">×{members.length}</span>
-            {error && <span className="br-warn" title="A build error in this part">⚠</span>}
-            <span className={`br-actions ${allHidden ? 'has-off' : ''}`}>
-                <button
-                    type="button"
-                    className={allHidden ? 'off' : ''}
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        members.forEach((m) => setHidden(m.id, !allHidden));
-                    }}
-                    title={allHidden ? 'Show all instances' : 'Hide all instances'}
-                    aria-label={`${allHidden ? 'Show' : 'Hide'} all ${part.name}`}
-                >
-                    {allHidden ? '◌' : '◉'}
-                </button>
-                <button type="button" onClick={onMenu} title="More" aria-label={`More actions for ${part.name}`}>⋯</button>
+            <span className="br-pattern-icon" aria-hidden="true">{r.kind === 'linear' ? '⋯' : '⁘'}</span>
+            <span className="br-text one-line"><span className="br-name">{r.kind === 'linear' ? 'Linear pattern' : 'Circular pattern'}</span></span>
+            <span className="br-count">×{r.count}</span>
+            <span className="br-actions">
+                <button type="button" onClick={onMenu} title="More" aria-label={`More actions for the pattern of ${part.name}`}>⋯</button>
             </span>
-        </div>
+        </li>
     );
 }
 
 function ComponentRow(props: {
     part: Part;
     nested: boolean;
+    /** Set when the part has a pattern or instances under it: whether they are shown. */
+    open?: boolean;
+    onToggle?: () => void;
     renaming: boolean;
     confirming: boolean;
     /** What Delete removes: the part, or a design together with its instances. */
@@ -327,7 +316,7 @@ function ComponentRow(props: {
     onConfirmed: () => void;
     onMenu: (event: MouseEvent) => void;
 }) {
-    const { part, nested, renaming, confirming, deleteIds, onRenamed, onConfirmed, onMenu } = props;
+    const { part, nested, open, onToggle, renaming, confirming, deleteIds, onRenamed, onConfirmed, onMenu } = props;
     const selected = useStudio((s) => s.selected === part.id);
     const hidden = useStudio((s) => s.history?.view.hidden?.includes(part.id) ?? false);
     const focused = useStudio((s) => s.history?.view.focus === part.id);
@@ -365,7 +354,20 @@ function ComponentRow(props: {
             title={`${part.description ?? part.name}${features ? ` · ${features} feature${features === 1 ? '' : 's'}` : ''}`
                 + `${part.instanceOf ? ' · instance' : ''} (double-click to edit the part)`}
             aria-selected={selected}
+            aria-expanded={open}
         >
+            {open !== undefined && (
+                <button
+                    type="button"
+                    className="br-caret"
+                    onClick={(e) => { e.stopPropagation(); onToggle?.(); }}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    title={open ? 'Hide its pattern and instances' : 'Show its pattern and instances'}
+                    aria-label={open ? 'Collapse' : 'Expand'}
+                >
+                    {open ? '▾' : '▸'}
+                </button>
+            )}
             <span className="br-swatch" style={{ background: part.material.color }} />
             <span className="br-text one-line">
                 {renaming ? (
@@ -380,7 +382,8 @@ function ComponentRow(props: {
                     />
                 ) : <span className="br-name">{part.name}</span>}
             </span>
-            {part.repeat && <span className="br-count">×{part.repeat.count}</span>}
+            {part.instanceOf && <span className="br-tag" title="Another placement of the same design">instance</span>}
+            {part.repeat && <span className="br-count" title="Patterned">×{part.repeat.count}</span>}
             {error && <span className="br-warn" title={`Built only up to the failing step: ${error}`}>⚠</span>}
             <span className={`br-actions ${hidden ? 'has-off' : ''}`}>
                 <button

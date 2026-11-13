@@ -377,6 +377,37 @@ export function removeItems(g: SketchGeometry, ids: string[]): SketchGeometry {
     return { points, curves, constraints };
 }
 
+/**
+ * Like removeItems, but points that stand alone (sketch points no curve uses) stay unless they are removed
+ * themselves: only the points the removed curves leave unused go.
+ */
+export function removeItemsKeepingPoints(g: SketchGeometry, ids: string[]): SketchGeometry {
+    const usedBefore = new Set(g.curves.flatMap(curvePoints));
+    const gone = new Set(ids);
+    const loose = g.points.filter((p) => !usedBefore.has(p.id) && !gone.has(p.id)).map((p) => p.id);
+    const out = removeItems(g, ids);
+    if (!loose.length) {
+        return out;
+    }
+    // Put the loose points back, with the constraints that only fell because those points were missing.
+    const kept = new Set(loose);
+    const points = g.points.filter((p) => kept.has(p.id) || out.points.some((q) => q.id === p.id));
+    const alive = new Set([...points.map((p) => p.id), ...out.curves.map((c) => c.id), ORIGIN, AXIS_U, AXIS_V]);
+    const constraints = g.constraints.filter((c) => !gone.has(c.id) && constraintRefs(c).every((r) => alive.has(r)));
+    return { points, curves: out.curves, constraints };
+}
+
+/** Ids a constraint may refer to that exist: the sketch's points and curves, the origin and the axes. */
+export function liveIds(g: SketchGeometry): Set<string> {
+    return new Set([...g.points.map((p) => p.id), ...g.curves.map((c) => c.id), ORIGIN, AXIS_U, AXIS_V]);
+}
+
+/** Constraints that refer to geometry that is not there any more. */
+export function danglingConstraints(g: SketchGeometry): string[] {
+    const alive = liveIds(g);
+    return g.constraints.filter((c) => constraintRefs(c).some((r) => !alive.has(r))).map((c) => c.id);
+}
+
 export function toggleConstruction(g: SketchGeometry, ids: string[]): SketchGeometry {
     return { ...g, curves: g.curves.map((c) => (ids.includes(c.id) ? { ...c, construction: !c.construction } : c)) };
 }

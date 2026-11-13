@@ -110,6 +110,32 @@ export class MeshService {
         }
     }
 
+    /** Mesh key a part of `project` builds to (instances share their source's design), without building it. */
+    keyFor(part: Part, project: Project): string {
+        const shown = partsAtTimeline(project);
+        return meshKey(effectivePart(part, shown), project.print ?? DEFAULT_PRINT, combineContext(part, shown));
+    }
+
+    /**
+     * Builds a part of a project that is not (yet) the real one, for tool previews. The mesh is served by key like
+     * any other, but the published status is left alone. `key` is null when nothing could be built; a failed
+     * feature still gives the partial solid with `error`.
+     */
+    async preview(part: Part, project: Project): Promise<{ key: string | null; error?: string }> {
+        const shown = partsAtTimeline(project);
+        const effective = effectivePart(part, shown);
+        const print = project.print ?? DEFAULT_PRINT;
+        const context = combineContext(part, shown);
+        try {
+            const key = await this.build(effective, print, context);
+            const failure = this.failed.get(key);
+            return failure ? { key, error: failure } : { key };
+        } catch (error) {
+            const key = meshKey(effective, print, context);
+            return { key: this.meshes.has(key) ? key : null, error: error instanceof Error ? error.message : String(error) };
+        }
+    }
+
     private async build(part: Part, print: NonNullable<Project['print']>, context?: CombineContext): Promise<string> {
         const key = meshKey(part, print, context);
         if (!this.meshes.has(key)) {

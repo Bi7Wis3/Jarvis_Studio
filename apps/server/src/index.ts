@@ -12,6 +12,7 @@ import { createHostTools } from './hostTools.js';
 import { MeshService } from './meshes.js';
 import { registerMcpHttp } from './mcpHttp.js';
 import { EXPORTS_DIR } from './paths.js';
+import { PreviewRejected, runPreview } from './preview.js';
 import { ProjectStore, slug } from './store.js';
 import { Ears } from './stt.js';
 import { callTool, createTools } from './tools.js';
@@ -343,6 +344,18 @@ app.get<{ Params: { key: string } }>('/api/mesh2/:key', async (request, reply) =
     }
     // A key is a hash of the geometry, so its mesh never changes.
     return reply.type('application/octet-stream').header('cache-control', 'public, max-age=31536000, immutable').send(mesh);
+});
+
+/** Tool preview: runs model-editing tool calls on a copy of the project and builds the parts they change. */
+app.post('/api/preview', async (request, reply) => {
+    try {
+        return await runPreview(store.get(), (request.body as { calls?: unknown } | null)?.calls, meshes);
+    } catch (error) {
+        if (error instanceof PreviewRejected) {
+            return reply.code(400).send({ error: error.message });
+        }
+        throw error;
+    }
 });
 
 app.addContentTypeParser(/^image\/(png|jpeg|webp)$/, { parseAs: 'buffer', bodyLimit: MAX_ASSET_BYTES }, (_request, body, done) => {

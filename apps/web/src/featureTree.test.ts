@@ -31,18 +31,21 @@ describe('feature tree', () => {
         expect(blockIds(tree[1])).toEqual(['s1', 'e1']);
     });
 
-    it('keeps shared and unused sketch steps at top level', () => {
+    it('shows a shared sketch under every step that uses it, and keeps only unused sketches at top level', () => {
         const tree = buildFeatureTree([
             sk('s1'),
             { id: 'e1', op: 'extrude', distance: 5, mode: 'add', sketchRef: 's1' },
             { id: 'e2', op: 'revolve', axis: 'u', mode: 'cut', sketchRef: 's1' },
             sk('s2'),
         ]);
-        expect(tree.map((n) => n.key)).toEqual(['s1', 'e1', 'e2', 's2']);
-        expect(tree[0].users).toBe(2);
-        expect(tree[3].users).toBe(0);
-        expect(tree[1].children).toEqual([]);
-        expect(tree[2].children).toEqual([]);
+        expect(tree.map((n) => n.key)).toEqual(['e1', 'e2', 's2']);
+        expect(tree[2].users).toBe(0);
+        // The same step under both, with keys that differ; the first keeps the step id.
+        expect(tree[0].children.map((c) => [c.key, c.stepId, c.users, c.shared])).toEqual([['s1', 's1', 2, true]]);
+        expect(tree[1].children.map((c) => [c.key, c.stepId, c.users, c.shared])).toEqual([['s1@e2', 's1', 2, true]]);
+        // A shared sketch moves with neither of them.
+        expect(blockIds(tree[0])).toEqual(['e1']);
+        expect(blockIds(tree[1])).toEqual(['e2']);
     });
 
     it('nests loft sections, inline and by reference, in section order', () => {
@@ -53,13 +56,15 @@ describe('feature tree', () => {
             { id: 'x', op: 'extrude', distance: 1, mode: 'add', sketchRef: 'shared' },
             { id: 'l1', op: 'loft', mode: 'add', sections: [{ sketchRef: 'b' }, { sketch }, { sketchRef: 'a' }, { sketchRef: 'shared' }] },
         ]);
-        expect(tree.map((n) => n.key)).toEqual(['shared', 'x', 'l1']);
-        expect(tree[2].children.map((c) => [c.key, c.role])).toEqual([
+        expect(tree.map((n) => n.key)).toEqual(['x', 'l1']);
+        expect(tree[0].children.map((c) => c.key)).toEqual(['shared']);
+        expect(tree[1].children.map((c) => [c.key, c.role])).toEqual([
             ['b', 'Section 1'],
             ['l1:section1', 'Section 2'],
             ['a', 'Section 3'],
+            ['shared@l1', 'Section 4'],
         ]);
-        expect(blockIds(tree[2])).toEqual(['a', 'b', 'l1']);
+        expect(blockIds(tree[1])).toEqual(['a', 'b', 'l1']);
     });
 
     it('nests sweep profile and path', () => {
@@ -105,14 +110,14 @@ describe('feature tree', () => {
         expect(reorderIds(features, tree, 'f1', 'e1', false)).toBeNull();
     });
 
-    it('moves only the step itself above a shared sketch, so the server check still refuses it', () => {
+    it('reorders two steps that share a sketch without moving the sketch', () => {
         const features: Feature[] = [
             sk('s1'),
             { id: 'e1', op: 'extrude', distance: 5, mode: 'add', sketchRef: 's1' },
             { id: 'e2', op: 'extrude', distance: 2, mode: 'cut', sketchRef: 's1' },
         ];
         const tree = buildFeatureTree(features);
-        expect(reorderIds(features, tree, 'e1', 's1', false)).toEqual(['e1', 's1', 'e2']);
+        expect(reorderIds(features, tree, 'e2', 'e1', false)).toEqual(['s1', 'e2', 'e1']);
     });
 
     it('filters by name and keeps the parents of matches', () => {

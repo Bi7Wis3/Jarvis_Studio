@@ -18,11 +18,26 @@ export class ProjectStore {
     private undoStack: string[] = [];
     private redoStack: string[] = [];
     private listeners = new Set<Listener>();
+    /** A scratch store (see `scratch`): in memory only, no undo history, no project files touched. */
+    private readonly memory: boolean;
 
-    constructor() {
+    constructor(scratch?: Project) {
+        this.memory = scratch !== undefined;
+        if (scratch) {
+            this.project = JSON.parse(JSON.stringify(scratch));
+            return;
+        }
         mkdirSync(PROJECTS_DIR, { recursive: true });
         this.project = this.loadLast() ?? demoProject();
         this.save();
+    }
+
+    /**
+     * A throwaway copy of `project` for trying changes (tool previews): mutations apply to the copy only, are not
+     * saved, have no undo history and reach no listeners but the scratch store's own.
+     */
+    static scratch(project: Project): ProjectStore {
+        return new ProjectStore(project);
     }
 
     get(): Project {
@@ -39,7 +54,7 @@ export class ProjectStore {
         const before = JSON.stringify(this.project);
         const draft: Project = JSON.parse(before);
         change(draft);
-        if (options.undoable ?? true) {
+        if ((options.undoable ?? true) && !this.memory) {
             this.undoStack.push(before);
             if (this.undoStack.length > MAX_UNDO) {
                 this.undoStack.shift();
@@ -50,10 +65,12 @@ export class ProjectStore {
     }
 
     undo(): boolean {
+        this.files();
         return this.step(this.undoStack, this.redoStack);
     }
 
     redo(): boolean {
+        this.files();
         return this.step(this.redoStack, this.undoStack);
     }
 
@@ -78,6 +95,7 @@ export class ProjectStore {
 
     /** Creates and opens an empty project. A name already in use gets a number, so no saved project is overwritten. */
     create(name: string): void {
+        this.files();
         const taken = new Set(this.list());
         let unique = name.trim() || 'Untitled';
         for (let n = 2; taken.has(slug(unique)); n++) {
@@ -90,6 +108,7 @@ export class ProjectStore {
     }
 
     open(name: string): boolean {
+        this.files();
         const file = join(PROJECTS_DIR, `${slug(name)}.json`);
         if (!existsSync(file)) {
             return false;
@@ -102,6 +121,7 @@ export class ProjectStore {
 
     /** Renames the open project; its file moves to the new name. Returns false if the name is taken. */
     rename(name: string): boolean {
+        this.files();
         const next = name.trim();
         const from = slug(this.project.name);
         if (!next || (slug(next) !== from && this.list().includes(slug(next)))) {
@@ -119,6 +139,7 @@ export class ProjectStore {
 
     /** Saves a copy of the open project under a new (numbered if taken) name and opens it. */
     saveAs(name: string): void {
+        this.files();
         const copy: Project = JSON.parse(JSON.stringify(this.project));
         this.create(name);
         this.commit({ ...copy, name: this.project.name });
@@ -129,6 +150,7 @@ export class ProjectStore {
      * Deleting the open project opens another one, or a new empty project when none is left.
      */
     remove(name: string): boolean {
+        this.files();
         const entry = slug(name);
         const file = join(PROJECTS_DIR, `${entry}.json`);
         if (!existsSync(file)) {
@@ -185,7 +207,17 @@ export class ProjectStore {
         return existsSync(file) ? this.read(file) : null;
     }
 
+    /** Project and history operations are not available on a scratch store. */
+    private files(): void {
+        if (this.memory) {
+            throw new Error('Not available in a preview.');
+        }
+    }
+
     private save(): void {
+        if (this.memory) {
+            return;
+        }
         const name = slug(this.project.name);
         writeFileSync(join(PROJECTS_DIR, `${name}.json`), JSON.stringify(this.project, null, 2));
         writeFileSync(join(PROJECTS_DIR, '.last'), name);

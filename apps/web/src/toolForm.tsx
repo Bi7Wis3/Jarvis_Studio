@@ -1,7 +1,115 @@
 // The form behind a tool: its values, apply and result, shared by the floating popup and the property manager.
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { fetchPreview, LatestOnly, toPreview, type PreviewResponse, type ToolCall } from './preview';
+import { useRegionPick } from './regionPick';
+import { captureToolCalls, clearPreview, setPreview } from './state';
 import type { Ctx, Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
+import { clearToolSession, publishToolSession } from './toolSession';
+
+const PREVIEW_DELAY_MS = 250;
+
+/**
+ * Live preview of a tool with `preview` set: after the values (or picked regions, or the project) change, the
+ * calls its apply would make are captured instead of sent and shown in the 3D view as they would turn out.
+ * Returns the reason the latest preview failed, if it did. The preview is cleared when the form closes.
+ */
+function useToolPreview(tool: ToolDef, ctx: Ctx, values: Values, enabled: boolean, busy: boolean) {
+    const picks = useRegionPick((s) => s.picked);
+    const [note, setNote] = useState<string | null>(null);
+    const latest = useRef({ values, ctx });
+    latest.current = { values, ctx };
+    const queue = useRef<LatestOnly<ToolCall[], PreviewResponse> | null>(null);
+    const sent = useRef<{ calls: string; project: Ctx['project'] } | null>(null);
+
+    useEffect(() => {
+        if (!enabled) {
+            return;
+        }
+        let shown = false;
+        const q = new LatestOnly<ToolCall[], PreviewResponse>(fetchPreview, (response) => {
+            const failure = response.error ?? Object.values(response.errors)[0] ?? null;
+            setNote(failure);
+            if (response.error) {
+                // The calls themselves failed: the committed model stays in view.
+                clearPreview();
+            } else {
+                setPreview(toPreview(response));
+            }
+            shown = true;
+        }, (error) => setNote(error instanceof Error ? error.message : String(error)));
+        queue.current = q;
+        return () => {
+            q.close();
+            queue.current = null;
+            sent.current = null;
+            if (shown) {
+                clearPreview();
+            }
+        };
+    }, [enabled]);
+
+    useEffect(() => {
+        if (!enabled || busy) {
+            return;
+        }
+        const timer = setTimeout(() => {
+            const { values: v, ctx: c } = latest.current;
+            let calls: ToolCall[] = [];
+            try {
+                const captured = captureToolCalls(() => tool.apply!(v, c));
+                calls = captured.calls;
+                void Promise.resolve(captured.result).catch(() => undefined);
+            } catch {
+                calls = [];
+            }
+            if (calls.length === 0) {
+                // Invalid input: no new preview, and none still on its way.
+                queue.current?.cancel();
+                sent.current = null;
+                return;
+            }
+            const key = JSON.stringify(calls);
+            if (sent.current?.calls === key && sent.current.project === c.project) {
+                return;
+            }
+            sent.current = { calls: key, project: c.project };
+            queue.current?.push(calls);
+        }, PREVIEW_DELAY_MS);
+        return () => clearTimeout(timer);
+    }, [enabled, busy, values, picks, ctx.part, ctx.project, ctx.edit?.feature]);
+
+    /** Drops previews still to come, e.g. when the real call is sent. */
+    const hold = () => {
+        queue.current?.cancel();
+        sent.current = null;
+    };
+    return { note, hold };
+}
+
+/**
+ * Publishes the open form to the tool session store (for the 3D drag handles) and clears it on close. The
+ * session's setter applies a patch key by key through the tool's onChange, as typing each value would.
+ */
+function useToolSessionPublish(tool: ToolDef, ctx: Ctx, values: Values, setValues: (v: Values) => void) {
+    const [owner] = useState(() => Symbol(tool.id));
+    const latest = useRef({ values, ctx });
+    latest.current = { values, ctx };
+    const [set] = useState(() => (patch: Values) => {
+        let next = latest.current.values;
+        for (const [key, value] of Object.entries(patch)) {
+            next = { ...next, [key]: value };
+            next = { ...next, ...(tool.onChange?.(key, next, latest.current.ctx) ?? {}) };
+        }
+        // Several patches can arrive before React renders: each builds on the last.
+        latest.current = { ...latest.current, values: next };
+        setValues(next);
+    });
+    useEffect(() => {
+        publishToolSession(owner, { toolId: tool.id, values, ctx, set });
+    }, [values, ctx, tool.id]);
+    useEffect(() => () => clearToolSession(owner), []);
+}
 
 export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
     const [values, setValues] = useState<Values>(() => tool.defaults?.(ctx) ?? {});
@@ -10,6 +118,9 @@ export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
     const form = useRef<HTMLFormElement>(null);
     const missingPart = !!tool.needsPart && !ctx.part;
     const fields = missingPart ? [] : (tool.fields?.(ctx) ?? []).filter((f) => !f.show || f.show(values));
+    // The preview stays in view until the form closes after OK, by when the real state has arrived (the server
+    // sends the new project and mesh keys before the tool's answer), so the view never falls back to the old model.
+    const preview = useToolPreview(tool, ctx, values, !!tool.preview && !!tool.apply && !missingPart, busy);
 
     useEffect(() => {
         form.current?.querySelector<HTMLElement>('input:not([type=checkbox]):not([type=color]), select, .tb-apply, .pm-ok')?.focus();
@@ -19,7 +130,9 @@ export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
         const next = { ...values, [key]: value };
         setValues({ ...next, ...(tool.onChange?.(key, next, ctx) ?? {}) });
     };
+    useToolSessionPublish(tool, ctx, values, setValues);
     const run = (call: () => Promise<Result>, close = true) => {
+        preview.hold();
         setBusy(true);
         void call().then((r) => {
             setBusy(false);
@@ -37,7 +150,8 @@ export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
             run(() => tool.apply!(values, ctx));
         }
     };
-    return { values, result, busy, form, missingPart, fields, change, api, submit };
+    const shown = result ?? (preview.note ? { text: `Preview: ${preview.note}`, isError: true } : null);
+    return { values, result: shown, busy, form, missingPart, fields, change, api, submit };
 }
 
 /** Steps a number field's text value up or down; leaves expressions it cannot read alone. */

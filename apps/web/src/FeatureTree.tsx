@@ -23,6 +23,8 @@ import {
 } from './featureTree';
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
 
+/** Stands for "no expand state saved yet" for a part. */
+const UNSAVED = '\u0000';
 const NEW_PART = '__new';
 const ROOT = '__root';
 const BODY = '__body';
@@ -153,7 +155,25 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
 
     const treeKey = `${STORAGE_KEY}.tree.${part.id}`;
     const rootKey = `${STORAGE_KEY}.root.${part.id}`;
-    const [expanded, setExpanded] = useState<Set<string>>(() => new Set(load(treeKey, '').split(',').filter(Boolean)));
+    // Steps with a sketch under them start open, so the sketch is seen beneath its feature; after that the part
+    // remembers what was opened and closed.
+    const [expanded, setExpanded] = useState<Set<string>>(() => {
+        const saved = load(treeKey, UNSAVED);
+        return new Set(saved === UNSAVED ? tree.filter((n) => n.children.length).map((n) => n.key) : saved.split(',').filter(Boolean));
+    });
+    const known = useRef(new Set(tree.map((n) => n.key)));
+    useEffect(() => {
+        // A step added since opens too.
+        const added = tree.filter((n) => !known.current.has(n.key) && n.children.length).map((n) => n.key);
+        known.current = new Set(tree.map((n) => n.key));
+        if (added.length) {
+            setExpanded((e) => {
+                const next = new Set([...e, ...added]);
+                store(treeKey, [...next].join(','));
+                return next;
+            });
+        }
+    }, [tree]);
     const [rootOpen, setRootOpen] = useState(() => load(rootKey, 'open') !== 'closed');
     const [filter, setFilter] = useState('');
     const [current, setCurrent] = useState<string | null>(null);

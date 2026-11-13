@@ -13,6 +13,8 @@ import { clearEditing, editItem, refit, runTool, select, setSketchHidden, setWor
 import { RegionPickSession, useRegionPick } from './regionPick';
 import { showError } from './menus';
 import { addPicture, PicturePicker } from './DecalPanel';
+import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchToolDefs';
+import { evaluateTools } from './evaluateToolDefs';
 import { nextFeatureName, type Nameable } from './featureNames';
 import { Icon } from './icons';
 import {
@@ -102,6 +104,11 @@ export interface ToolDef {
     panel?: boolean;
     /** Picks sketch regions: of the sketch being edited, or of the sketch step in the `sketch` value. */
     regionPick?: 'sketcher' | 'step';
+    /**
+     * Live preview while the form is open: apply runs with its tool calls captured, not sent (see toolForm.tsx).
+     * Only for tools whose apply makes its model-editing call synchronously and does nothing else before it.
+     */
+    preview?: boolean;
 }
 
 export interface ToolGroup {
@@ -211,6 +218,7 @@ function createTool(id: Shape['kind'], label: string, fields: Field[], defaults:
         icon: id,
         hint: 'placed on the ground',
         shapes: [id],
+        preview: true,
         fields: (ctx) => (ctx.edit ? fields : [{ key: 'name', label: 'Name', kind: 'text' }, ...fields, ...placeFields]),
         defaults: (ctx) => {
             const base = ctx.edit && !ctx.edit.feature ? fullPart(ctx.edit.partId)?.shape : null;
@@ -274,6 +282,7 @@ const fastener: ToolDef = {
     hint: 'ISO screws, nuts, washers and inserts',
     width: 300,
     shapes: ['fastener'],
+    preview: true,
     fields: (ctx) => [
         { key: 'type', label: 'Type', kind: 'select', options: FASTENER_TYPES },
         { key: 'size', label: 'Thread', kind: 'select', options: SIZE_OPTIONS },
@@ -489,16 +498,122 @@ function cutsInward(): boolean {
 /** The finish popup's operation choice: Sketch only, Extrude, Cut or Revolve. */
 type FinishChoice = 'sketch' | 'extrude' | 'cut' | 'revolve';
 
+// ---- Extrude options (From, Direction 1, Direction 2), shared by Extrude / Cut and the sketch finish panel -----
+
+type ExtrudeOptionValues = Pick<FinishOp, 'end' | 'from' | 'draft' | 'draftOutward' | 'flipSide' | 'second'> & { through?: boolean };
+
+const isBlind = (end: unknown): boolean => !end || end === 'blind';
+
+/** Form values for an extrude's options, from a stored step or a FinishOp (absent options: the defaults). */
+function extrudeValues(o: ExtrudeOptionValues): Values {
+    const end = o.end ?? (o.through ? 'throughAll' : 'blind');
+    const s = o.second;
+    return {
+        end, through: end === 'throughAll', from: o.from ? 'offset' : 'plane', fromOffset: fmt(o.from || 5),
+        draft: !!o.draft, draftAngle: fmt(o.draft || 1), draftOutward: !!o.draftOutward, flipSide: !!o.flipSide,
+        second: !!s, end2: s?.end ?? 'blind', distance2: fmt(s?.distance ?? 10), draft2: !!s?.draft, draftAngle2: fmt(s?.draft || 1),
+        draftOutward2: !!s?.draftOutward,
+    };
+}
+
+/**
+ * The extrude option fields, SolidWorks style: From, Direction 1 (direction, end condition, depth, flip side, draft)
+ * and Direction 2. `full` false: only direction and depth (a base body's extrude has no other options).
+ */
+function extrudeFields(isExtrude: (v: Values) => boolean, isCut: (v: Values) => boolean, full = true): Field[] {
+    const direction: Field = {
+        key: 'direction', label: 'Direction', kind: 'select', section: 'Direction 1', show: isExtrude,
+        options: opts(['normal', 'Along normal'], ['reverse', 'Reversed'], ['symmetric', 'Mid plane (symmetric)']),
+    };
+    const depth = (key: string, section: string, show: (v: Values) => boolean): Field =>
+        ({ key, label: 'Depth', kind: 'number', unit: 'mm', min: 0, section, show });
+    if (!full) {
+        return [direction, depth('distance', 'Direction 1', isExtrude)];
+    }
+    const ends = opts(['blind', 'Blind'], ['throughAll', 'Through all'], ['upToNext', 'Up to next']);
+    const second = (v: Values) => isExtrude(v) && v.direction !== 'symmetric' && !!v.second;
+    const draftFields = (suffix: string, section: string, show: (v: Values) => boolean): Field[] => [
+        { key: `draft${suffix}`, label: 'Draft', kind: 'check', section, show },
+        { key: `draftAngle${suffix}`, label: 'Draft angle', kind: 'number', unit: 'deg', min: 0, max: 89, section,
+            show: (v) => show(v) && !!v[`draft${suffix}`] },
+        { key: `draftOutward${suffix}`, label: 'Draft outward', kind: 'check', section, show: (v) => show(v) && !!v[`draft${suffix}`] },
+    ];
+    return [
+        { key: 'from', label: 'Start', kind: 'select', options: opts(['plane', 'Sketch plane'], ['offset', 'Offset']), section: 'From', show: isExtrude },
+        { key: 'fromOffset', label: 'Offset', kind: 'number', unit: 'mm', section: 'From', show: (v) => isExtrude(v) && v.from === 'offset' },
+        direction,
+        { key: 'end', label: 'End condition', kind: 'select', options: ends, section: 'Direction 1', show: isExtrude },
+        depth('distance', 'Direction 1', (v) => isExtrude(v) && isBlind(v.end)),
+        { key: 'flipSide', label: 'Flip side to cut', kind: 'check', section: 'Direction 1', show: (v) => isExtrude(v) && isCut(v) },
+        ...draftFields('', 'Direction 1', isExtrude),
+        { key: 'second', label: 'Second direction', kind: 'check', section: 'Direction 2', show: (v) => isExtrude(v) && v.direction !== 'symmetric' },
+        { key: 'end2', label: 'End condition', kind: 'select', options: ends, section: 'Direction 2', show: second },
+        depth('distance2', 'Direction 2', (v) => second(v) && isBlind(v.end2)),
+        ...draftFields('2', 'Direction 2', second),
+    ];
+}
+
+/** The extrude options in the form. `strict` checks the numbers (OK); the live preview reads them leniently. */
+function extrudeOptions(v: Values, cut: boolean, strict = false): ExtrudeOptionValues & { through: boolean } {
+    const read = (key: string, label: string, check: { min?: number; positive?: boolean } = {}): number =>
+        (strict ? num(v, key, label, check) : Number(v[key]) || 0);
+    const angle = (key: string, label: string): number => {
+        const a = read(key, label, { min: 0 });
+        if (strict && a >= 89) {
+            throw new Error(`${label} must be less than 89°.`);
+        }
+        return a;
+    };
+    const end = ((v.end as string) || 'blind') as NonNullable<FinishOp['end']>;
+    const end2 = ((v.end2 as string) || 'blind') as NonNullable<FinishOp['end']>;
+    const draft = v.draft ? angle('draftAngle', 'Draft angle') : 0;
+    const draft2 = v.second && v.draft2 ? angle('draftAngle2', 'Direction 2 draft angle') : 0;
+    return {
+        end, through: end === 'throughAll',
+        from: v.from === 'offset' ? read('fromOffset', 'Offset') : 0,
+        draft, draftOutward: !!draft && !!v.draftOutward,
+        flipSide: cut && !!v.flipSide,
+        second: v.second && v.direction !== 'symmetric' ? {
+            end: end2,
+            ...(isBlind(end2) ? { distance: read('distance2', 'Direction 2 depth', { positive: true }) } : {}),
+            ...(draft2 ? { draft: draft2, ...(v.draftOutward2 ? { draftOutward: true } : {}) } : {}),
+        } : null,
+    };
+}
+
+/** The non-default extrude options as step fields (a step without them stays as it was before they existed). */
+function extrudeExtras(op: ExtrudeOptionValues, cut: boolean): Record<string, unknown> {
+    return {
+        ...(op.end === 'upToNext' ? { end: 'upToNext' } : {}),
+        ...(op.from ? { from: op.from } : {}),
+        ...(op.draft ? { draft: op.draft, ...(op.draftOutward ? { draftOutward: true } : {}) } : {}),
+        ...(cut && op.flipSide ? { flipSide: true } : {}),
+        ...(op.second ? { second: op.second } : {}),
+    };
+}
+
+/** On an edit, options the stored step has but the form turned off, reset explicitly (an update only changes what it gives). */
+function extrudeResets(stored: Feature | null | undefined, fields: Record<string, unknown>, through: boolean): Record<string, unknown> {
+    if (stored?.op !== 'extrude') {
+        return {};
+    }
+    const resets: Record<string, unknown> = {
+        end: through ? 'throughAll' : 'blind', from: 0, draft: 0, draftOutward: false, flipSide: false, second: null,
+    };
+    return Object.fromEntries(Object.entries(resets).filter(([k]) => (stored as unknown as Record<string, unknown>)[k] !== undefined && !(k in fields)));
+}
+
 function finishOp(v: Values): FinishOp {
     const choice = v.op as FinishChoice;
+    const mode = choice === 'sketch' ? 'sketch' : choice === 'cut' ? 'cut' : v.result === 'new' ? 'new' : (v.result as 'add' | 'cut') ?? 'add';
     return {
         op: choice === 'revolve' ? 'revolve' : 'extrude',
-        mode: choice === 'sketch' ? 'sketch' : choice === 'cut' ? 'cut' : v.result === 'new' ? 'new' : (v.result as 'add' | 'cut') ?? 'add',
+        mode,
         distance: Number(v.distance) || 0,
         direction: v.direction as FinishOp['direction'],
-        through: !!v.through && choice === 'cut',
         axis: v.axis as 'u' | 'v',
         angle: Number(v.angle) || 360,
+        ...extrudeOptions(v, mode === 'cut'),
     };
 }
 
@@ -531,10 +646,12 @@ function nextSketch(part: Part | null | undefined): { id: string; name: string }
 function sketchOpFeature(op: FinishOp, source: { sketchRef: string } | { sketch: unknown }, label: string, distance: number, angle: number): Record<string, unknown> {
     if (op.op === 'extrude') {
         const verb = op.mode === 'cut' ? 'Cut' : 'Extrude';
-        const size = op.through ? 'through all' : `${fmt(distance)} mm`;
+        const upToNext = op.end === 'upToNext';
+        const size = upToNext ? 'up to next' : op.through ? 'through all' : `${fmt(distance)} mm`;
         return {
             op: 'extrude', name: `${verb} ${size} · ${label}`, ...source, mode: op.mode === 'cut' ? 'cut' : 'add',
-            direction: op.direction, ...(op.through ? { through: true } : { distance }),
+            direction: op.direction, ...(op.through ? { through: true } : upToNext ? {} : { distance }),
+            ...extrudeExtras(op, op.mode === 'cut'),
         };
     }
     return {
@@ -606,11 +723,8 @@ const finishTool: ToolDef = {
             : hasPart ? opts(['add', 'Join'], ['new', 'New body']) : [];
         return [
             ...(choices.length > 1 ? [{ key: 'op', label: 'Operation', kind: 'select' as const, options: opts(...choices) }] : []),
-            { key: 'distance', label: 'Distance', kind: 'number', unit: 'mm', min: 0, section: 'Direction 1',
-                show: (v) => (v.op === 'extrude' || v.op === 'cut') && !(v.op === 'cut' && v.through) },
-            { key: 'direction', label: 'Direction', kind: 'select', options: opts(['normal', 'Along normal'], ['reverse', 'Reversed'], ['symmetric', 'Symmetric']),
-                section: 'Direction 1', show: (v) => v.op === 'extrude' || v.op === 'cut' },
-            { key: 'through', label: 'Through all', kind: 'check', section: 'Direction 1', show: (v) => v.op === 'cut' },
+            // A base body's extrude has only a distance and a direction.
+            ...extrudeFields((v) => v.op === 'extrude' || v.op === 'cut', (v) => v.op === 'cut', !target?.base),
             { key: 'axis', label: 'Axis', kind: 'select', options: opts(['v', 'Sketch V (vertical)'], ['u', 'Sketch U (horizontal)']),
                 section: 'Revolve', show: (v) => v.op === 'revolve' },
             { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Revolve', show: (v) => v.op === 'revolve' },
@@ -629,12 +743,15 @@ const finishTool: ToolDef = {
         }
         return {
             op: choice, result: op.mode === 'new' ? 'new' : op.mode === 'cut' && op.op === 'revolve' ? 'cut' : 'add',
-            distance: fmt(op.distance), direction, through: op.through, axis: op.axis, angle: fmt(op.angle),
+            distance: fmt(op.distance), direction, axis: op.axis, angle: fmt(op.angle), ...extrudeValues(op),
         };
     },
     onChange: (key, v) => {
         // A cut from a sketch above the part origin goes down into it, and vice versa.
         const patch: Values = key === 'op' && v.op === 'cut' ? { direction: cutsInward() ? 'reverse' : 'normal' } : {};
+        if (key === 'end') {
+            patch.through = v.end === 'throughAll';
+        }
         useSketcher.setState({ finishing: finishOp({ ...v, ...patch }) });
         return patch;
     },
@@ -664,11 +781,15 @@ const finishTool: ToolDef = {
                 : 'Draw at least one closed profile.');
         }
         const sketch = currentSketch();
-        const op = finishOp(v);
+        const target = sketchEditTarget();
+        const lenient = finishOp(v);
+        // A base body's extrude has no options beyond distance and direction.
+        const op: FinishOp = lenient.op === 'extrude' && lenient.mode !== 'sketch' && !target?.base
+            ? { ...lenient, ...extrudeOptions(v, lenient.mode === 'cut', true) }
+            : { ...lenient, end: 'blind', through: false, from: 0, draft: 0, draftOutward: false, flipSide: false, second: null };
         const regions = op.mode === 'sketch' ? [] : useRegionPick.getState().picked;
         const s = useSketcher.getState();
-        const target = sketchEditTarget();
-        const distance = op.op === 'extrude' && op.mode !== 'sketch' && !op.through ? num(v, 'distance', 'Distance', { positive: true }) : 0;
+        const distance = op.op === 'extrude' && op.mode !== 'sketch' && isBlind(op.end) ? num(v, 'distance', 'Depth', { positive: true }) : 0;
         const angle = op.op === 'revolve' && op.mode !== 'sketch' ? num(v, 'angle', 'Angle', { positive: true }) : 360;
         const done = (result: Result) => {
             if (!result.isError) {
@@ -685,9 +806,12 @@ const finishTool: ToolDef = {
         if (target?.feature) {
             const ref = 'sketchRef' in target.feature ? target.feature.sketchRef : undefined;
             const mode = op.mode === 'cut' ? 'cut' : 'add';
-            const fields = op.op === 'extrude'
-                ? { mode, direction: op.direction, through: op.through, ...(op.through ? {} : { distance }), regions }
-                : { mode, axis: op.axis, angle, regions };
+            let fields: Record<string, unknown> = { mode, axis: op.axis, angle, regions };
+            if (op.op === 'extrude') {
+                const extras = extrudeExtras(op, mode === 'cut');
+                fields = { mode, direction: op.direction, through: op.through, ...(isBlind(op.end) ? { distance } : {}), regions, ...extras };
+                Object.assign(fields, extrudeResets(target.feature, fields, op.through));
+            }
             const updates = ref ? [{ id: ref, sketch }, { id: target.feature.id, ...fields }] : [{ id: target.feature.id, sketch, ...fields }];
             return done(await runTool('features_update', { partId: target.partId, updates }));
         }
@@ -758,6 +882,7 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
         hint: kind === 'cut' ? 'cut a sketch into the part' : `${label.toLowerCase()} a sketch`,
         width: 300,
         regionPick: 'step',
+        preview: true,
         // With no sketch to use yet, the button starts one.
         instant: (ctx) => beginSketch(ctx, kind),
         popupIf: (ctx) => !!ctx.edit || sketchSteps(ctx.part).length > 0,
@@ -765,11 +890,7 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
             const steps = sketchSteps(ctx.part);
             return [
                 { key: 'sketch', label: 'Sketch', kind: 'select', options: steps.map((f) => ({ value: f.id, label: f.name ?? f.id })) },
-                { key: 'distance', label: 'Distance', kind: 'number', unit: 'mm', min: 0, section: 'Direction 1',
-                    show: (v) => op === 'extrude' && !(v.mode === 'cut' && v.through) },
-                { key: 'direction', label: 'Direction', kind: 'select', options: opts(['normal', 'Along normal'], ['reverse', 'Reversed'], ['symmetric', 'Symmetric']),
-                    section: 'Direction 1', show: () => op === 'extrude' },
-                { key: 'through', label: 'Through all', kind: 'check', section: 'Direction 1', show: (v) => op === 'extrude' && v.mode === 'cut' },
+                ...extrudeFields(() => op === 'extrude', (v) => v.mode === 'cut'),
                 { key: 'axis', label: 'Axis', kind: 'select', options: opts(['v', 'Sketch V (vertical)'], ['u', 'Sketch U (horizontal)']),
                     section: 'Revolve', show: () => op === 'revolve' },
                 { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Revolve', show: () => op === 'revolve' },
@@ -784,18 +905,20 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
             const values: Values = {
                 sketch: last?.id ?? '', mode: kind === 'cut' ? 'cut' : 'add', distance: '10',
                 direction: kind === 'cut' && last && (typeof last.sketch.plane !== 'string' || (last.sketch.offset ?? 0) > 0) ? 'reverse' : 'normal',
-                through: kind === 'cut', axis: 'v', angle: '360',
+                axis: 'v', angle: '360', ...extrudeValues({ through: kind === 'cut' }),
             };
             if (f && (f.op === 'extrude' || f.op === 'revolve')) {
                 Object.assign(values, { sketch: f.sketchRef ?? values.sketch, mode: f.mode });
                 if (f.op === 'extrude') {
-                    Object.assign(values, { distance: fmt(f.distance ?? 10), direction: f.direction ?? 'normal', through: !!f.through });
+                    Object.assign(values, { distance: fmt(f.distance ?? 10), direction: f.direction ?? 'normal', ...extrudeValues(f) });
                 } else {
                     Object.assign(values, { axis: f.axis, angle: fmt(f.angle ?? 360) });
                 }
             }
             return values;
         },
+        // `through` follows the end condition (other code still reads it).
+        onChange: (key, v) => (key === 'end' ? { through: v.end === 'throughAll' } : undefined),
         extra: (api, ctx) => (
             <>
                 <SketchPickListener api={api} keyName="sketch" />
@@ -820,15 +943,17 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
             const mode = (v.mode as 'add' | 'cut') ?? 'add';
             const finish: FinishOp = {
                 op, mode, distance: Number(v.distance) || 0, direction: v.direction as FinishOp['direction'],
-                through: op === 'extrude' && mode === 'cut' && !!v.through, axis: v.axis as 'u' | 'v', angle: Number(v.angle) || 360,
+                axis: v.axis as 'u' | 'v', angle: Number(v.angle) || 360,
+                ...(op === 'extrude' ? extrudeOptions(v, mode === 'cut', true) : { through: false }),
             };
-            const distance = op === 'extrude' && !finish.through ? num(v, 'distance', 'Distance', { positive: true }) : 0;
+            const distance = op === 'extrude' && isBlind(finish.end) ? num(v, 'distance', 'Depth', { positive: true }) : 0;
             const angle = op === 'revolve' ? num(v, 'angle', 'Angle', { positive: true }) : 360;
             const name = sketchSteps(ctx.part).find((f) => f.id === sketchRef)?.name?.split(' · ')[0] ?? sketchRef;
             const feature = sketchOpFeature(finish, { sketchRef }, name, distance, angle);
             if (ctx.edit?.feature && op === 'extrude') {
-                // Switching between a distance and through-all: send both explicitly.
+                // Switching between a distance and through-all: send both explicitly; options turned off are reset.
                 feature.through = finish.through;
+                Object.assign(feature, extrudeResets(ctx.edit.feature, feature, finish.through));
             }
             // On an edit the picks are always sent: an empty list means the whole sketch again.
             const regions = useRegionPick.getState().picked;
@@ -843,6 +968,7 @@ function sketchOpTool(kind: FinishChoice & ('extrude' | 'cut' | 'revolve')): Too
 /** Loft through two or more sketch steps, in the order picked. */
 const loftTool: ToolDef = {
     id: 'loft',
+    preview: true,
     label: 'Loft',
     icon: 'loft',
     op: 'loft',
@@ -929,6 +1055,7 @@ const constrainTools: ToolDef[] = [
         shortcut: 'X',
         instant: () => toggleConstructionSelected(),
     },
+    ...moreConstrainTools,
 ];
 
 const MODIFY_TOOLS: { id: SketchTool; label: string; key?: string; icon: string; hint: string }[] = [
@@ -996,6 +1123,7 @@ const modifyTools: ToolDef[] = [
     })),
     linearSketchPattern,
     circularSketchPattern,
+    ...moreModifyTools,
 ];
 
 const sketchModeTools: ToolDef[] = [
@@ -1009,6 +1137,7 @@ const sketchModeTools: ToolDef[] = [
         active: (_, s) => s.sketchTool === 'select',
     },
     ...sketchDrawTools,
+    ...moreDrawTools,
     sketchOptionsTool,
     finishTool,
     {
@@ -1090,6 +1219,7 @@ function faceOf(direction: Vec3 | undefined): string {
 const featureTools: Record<string, ToolDef> = {
     fillet: {
         id: 'fillet',
+        preview: true,
         label: 'Fillet',
         icon: 'fillet',
         op: 'fillet',
@@ -1109,6 +1239,7 @@ const featureTools: Record<string, ToolDef> = {
     },
     chamfer: {
         id: 'chamfer',
+        preview: true,
         label: 'Chamfer',
         icon: 'chamfer',
         op: 'chamfer',
@@ -1128,6 +1259,7 @@ const featureTools: Record<string, ToolDef> = {
     },
     shell: {
         id: 'shell',
+        preview: true,
         label: 'Shell',
         icon: 'shell',
         op: 'shell',
@@ -1153,6 +1285,7 @@ const featureTools: Record<string, ToolDef> = {
     },
     hole: {
         id: 'hole',
+        preview: true,
         label: 'Hole',
         icon: 'hole',
         op: 'hole',
@@ -1223,6 +1356,7 @@ const featureTools: Record<string, ToolDef> = {
     },
     pocket: {
         id: 'pocket',
+        preview: true,
         label: 'Cut pocket',
         icon: 'pocket',
         op: 'cut',
@@ -1286,6 +1420,7 @@ const featureTools: Record<string, ToolDef> = {
     },
     mirror: {
         id: 'mirror-feature',
+        preview: true,
         label: 'Mirror',
         icon: 'mirror',
         op: 'mirror',
@@ -1313,6 +1448,7 @@ const featureTools: Record<string, ToolDef> = {
     },
     thread: {
         id: 'thread',
+        preview: true,
         label: 'Thread',
         icon: 'thread',
         op: 'thread',
@@ -1377,6 +1513,7 @@ const solidTools: ToolDef[] = [
 
 const patternTool: ToolDef = {
     id: 'pattern',
+    preview: true,
     label: 'Pattern',
     icon: 'pattern',
     hint: 'copies of the whole part',
@@ -1405,6 +1542,7 @@ function copyOf(part: Part, patch: Partial<Part>): Record<string, unknown> {
 const transformTools: ToolDef[] = [
     {
         id: 'move',
+        preview: true,
         label: 'Move',
         icon: 'move',
         hint: 'absolute position of the part centre',
@@ -1441,6 +1579,7 @@ const transformTools: ToolDef[] = [
     },
     {
         id: 'rotate',
+        preview: true,
         label: 'Rotate',
         icon: 'rotate',
         hint: 'Euler XYZ',
@@ -1473,6 +1612,7 @@ const transformTools: ToolDef[] = [
     },
     {
         id: 'duplicate',
+        preview: true,
         label: 'Duplicate',
         icon: 'duplicate',
         needsPart: true,
@@ -1491,6 +1631,7 @@ const transformTools: ToolDef[] = [
     },
     {
         id: 'mirror-copy',
+        preview: true,
         label: 'Mirror copy',
         icon: 'mirror',
         hint: 'a mirrored copy across a world plane',
@@ -1548,6 +1689,7 @@ export const MATERIAL_PRESETS: { name: string; material: Required<Pick<Material,
 
 const materialTool: ToolDef = {
     id: 'material',
+    preview: true,
     label: 'Material',
     icon: 'material',
     needsPart: true,
@@ -1846,7 +1988,7 @@ export const PART_GROUPS: ToolGroup[] = [
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
     { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, othersTool, sketchesTool, sketchVisibilityTool] },
-    { id: 'inspect', label: 'Inspect', icon: 'check', collapse: 1, tools: [checkTool] },
+    { id: 'inspect', label: 'Inspect', icon: 'check', collapse: 1, tools: [checkTool, ...evaluateTools] },
     { id: 'history', label: 'History', icon: 'undo', tools: historyTools },
 ];
 

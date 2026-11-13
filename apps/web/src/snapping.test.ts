@@ -70,6 +70,23 @@ describe('sketch snapping', () => {
         expect(snapCursor(EMPTY_GEOMETRY, [13.4, 7.7], opts({ enabled: false }))).toMatchObject({ p: [13.4, 7.7], kind: null });
     });
 
+    it('skips the snap kinds that are switched off and falls through to the next one', () => {
+        const g = scene();
+        // End point off: the cursor near (20, 0) lands on the line itself.
+        expect(snapCursor(g, [20.2, 0.1], opts({ kinds: { point: false } })).kind).toBe('curve');
+        // Intersection off: the crossing of line and circle is also the circle's quadrant; with both off, on a curve.
+        expect(snapCursor(g, [5.2, 0.2], opts({ kinds: { intersection: false } })).kind).toBe('quadrant');
+        expect(snapCursor(g, [5.2, 0.2], opts({ kinds: { intersection: false, quadrant: false } })).kind).toBe('curve');
+        // Centre off: the centre (10, 0) lies on the line, and its middle is there too.
+        expect(snapCursor(g, [10.1, 0.2], opts({ kinds: { centre: false } })).kind).toBe('mid');
+        // On curve off as well: alignment, then the grid.
+        expect(snapCursor(g, [13.6, 3.7], opts({ kinds: { curve: false } })).kind).toBe('grid');
+        expect(snapCursor(EMPTY_GEOMETRY, [8.2, 4.3], opts({ last: [2, 4], kinds: { aligned: false } }))).toMatchObject({ p: [8, 4], kind: 'grid' });
+        expect(snapCursor(EMPTY_GEOMETRY, [13.4, 7.7], opts({ grid: 5, kinds: { grid: false } }))).toMatchObject({ p: [13.4, 7.7], kind: null });
+        // Midpoint hints go with the midpoints.
+        expect(snapCursor(g, [4.3, 0.3], opts({ kinds: { mid: false } })).hints).toEqual([]);
+    });
+
     it('keeps a point placed at an intersection on both curves when the sketch changes', () => {
         let g = scene();
         const cross = snapCursor(g, [5.2, 0.2], opts());

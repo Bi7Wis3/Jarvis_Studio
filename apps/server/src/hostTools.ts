@@ -1,8 +1,11 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Euler, MathUtils, Matrix4, Quaternion, Vector3 } from 'three';
 import { z } from 'zod';
-import { DEFAULT_PRINT, type Vec3 } from '@jarvis/core';
-import type { CadKernel, MeshData } from './cad/kernel.js';
+import { DEFAULT_PRINT, effectivePart, type Part, type Vec3 } from '@jarvis/core';
+import { instanceTransforms } from '@jarvis/core/geometry';
+import { combineContext, type CadKernel, type MeshData } from './cad/kernel.js';
+import { combineProps, type Mat3, type MassProps, type Placement } from './cad/props.js';
 import { exportStl } from './exportStl.js';
 import type { MeshService } from './meshes.js';
 import { EXPORTS_DIR } from './paths.js';
@@ -37,6 +40,102 @@ function fitsBed(size: Vec3, bed: Vec3): boolean {
     const s = [...size].sort((a, b) => a - b);
     const b = [...bed].sort((a, c) => a - c);
     return s.every((v, i) => v <= b[i]);
+}
+
+/** World placements of every copy of a part: its own position and rotation, then its repeat copies. */
+function placements(part: Part): Placement[] {
+    const [rx, ry, rz] = part.rotation.map((d) => MathUtils.degToRad(d));
+    const local = new Matrix4().compose(new Vector3(...part.position),
+        new Quaternion().setFromEuler(new Euler(rx, ry, rz, 'XYZ')), new Vector3(1, 1, 1));
+    return instanceTransforms(part).map((instance) => {
+        const e = instance.clone().multiply(local).elements; // column-major
+        return {
+            rotation: [[e[0], e[4], e[8]], [e[1], e[5], e[9]], [e[2], e[6], e[10]]],
+            translation: [e[12], e[13], e[14]],
+        };
+    });
+}
+
+/** Two decimals, or three significant figures below 1 (small masses and moments). */
+const n2 = (n: number): string => {
+    const a = Math.abs(n);
+    return a < 1e-9 ? '0' : a >= 1 ? String(Math.round(n * 100) / 100) : String(Number(n.toPrecision(3)));
+};
+const vec = (v: readonly number[]): string => v.map(n2).join(', ');
+const scaleMat = (m: Mat3, k: number): Mat3 => m.map((row) => row.map((v) => v * k)) as Mat3;
+const sig = (n: number): number => Number(n.toPrecision(6));
+const sigVec = (v: readonly number[]): number[] => v.map((x) => (Math.abs(x) < 1e-9 ? 0 : sig(x)));
+const massText = (grams: number): string => (grams >= 1000 ? `${n2(grams / 1000)} kg` : `${n2(grams)} g`);
+
+/** Default density (PLA), g/cm³. */
+export const DEFAULT_DENSITY = 1.24;
+
+interface PartReport {
+    id: string;
+    name: string;
+    copies: number;
+    note?: string;
+    props?: MassProps;
+}
+
+/** Readable table and JSON numbers for mass_properties; density in g/cm³. */
+export function massReport(reports: PartReport[], parts: Part[], density: number): string {
+    const k = density / 1000; // g/mm³
+    const lines: string[] = [`Mass properties, density ${n2(density)} g/cm³ (inertia in g·mm²).`];
+    const json: Record<string, unknown> = { density, units: { length: 'mm', mass: 'g', inertia: 'g·mm²' }, parts: [] };
+    for (const r of reports) {
+        lines.push('', `${r.name} (${r.id})${r.copies > 1 ? `, ${r.copies} copies (figures for one)` : ''}`);
+        const entry: Record<string, unknown> = { id: r.id, name: r.name, copies: r.copies };
+        if (r.note) {
+            lines.push(`  Note: ${r.note}`);
+            entry.note = r.note;
+        }
+        const p = r.props;
+        if (p) {
+            const size = [0, 1, 2].map((a) => p.bounds.max[a] - p.bounds.min[a]);
+            const inertia = scaleMat(p.inertia, k);
+            lines.push(
+                `  Mass: ${massText(p.volume * k)}`,
+                `  Volume: ${n2(p.volume / 1000)} cm³ (${n2(p.volume)} mm³)`,
+                `  Surface area: ${n2(p.area)} mm²`,
+                `  Centre of mass (part frame): ${vec(p.centre)} mm`,
+                `  Bounding box (part frame): ${size.map(n2).join(' x ')} mm, from ${vec(p.bounds.min)} to ${vec(p.bounds.max)}`,
+                `  Principal moments at the centre of mass: ${p.principal.moments.map((m) => n2(m * k)).join(', ')} g·mm²`,
+                ...p.principal.axes.map((a, i) => `    axis ${i + 1}: ${a.map((x) => n2(x)).join(', ')}`),
+                `  Inertia tensor at the centre of mass (part axes): ${inertia.map((row) => `[${row.map(n2).join(', ')}]`).join(' ')} g·mm²`,
+            );
+            Object.assign(entry, {
+                volume: sig(p.volume), area: sig(p.area), mass: sig(p.volume * k),
+                centre: sigVec(p.centre), bounds: { min: sigVec(p.bounds.min), max: sigVec(p.bounds.max) },
+                inertia: inertia.map(sigVec), principalMoments: sigVec(p.principal.moments.map((m) => m * k)),
+                principalAxes: p.principal.axes.map(sigVec),
+            });
+        }
+        (json.parts as unknown[]).push(entry);
+    }
+    const built = reports.filter((r) => r.props);
+    const copies = built.reduce((s, r) => s + r.copies, 0);
+    if (copies > 1) {
+        const total = combineProps(built.map((r) => ({
+            props: r.props!, placements: placements(parts.find((p) => p.id === r.id)!),
+        })))!;
+        const inertia = scaleMat(total.inertia, k);
+        lines.push(
+            '', `Total (${copies} bodies${built.length < reports.length ? `; ${reports.length - built.length} part(s) without a body left out` : ''})`,
+            `  Mass: ${massText(total.volume * k)}`,
+            `  Volume: ${n2(total.volume / 1000)} cm³ (${n2(total.volume)} mm³)`,
+            `  Surface area: ${n2(total.area)} mm² (sum of the bodies)`,
+            `  Centre of mass (world): ${vec(total.centre)} mm`,
+            `  Principal moments at the centre of mass: ${total.principal.moments.map((m) => n2(m * k)).join(', ')} g·mm²`,
+            `  Inertia tensor at the centre of mass (world axes): ${inertia.map((row) => `[${row.map(n2).join(', ')}]`).join(' ')} g·mm²`,
+        );
+        json.total = {
+            bodies: copies, volume: sig(total.volume), area: sig(total.area), mass: sig(total.volume * k),
+            centre: sigVec(total.centre), inertia: inertia.map(sigVec),
+            principalMoments: sigVec(total.principal.moments.map((m) => m * k)), principalAxes: total.principal.axes.map(sigVec),
+        };
+    }
+    return `${lines.join('\n')}\n\n\`\`\`json\n${JSON.stringify(json)}\n\`\`\``;
 }
 
 export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
@@ -74,6 +173,41 @@ export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
                 });
                 const errors = Object.keys(status.errors).length;
                 return { text: `${errors ? `${errors} part(s) failed to build.` : 'All parts built.'}\n${lines.join('\n')}` };
+            },
+        },
+        {
+            name: 'mass_properties',
+            description: 'Mass properties of parts from the real CAD solid: mass, volume, surface area, centre of mass, '
+                + 'bounding box and moments of inertia, per part and for all together (world frame, repeat copies '
+                + 'included). density in g/cm³ (PLA 1.24 by default; PETG 1.27, ABS 1.04, aluminium 2.70, steel 7.85). '
+                + 'Changes nothing.',
+            schema: {
+                partIds: z.array(z.string()).min(1).optional().describe('Only these parts (default: all)'),
+                density: z.number().positive().max(30).optional().describe('g/cm³'),
+            },
+            run: async ({ partIds, density }: { partIds?: string[]; density?: number }) => {
+                const project = store.get();
+                const print = project.print ?? DEFAULT_PRINT;
+                const ids = partIds ?? project.parts.map((p) => p.id);
+                const unknown = ids.filter((id) => !project.parts.some((p) => p.id === id));
+                if (unknown.length) {
+                    throw new Error(`No part with id ${unknown.join(', ')}`);
+                }
+                if (ids.length === 0) {
+                    throw new Error('The project has no parts');
+                }
+                const reports: PartReport[] = [];
+                for (const id of ids) {
+                    const part = project.parts.find((p) => p.id === id)!;
+                    const copies = placements(part).length;
+                    const { props, error } = await host.kernel.properties(effectivePart(part, project.parts), print,
+                        combineContext(part, project.parts));
+                    const note = !props
+                        ? (error ? `it failed to build (${error}), so there is no body to measure` : 'it has no solid body yet (only sketches or references)')
+                        : error ? `its history failed part way (${error}); figures are for the solid before that step` : undefined;
+                    reports.push({ id, name: part.name, copies, props: props ?? undefined, ...(note ? { note } : {}) });
+                }
+                return { text: massReport(reports, project.parts, density ?? DEFAULT_DENSITY) };
             },
         },
         {

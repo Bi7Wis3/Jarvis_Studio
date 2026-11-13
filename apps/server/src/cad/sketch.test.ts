@@ -438,3 +438,88 @@ describe('sketch regions', () => {
             .rejects.toThrow(/^feature "Boss" \(extrude\): its selected sketch regions no longer exist; pick them again/);
     }, SLOW);
 });
+
+describe('extrude options', () => {
+    const empty: Shape = { kind: 'empty' };
+    const top = (profiles: Sketch['profiles'], offset?: number): Sketch => ({ plane: 'top', offset, profiles });
+    const block: Feature = { id: 'b', op: 'extrude', mode: 'add', distance: 10, sketch: top([rect([0, 0], 20, 20)]) };
+
+    it('builds old-style steps as before, starts at an offset, and adds a second direction', async () => {
+        const through = await mesh(empty, [block,
+            { id: 'c', op: 'extrude', mode: 'cut', through: true, direction: 'reverse', sketch: top([rect([0, 0], 4, 4)], 10) }]);
+        expect(volume(through)).toBeCloseTo(3840, 1);
+        const offset = await mesh(empty, [{ id: 'e', op: 'extrude', mode: 'add', distance: 5, from: 3, sketch: top([rect([0, 0], 10, 10)]) }]);
+        expectBounds(offset, [-5, 3, -5], [5, 8, 5]);
+        const two = await mesh(empty, [{ id: 'e', op: 'extrude', mode: 'add', distance: 5, sketch: top([rect([0, 0], 10, 10)]),
+            second: { end: 'blind', distance: 3 } }]);
+        expect(volume(two)).toBeCloseTo(800, 1);
+        expectBounds(two, [-5, -3, -5], [5, 5, 5]);
+        await expect(mesh(empty, [{ id: 'e', op: 'extrude', mode: 'add', distance: 5, direction: 'symmetric',
+            sketch: top([rect([0, 0], 10, 10)]), second: { end: 'blind', distance: 3 } }])).rejects.toThrow(/second direction cannot be used with mid plane/);
+    }, SLOW);
+
+    it('goes up to next: a boss to a wall, a cut through the first slab only, and fails with nothing ahead', async () => {
+        const wall: Feature = { id: 'w', op: 'extrude', mode: 'add', distance: 10, sketch: top([rect([32.5, 0], 5, 10)]) };
+        // Right plane: u = -Z, v = +Y, normal +X. The boss runs from x = 0 to the wall at x = 30.
+        const boss = await mesh(empty, [wall, { id: 'e', op: 'extrude', mode: 'add', end: 'upToNext',
+            sketch: { plane: 'right', profiles: [rect([0, 5], 4, 4)] } }]);
+        expect(volume(boss)).toBeCloseTo(500 + 30 * 16, 0);
+        expectBounds(boss, [0, 0, -5], [35, 10, 5]);
+        // A C-shaped channel: slabs at y 0..2 and 8..10, joined at x 18..20.
+        const channel: Feature = { id: 'ch', op: 'extrude', mode: 'add', distance: 20, sketch: { plane: 'front', profiles: [{
+            kind: 'polygon', points: [[0, 0], [20, 0], [20, 10], [0, 10], [0, 8], [18, 8], [18, 2], [0, 2]] }] } };
+        const cut = await mesh(empty, [channel, { id: 'c', op: 'extrude', mode: 'cut', end: 'upToNext', direction: 'reverse',
+            sketch: top([rect([5, -10], 4, 4)], 10) }]);
+        expect(volume(cut)).toBeCloseTo(1840 - 32, 0);
+        await expect(mesh(empty, [{ id: 'e', name: 'Boss', op: 'extrude', mode: 'add', end: 'upToNext', sketch: top([rect([0, 0], 4, 4)]) }]))
+            .rejects.toThrow(/^feature "Boss" \(extrude\): Up to next: there is nothing ahead of the sketch to stop at/);
+    }, SLOW);
+
+    it('drafts the walls (rectangle and circle within 1%), refuses a draft that closes up, and flips the cut side', async () => {
+        const t = Math.tan((5 * Math.PI) / 180) * 10;
+        const box = await mesh(empty, [{ id: 'e', op: 'extrude', mode: 'add', distance: 10, draft: 5, sketch: top([rect([0, 0], 20, 10)]) }]);
+        const frustum = (10 / 6) * (200 + (20 - 2 * t) * (10 - 2 * t) + 4 * (20 - t) * (10 - t));
+        expect(Math.abs(volume(box) / frustum - 1)).toBeLessThan(0.01);
+        expectBounds(box, [-10, 0, -5], [10, 10, 5]);
+        const cone = await mesh(empty, [{ id: 'e', op: 'extrude', mode: 'add', distance: 10, draft: 5,
+            sketch: top([{ kind: 'circle', center: [0, 0], radius: 5 }]) }]);
+        const r = 5 - t;
+        expect(Math.abs(volume(cone) / ((Math.PI * 10 / 3) * (25 + 5 * r + r * r)) - 1)).toBeLessThan(0.01);
+        await expect(mesh(empty, [{ id: 'e', op: 'extrude', mode: 'add', distance: 10, draft: 40, sketch: top([rect([0, 0], 20, 10)]) }]))
+            .rejects.toThrow(/draft of 40° does not fit/);
+        // Flip side: a 3 mm cut keeps only the 4 x 4 post under the profile.
+        const flipped = await mesh(empty, [block, { id: 'c', op: 'extrude', mode: 'cut', distance: 3, direction: 'reverse', flipSide: true,
+            sketch: top([rect([0, 0], 4, 4)], 10) }]);
+        expect(volume(flipped)).toBeCloseTo(4000 - 3 * (400 - 16), 0);
+    }, SLOW);
+});
+
+describe('picked edges and faces', () => {
+    const empty: Shape = { kind: 'empty' };
+    // A 40 x 10 x 20 block on the top plane: x -20..20, y 0..10, z -10..10.
+    const block: Feature = { id: 'b', op: 'extrude', mode: 'add', distance: 10, sketch: { plane: 'top', profiles: [rect([0, 0], 40, 20)] } };
+
+    it('fillets and chamfers only the picked edges, and fails clearly when a pick is gone', async () => {
+        const r = 2;
+        // The top edge along x at z = 10.
+        const one = await mesh(empty, [block, { id: 'f', op: 'fillet', radius: r, at: [[0, 10, 10]] }]);
+        expect(volume(one)).toBeCloseTo(8000 - (r * r - (Math.PI * r * r) / 4) * 40, 0);
+        const unequal = await mesh(empty, [block, { id: 'c', op: 'chamfer', size: 2, distance2: 3, at: [[0, 10, 10]] }]);
+        expect(volume(unequal)).toBeCloseTo(8000 - ((2 * 3) / 2) * 40, 0);
+        await expect(mesh(empty, [block, { id: 'f', op: 'fillet', radius: r, at: [[0, 30, 10]] }]))
+            .rejects.toThrow(/selected edge 1 no longer exists/);
+    }, SLOW);
+
+    it('shells with a picked face removed and drafts picked faces about a picked face', async () => {
+        const tray = await mesh(empty, [block, { id: 's', op: 'shell', thickness: 2, remove: [{ at: [0, 10, 0], normal: [0, 1, 0] }] }]);
+        expect(volume(tray)).toBeCloseTo(8000 - 36 * 16 * 8, 0);
+        const drafted = await mesh(empty, [block, {
+            id: 'd', op: 'draft', angle: 5, neutralFace: { at: [0, 0, 0], normal: [0, -1, 0] },
+            picked: [{ at: [20, 5, 0], normal: [1, 0, 0] }, { at: [-20, 5, 0], normal: [-1, 0, 0] }],
+        }]);
+        // The two end faces lean in or out by 10·tan(5°) at the top: the volume changes by that wedge on each end.
+        const wedge = (10 * 10 * Math.tan((5 * Math.PI) / 180) / 2) * 20;
+        expect(Math.abs(Math.abs(volume(drafted) - 8000) - 2 * wedge)).toBeLessThan(2);
+    }, SLOW);
+});
+

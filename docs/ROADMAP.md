@@ -15,10 +15,13 @@ The user's reference for what the app can do and how it behaves is SolidWorks pa
 the app keeps its own compact icon toolbar, floating popups and dark theme (no ribbon, tabs or left-side property
 panel). Every command in the two SolidWorks ribbons is wanted:
 
+Every tool is also to get the full set of options a professional CAD program gives it: the per-tool checklist is
+in [FEATURE_OPTIONS.md](FEATURE_OPTIONS.md).
+
 Features tab
 - [x] Extruded boss/base, extruded cut, revolved boss/base, revolved cut, swept boss/cut, lofted boss/cut
 - [x] Fillet, chamfer, linear/circular pattern, mirror, draft, shell, hole, thread, reference geometry (plane, axis, point)
-- [~] Per-feature choice of sketch regions, one sketch used by several extrudes and cuts (in progress)
+- [x] Per-feature choice of sketch regions, one sketch used by several extrudes and cuts; live previews in forms
 - [ ] Boundary boss/base and boundary cut
 - [ ] Hole wizard (standard sizes, counterbore/countersink, positions from sketch points)
 - [ ] Rib, wrap, intersect
@@ -26,16 +29,18 @@ Features tab
 
 Sketch tab
 - [x] Exit sketch, smart dimension (drag out of a line), line, rectangle, circle, 3-point arc, slot, polygon
-- [~] Trim, offset, mirror, sketch fillet/chamfer, extend, linear/circular sketch pattern, centre arc, centre rectangle
-  (in progress)
-- [ ] Spline, ellipse, text, point, centreline as a tool
-- [ ] Convert entities (project model edges), move/copy/rotate/scale entities
-- [ ] Display/delete relations panel, repair sketch, quick snaps menu, rapid sketch
+- [x] Trim, offset, mirror, sketch fillet/chamfer, extend, linear/circular sketch pattern, centre arc, centre rectangle
+- [x] Point, centreline, move/copy/rotate/scale entities, display/delete relations, quick snaps, repair sketch,
+  fully define sketch
+- [ ] Spline, ellipse, text (need new curve types in the kernel)
+- [ ] Convert entities (project model edges)
+- [ ] Rapid sketch
 
 Tree
 - [x] Part root, material, planes, origin, features with their sketch nested, rollback bar, suppress, rename, reorder
-- [ ] Names like Boss-Extrude1 / Cut-Extrude1 / Sketch1, the (-) under-defined mark on sketches, History, Sensors and
-  Annotations folders, parent/child view
+- [x] Names like Boss-Extrude1 / Cut-Extrude1 / Sketch1, the (-) under-defined mark on sketches, History folder,
+  feature editing in the left panel
+- [ ] Parent/child view
 
 ## Phase 0: Foundations (needed by everything after, and by CAM)
 

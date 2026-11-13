@@ -6,17 +6,20 @@ import { DEFAULT_PRINT, effectivePart, type Part, type PrintSettings, type Proje
 import { combineContext, type CombineContext } from './context.js';
 import { buildPartial, initOC, meshSolid, place, repeatCopies, errorMessage, type PartSpec } from './build.js';
 import { meshKey } from './key.js';
-import type { MeshData } from './kernel.js';
+import type { MeshData, PropsResult } from './kernel.js';
+import { massProperties } from './props.js';
 
 export type WorkerRequest =
     | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext }
-    | { id: number; type: 'step'; project: Project };
+    | { id: number; type: 'step'; project: Project }
+    | { id: number; type: 'props'; part: PartSpec; print: PrintSettings; context?: CombineContext };
 
 export type WorkerResponse =
     | { type: 'ready' }
     | { type: 'fatal'; error: string }
     | { id: number; ok: true; mesh: MeshData }
     | { id: number; ok: true; step: Uint8Array }
+    | { id: number; ok: true; props: PropsResult }
     | { id: number; ok: false; error: string; partial?: MeshData };
 
 const port = parentPort;
@@ -108,6 +111,14 @@ async function handle(request: WorkerRequest): Promise<void> {
             // A part with no body yet (an empty shape with only sketches) meshes as nothing.
             const mesh = built.shape ? meshSolid(built.shape) : emptyMesh();
             port!.postMessage({ id: request.id, ok: true, mesh } satisfies WorkerResponse, meshTransfer(mesh));
+        } else if (request.type === 'props') {
+            // A failed history still reports the solid as far as it built, with the error alongside.
+            const built = build(request.part, request.print, request.context);
+            const props: PropsResult = {
+                props: built.shape ? massProperties(built.shape) : null,
+                ...(built.error ? { error: built.error } : {}),
+            };
+            port!.postMessage({ id: request.id, ok: true, props } satisfies WorkerResponse);
         } else {
             const bytes = await step(request.project);
             port!.postMessage({ id: request.id, ok: true, step: bytes } satisfies WorkerResponse,

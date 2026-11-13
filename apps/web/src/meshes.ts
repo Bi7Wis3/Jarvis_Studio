@@ -62,9 +62,12 @@ function load(key: string): Promise<KernelMesh | null> {
     return entry;
 }
 
-/** The kernel mesh for a part, or null while it is building (or when the kernel failed). */
-export function useKernelMesh(partId: string): KernelMesh | null {
-    const key = useStudio((s) => s.meshes.keys[partId] ?? null);
+/**
+ * The kernel mesh for a part, or null while it is building (or when the kernel failed). `withPreview`: the open
+ * tool form's preview mesh when it has one (the 3D view only; readouts show the real part).
+ */
+export function useKernelMesh(partId: string, withPreview = false): KernelMesh | null {
+    const key = useStudio((s) => (withPreview ? s.preview?.keys[partId] : undefined) ?? s.meshes.keys[partId] ?? null);
     const [mesh, setMesh] = useState<{ key: string; mesh: KernelMesh | null } | null>(null);
     useEffect(() => {
         if (!key) {
@@ -92,4 +95,21 @@ export function useKernelMesh(partId: string): KernelMesh | null {
     }, [key]);
     // Keep showing the previous mesh while a changed part rebuilds, so it does not flicker.
     return mesh?.mesh ?? null;
+}
+
+/** The mesh with this key, or null while it loads; for drawing something that is not a committed part (a preview). */
+export function useMeshByKey(key: string | null): KernelMesh | null {
+    const [mesh, setMesh] = useState<{ key: string; mesh: KernelMesh } | null>(null);
+    useEffect(() => {
+        if (!key) {
+            return;
+        }
+        let live = true;
+        void load(key).then((result) => live && result && setMesh({ key, mesh: result }));
+        return () => {
+            live = false;
+        };
+    }, [key]);
+    // The last one stays up while the next loads, so a ghost does not blink between values.
+    return key ? mesh?.mesh ?? null : null;
 }

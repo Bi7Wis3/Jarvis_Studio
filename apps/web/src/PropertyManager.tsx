@@ -16,11 +16,11 @@ import type { Pt } from './sketchMath';
 export const usePropertyManager = create<{ open: boolean; slot: HTMLElement | null }>(() => ({ open: false, slot: null }));
 
 /**
- * Feature forms open in the property manager: in the part workspace (or a sketch), tools that create or edit a
- * history step (`op`, `shapes`) and those marked `panel` (finish sketch, sketch plane, sketch patterns, pattern).
+ * Every tool form opens in the property manager, in the left panel, in both workspaces and while sketching: nothing
+ * floats under the toolbar. (The arguments are kept for callers; the rule no longer depends on them.)
  */
-export function usesPanel(tool: ToolDef, workspace: 'part' | 'assembly', sketching: boolean): boolean {
-    return (workspace === 'part' || sketching) && (!!tool.op || !!tool.shapes || !!tool.panel);
+export function usesPanel(_tool: ToolDef, _workspace: 'part' | 'assembly', _sketching: boolean): boolean {
+    return true;
 }
 
 const shortName = (name: string | undefined, fallback: string) => name?.split(' · ')[0] || fallback;

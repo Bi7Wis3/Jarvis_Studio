@@ -1,10 +1,13 @@
 // 2D sketches on a plane of the part frame (Y up), turned into faces and then extruded or revolved.
 
 import {
-    addHolesInFace, assembleWire, basicFaceExtrusion, loft, makeCircle, makeCompound, makeFace, makeLine,
-    makeThreePointArc, revolution, Vector, type Edge, type Face, type Shape3D, type Wire,
+    addHolesInFace, assembleWire, basicFaceExtrusion, cast, getOC, localGC, loft, makeCircle, makeCompound, makeFace,
+    makeLine, makeThreePointArc, measureDistanceBetween, measureVolume, revolution, Vector, type Edge, type Face,
+    type Shape3D, type Wire,
 } from 'replicad';
-import type { ExtrudeDirection, Sketch, SketchPlaneName, SketchProfile, SketchRegion, Vec3 } from '@jarvis/core';
+import type {
+    ExtrudeDirection, ExtrudeEnd, ExtrudeSide, Sketch, SketchPlaneName, SketchProfile, SketchRegion, Vec3,
+} from '@jarvis/core';
 import { resolvePlane } from '@jarvis/core/reference';
 
 type P2 = [number, number];
@@ -471,6 +474,242 @@ export function throughRange(sketch: Sketch, bounds: [Vec3, Vec3], direction: Ex
     if (direction === 'symmetric') return [min - margin, max + margin];
     if (direction === 'reverse') return [Math.min(min, 0) - margin, 0];
     return [0, Math.max(max, 0) + margin];
+}
+
+// ---- Extrude options: end conditions, start offset, draft, flip side, second direction ---------------------
+
+/** The options of an extrude step (see the `extrude` feature in @jarvis/core). */
+export interface ExtrudeOptions {
+    distance?: number;
+    through?: boolean;
+    direction?: ExtrudeDirection;
+    end?: ExtrudeEnd;
+    from?: number;
+    draft?: number;
+    draftOutward?: boolean;
+    flipSide?: boolean;
+    second?: ExtrudeSide | null;
+    mode: 'add' | 'cut';
+}
+
+/** True when an extrude uses nothing beyond distance, direction and through (built exactly as before they existed). */
+export function isPlainExtrude(f: ExtrudeOptions): boolean {
+    return (f.end === undefined || f.end === 'blind' || f.end === 'throughAll') && !f.from && !f.draft && !f.flipSide && !f.second;
+}
+
+/** One way an extrusion goes from its start: sign along the sketch normal, end condition, depth and draft. */
+interface Leg {
+    sign: 1 | -1;
+    end: ExtrudeEnd;
+    distance: number;
+    /** Degrees; negative widens. */
+    draft: number;
+    what: string;
+}
+
+const NOTHING_AHEAD = 'Up to next: there is nothing ahead of the sketch to stop at';
+const ENDS: ExtrudeEnd[] = ['blind', 'throughAll', 'upToNext'];
+
+function draftAngle(draft: number | undefined, outward: boolean | undefined, what: string): number {
+    const angle = draft ?? 0;
+    if (!Number.isFinite(angle) || angle < 0 || angle >= 89) {
+        throw new Error(`${what} draft must be 0 to 89 degrees`);
+    }
+    return outward ? -angle : angle;
+}
+
+function legsOf(f: ExtrudeOptions): Leg[] {
+    const direction = f.direction ?? 'normal';
+    const end = f.end ?? (f.through ? 'throughAll' : 'blind');
+    if (!ENDS.includes(end) || (f.second && !ENDS.includes(f.second.end))) {
+        throw new Error('extrude end must be blind, throughAll or upToNext');
+    }
+    const depth = (distance: number | undefined, what: string): number => {
+        if (!Number.isFinite(distance) || Math.abs(distance!) < 1e-9) {
+            throw new Error(`${what} needs a non-zero distance (or another end condition)`);
+        }
+        return Math.abs(distance!);
+    };
+    const draft = draftAngle(f.draft, f.draftOutward, 'direction 1');
+    if (direction === 'symmetric') {
+        if (f.second) {
+            throw new Error('a second direction cannot be used with mid plane (symmetric): use one or the other');
+        }
+        if (end === 'upToNext') {
+            throw new Error('mid plane (symmetric) works with blind or through all, not up to next');
+        }
+        const half = end === 'blind' ? depth(f.distance, 'extrude') / 2 : 0;
+        return [1, -1].map((sign) => ({ sign: sign as 1 | -1, end, distance: half, draft, what: 'extrude' }));
+    }
+    // A negative distance reverses the direction, as it always has.
+    const sign = (direction === 'reverse') !== ((f.distance ?? 0) < 0) ? -1 : 1;
+    const legs: Leg[] = [{ sign, end, distance: end === 'blind' ? depth(f.distance, 'direction 1') : 0, draft, what: 'direction 1' }];
+    if (f.second) {
+        const s = f.second;
+        legs.push({
+            sign: -sign as 1 | -1, end: s.end, distance: s.end === 'blind' ? depth(s.distance, 'direction 2') : 0,
+            draft: draftAngle(s.draft, s.draftOutward, 'direction 2'), what: 'direction 2',
+        });
+    }
+    return legs;
+}
+
+const dot = (a: Vec3, b: Vec3): number => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const along = (frame: SketchFrame, t: number): Vec3 => {
+    const { origin: o, normal: n } = frame;
+    return [o[0] + n[0] * t, o[1] + n[1] * t, o[2] + n[2] * t];
+};
+
+/** How far the body's bounding box reaches from `t0` toward `sign` along the sketch normal (negative: all behind). */
+function reachAhead(frame: SketchFrame, bounds: [Vec3, Vec3], t0: number, sign: number): number {
+    const [lo, hi] = bounds;
+    let reach = -Infinity;
+    for (const x of [lo[0], hi[0]]) {
+        for (const y of [lo[1], hi[1]]) {
+            for (const z of [lo[2], hi[2]]) {
+                const t = dot([x - frame.origin[0], y - frame.origin[1], z - frame.origin[2]], frame.normal);
+                reach = Math.max(reach, sign * (t - t0));
+            }
+        }
+    }
+    return reach;
+}
+
+/**
+ * Tapers the side walls of a prism (every face but its caps) about the plane at `t0`: a positive angle narrows
+ * it going toward `sign`, a negative one widens it. Planar and cylindrical walls (lines, arcs, circles) only.
+ */
+function draftWalls(solid: Shape3D, frame: SketchFrame, t0: number, sign: number, angle: number): Shape3D {
+    const n = frame.normal;
+    const walls = solid.faces.filter((face) => !(face.geomType === 'PLANE' && Math.abs(dot(face.normalAt().toTuple() as Vec3, n)) > 1 - 1e-7));
+    const oc = getOC();
+    const [r, gc] = localGC();
+    try {
+        const builder = r(new oc.BRepOffsetAPI_DraftAngle(solid.wrapped));
+        const plane = r(new oc.gp_Pln(r(new oc.gp_Pnt(...along(frame, t0))), r(new oc.gp_Dir(n[0], n[1], n[2]))));
+        const dir = r(new oc.gp_Dir(n[0] * sign, n[1] * sign, n[2] * sign));
+        for (const face of walls) {
+            builder.Add(face.wrapped, dir, (angle * Math.PI) / 180, plane, true);
+            if (!builder.AddDone()) throw new Error('add');
+        }
+        builder.Build(r(new oc.Message_ProgressRange()));
+        if (!builder.IsDone()) throw new Error('build');
+        const result = cast(builder.Shape()) as Shape3D;
+        const analyzer = r(new oc.BRepCheck_Analyzer(result.wrapped, true, false));
+        if (!analyzer.IsValid()) throw new Error('invalid');
+        return result;
+    } catch {
+        throw new Error(`a draft of ${Math.abs(angle)}° does not fit this profile and depth (the walls would meet); `
+            + 'use a smaller angle or depth');
+    } finally {
+        gc();
+    }
+}
+
+/** A plane face at `t` along the sketch normal, large enough to cover the box `bounds` (for distance checks). */
+function capPlane(frame: SketchFrame, bounds: [Vec3, Vec3], t: number): Face {
+    const [lo, hi] = bounds;
+    const c: Vec3 = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+    const size = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) + Math.abs(t) + 100;
+    const rel: Vec3 = [c[0] - frame.origin[0], c[1] - frame.origin[1], c[2] - frame.origin[2]];
+    const centre: P2 = [dot(rel, frame.u), dot(rel, frame.v)];
+    const plane: SketchFrame = { ...frame, origin: along(frame, t) };
+    const corners: P2[] = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => [centre[0] + a * size, centre[1] + b * size]);
+    return makeFace(wireOf(plane, polygonPieces(corners)));
+}
+
+/**
+ * Up to next, from the long prism `tool` (start `t0`, far end `far`). A boss keeps the part of the prism before
+ * the body: the pieces of prism minus body that touch the start. A cut removes the first material the prism
+ * meets: the piece of prism and body nearest the start (and any that begin before that one ends).
+ */
+function upToNext(tool: Shape3D, body: Shape3D, mode: 'add' | 'cut', frame: SketchFrame, bounds: [Vec3, Vec3],
+    t0: number, far: number): Shape3D {
+    const tol = 1e-3;
+    const length = Math.abs(far - t0);
+    const start = capPlane(frame, bounds, t0);
+    const end = capPlane(frame, bounds, far);
+    if (mode === 'add') {
+        const pieces = tool.cut(body).solids as Shape3D[];
+        const kept = pieces.filter((p) => measureDistanceBetween(p, start) < tol);
+        const total = pieces.reduce((a, p) => a + measureVolume(p), 0);
+        if (Math.abs(total - measureVolume(tool)) < 1e-6 * Math.max(1, total)) {
+            throw new Error(NOTHING_AHEAD);
+        }
+        if (!kept.length) {
+            throw new Error('Up to next: the sketch starts inside the body, so there is no gap to fill');
+        }
+        if (kept.some((p) => measureDistanceBetween(p, end) < tol)) {
+            throw new Error('Up to next: part of the profile meets nothing ahead; use blind or through all');
+        }
+        return fuseRegions(kept);
+    }
+    const pieces = (tool.intersect(body).solids as Shape3D[]).map((p) => ({
+        p, min: measureDistanceBetween(p, start), max: length - measureDistanceBetween(p, end),
+    }));
+    if (!pieces.length) {
+        throw new Error(NOTHING_AHEAD);
+    }
+    const first = pieces.reduce((a, b) => (b.min < a.min ? b : a));
+    return fuseRegions(pieces.filter((q) => q.min < first.max - tol).map((q) => q.p));
+}
+
+/**
+ * The material an extrude step adds or removes, with all its options. `body` is the part so far (null when there
+ * is none) and `bounds` its bounding box. Plain extrudes (see isPlainExtrude) are built by the caller as before.
+ */
+export function extrudeTool(sketch: Sketch, f: ExtrudeOptions, regions: P2[] | undefined, body: Shape3D | null,
+    bounds: [Vec3, Vec3] | null): Shape3D {
+    const legs = legsOf(f);
+    const frame = sketchFrame(sketch);
+    const from = f.from ?? 0;
+    if (!Number.isFinite(from)) {
+        throw new Error('extrude from offset must be a number');
+    }
+    const t0 = legs[0].sign * from;
+    if (f.flipSide && f.mode === 'cut' && legs.some((l) => l.end === 'upToNext')) {
+        throw new Error('flip side to cut works with blind and through all, not up to next');
+    }
+    // Far end of each leg along the normal.
+    const fars = legs.map((leg) => {
+        if (leg.end === 'blind') return t0 + leg.sign * leg.distance;
+        if (!body || !bounds) {
+            throw new Error(leg.end === 'upToNext' ? NOTHING_AHEAD
+                : 'through all needs a body to pass through; give a distance for the first extrude');
+        }
+        const reach = reachAhead(frame, bounds, t0, leg.sign);
+        if (leg.end === 'upToNext' && reach < 1e-6) {
+            throw new Error(NOTHING_AHEAD);
+        }
+        return t0 + leg.sign * (Math.max(reach, 0) + 1);
+    });
+    const parts: Shape3D[] = [];
+    // Straight legs that end at a depth share one prism (they run from the same start in opposite ways).
+    const plain = legs.map((leg, i) => (!leg.draft && leg.end !== 'upToNext' ? i : -1)).filter((i) => i >= 0);
+    if (plain.length) {
+        const ts = [t0, ...plain.map((i) => fars[i])];
+        parts.push(extrudeSketch(sketch, [Math.min(...ts), Math.max(...ts)], regions));
+    }
+    legs.forEach((leg, i) => {
+        if (plain.includes(i)) return;
+        let prism = extrudeSketch(sketch, [Math.min(t0, fars[i]), Math.max(t0, fars[i])], regions);
+        if (leg.draft) {
+            prism = draftWalls(prism, frame, t0, leg.sign, leg.draft);
+        }
+        parts.push(leg.end === 'upToNext' ? upToNext(prism, body!, f.mode, frame, bounds!, t0, fars[i]) : prism);
+    });
+    const tool = fuseRegions(parts);
+    if (!(f.flipSide && f.mode === 'cut')) {
+        return tool;
+    }
+    // Flip side: everything of the body within the cut's depth except the profile.
+    if (!bounds) {
+        throw new Error('flip side to cut needs a body');
+    }
+    const ts = [t0, ...fars];
+    const [lo, hi] = [Math.min(...ts), Math.max(...ts)];
+    const slab = basicFaceExtrusion(capPlane(frame, bounds, lo), new Vector(scale(frame.normal, hi - lo))) as Shape3D;
+    return slab.cut(tool);
 }
 
 /** Solid blended through the sections in order; each section is one closed profile without holes. */

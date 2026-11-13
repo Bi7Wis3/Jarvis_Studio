@@ -6,10 +6,18 @@ import type { Part, PrintSettings, Project } from '@jarvis/core';
 import { meshKey } from './key.js';
 import type { CombineContext } from './context.js';
 import type { WorkerRequest, WorkerResponse } from './worker.js';
+import type { MassProps } from './props.js';
 
 export { meshKey } from './key.js';
 export { combineContext, type CombineContext, type CombinePart } from './context.js';
 export { replicadApiNames } from './script.js';
+export type { MassProps, Mat3 } from './props.js';
+
+/** Mass properties of a part's solid: null props when it has no body; `error` when its history failed part way. */
+export interface PropsResult {
+    props: MassProps | null;
+    error?: string;
+}
 
 export interface MeshData {
     positions: Float32Array;
@@ -38,7 +46,8 @@ export interface CadKernelOptions {
     cacheSize?: number;
 }
 
-type JobRequest = Omit<Extract<WorkerRequest, { type: 'mesh' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'step' }>, 'id'>;
+type JobRequest = Omit<Extract<WorkerRequest, { type: 'mesh' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'step' }>, 'id'>
+    | Omit<Extract<WorkerRequest, { type: 'props' }>, 'id'>;
 
 interface Job {
     request: JobRequest;
@@ -115,6 +124,11 @@ export class CadKernel {
         return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     }
 
+    /** Volume, area, centre of mass and inertia (unit density) of a part's solid. Not cached. */
+    properties(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, context?: CombineContext): Promise<PropsResult> {
+        return this.run({ type: 'props', part: { shape: part.shape, features: part.features }, print, context }) as Promise<PropsResult>;
+    }
+
     async close(): Promise<void> {
         this.closed = true;
         const error = new Error('CAD kernel closed');
@@ -178,7 +192,7 @@ export class CadKernel {
         clearTimeout(current.timer);
         this.current = null;
         if (message.ok) {
-            current.job.resolve('mesh' in message ? message.mesh : message.step);
+            current.job.resolve('mesh' in message ? message.mesh : 'props' in message ? message.props : message.step);
         } else {
             current.job.reject(new CadBuildError(message.error, message.partial));
         }

@@ -4,7 +4,7 @@ import { AXIS_V, curveOf, curveRadius, loadSolver, pointOf, solveGeometry } from
 import { addCircle, addConstraint, addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import {
     addCentreArc, addCentreRect, chamferCorner, circularPattern, cornerOf, extendAt, filletCorner, linearPattern, mirrorCurves,
-    offsetChain, sideDistance, trimAt,
+    offsetChain, sideDistance, transformEntities, trimAt,
 } from './sketchEdit';
 import { geometryProfiles } from './sketchGeometry';
 import { area, profilePoints, type Pt } from './sketchMath';
@@ -345,5 +345,106 @@ describe('centre arc and centre rectangle', () => {
         const us = g.points.map((p) => p.u);
         expect(Math.min(...us)).toBeCloseTo(-30, 4);
         expect(Math.max(...us)).toBeCloseTo(30, 4);
+    });
+});
+
+describe('move, copy, rotate, scale', () => {
+    /** A 20 x 10 rectangle at the origin with its width dimensioned, and a line hanging off its corner (20, 10). */
+    function scene() {
+        const rect = addRect(EMPTY_GEOMETRY, [0, 0], [20, 10]);
+        let g = addConstraint(rect.g, { kind: 'length', line: rect.lines[0], value: 20 }).g;
+        const corner = (curveOf(g, rect.lines[1]) as { b: string }).b;
+        const tail = addLine(g, { at: [20, 10], point: corner }, { at: [30, 10] }, 'horizontal');
+        g = addConstraint(tail.g, { kind: 'length', line: tail.id, value: 10 }).g;
+        return { g, rect: rect.lines, tail: tail.id, corner };
+    }
+
+    it('moves a closed set with its relations, and nothing is dropped', () => {
+        const { g, rect } = scene();
+        const r = transformEntities(g, rect, { kind: 'move', by: [5, 7] }, false);
+        if ('error' in r) {
+            throw new Error(r.error);
+        }
+        const out = solved(r.g);
+        const first = curveOf(out, rect[0]) as { a: string };
+        expect(at(out, first.a)).toEqual([5, 7]);
+        // The corner the tail shares split off: the tail stays where it was, and it is still 10 long.
+        expect(r.dropped).toBe(0);
+        expect(out.constraints.filter((c) => c.kind === 'horizontal' || c.kind === 'vertical')).toHaveLength(5);
+        expect(out.curves).toHaveLength(5);
+        expect(out.points).toHaveLength(4 + 1 + 1);
+    });
+
+    it('drops the relations that tie a moved line to geometry that stays, and splits shared points', () => {
+        const { g, tail, corner } = scene();
+        const pinned = addConstraint(g, { kind: 'distance', a: corner, b: 'axis-v', value: 20 }).g;
+        const r = transformEntities(pinned, [tail], { kind: 'move', by: [0, 5] }, false);
+        if ('error' in r) {
+            throw new Error(r.error);
+        }
+        const line = curveOf(r.g, tail) as { a: string; b: string };
+        // The tail's start is a new point; the corner stays with the rectangle.
+        expect(line.a).not.toBe(corner);
+        expect(at(r.g, line.a)).toEqual([20, 15]);
+        expect(at(r.g, corner)).toEqual([20, 10]);
+        // Its own horizontal and length go along; nothing it shared is a relation, so none dropped here.
+        expect(r.dropped).toBe(0);
+        expect(solveGeometry(r.g).ok).toBe(true);
+        // A point on the line held to the rectangle by a relation: that one goes.
+        const held = addConstraint(pinned, { kind: 'pointOnCurve', point: (curveOf(pinned, tail) as { b: string }).b, curve: 'axis-u' }).g;
+        const r2 = transformEntities(held, [tail], { kind: 'move', by: [0, 5] }, false);
+        expect('error' in r2 ? -1 : r2.dropped).toBe(1);
+    });
+
+    it('copies with the relations among the copied curves, leaving the original', () => {
+        const { g, rect } = scene();
+        const r = transformEntities(g, rect, { kind: 'move', by: [0, 30] }, true);
+        if ('error' in r) {
+            throw new Error(r.error);
+        }
+        expect(r.created).toHaveLength(4);
+        expect(r.g.curves).toHaveLength(9);
+        // 4 + 1 + 1 relations before (4 H/V, a length on the rectangle, the tail's H and length), copied: 4 H/V + length.
+        expect(r.g.constraints).toHaveLength(g.constraints.length + 5);
+        const out = solved(r.g);
+        const copy = curveOf(out, r.created[0]) as { a: string; b: string };
+        expect(at(out, copy.a)).toEqual([0, 30]);
+        expect(at(out, copy.b)).toEqual([20, 30]);
+    });
+
+    it('turns about a point, swapping horizontal and vertical on a quarter turn and dropping them otherwise', () => {
+        const { g, rect } = scene();
+        const r = transformEntities(g, rect, { kind: 'rotate', centre: [0, 0], angle: 90 }, false);
+        if ('error' in r) {
+            throw new Error(r.error);
+        }
+        const out = solved(r.g);
+        const first = curveOf(out, rect[0]) as { a: string; b: string };
+        expect(at(out, first.b)[0]).toBeCloseTo(0, 6);
+        expect(at(out, first.b)[1]).toBeCloseTo(20, 6);
+        expect(out.constraints.find((c) => c.kind === 'vertical' && c.line === rect[0])).toBeTruthy();
+        const tilted = transformEntities(g, rect, { kind: 'rotate', centre: [0, 0], angle: 30 }, false);
+        if ('error' in tilted) {
+            throw new Error(tilted.error);
+        }
+        expect(tilted.g.constraints.filter((c) => (c.kind === 'horizontal' || c.kind === 'vertical') && rect.includes(c.line))).toHaveLength(0);
+        expect(tilted.dropped).toBe(4);
+        expect(solveGeometry(tilted.g).ok).toBe(true);
+    });
+
+    it('scales about a point: positions, radii and dimensions', () => {
+        let g = addCircle(EMPTY_GEOMETRY, { at: [10, 0] }, 5).g;
+        const circle = g.curves[0].id;
+        g = addConstraint(g, { kind: 'diameter', curve: circle, value: 10 }).g;
+        const r = transformEntities(g, [circle], { kind: 'scale', centre: [0, 0], factor: 2 }, false);
+        if ('error' in r) {
+            throw new Error(r.error);
+        }
+        const out = solved(r.g);
+        expect(curveRadius(out, circle)).toBeCloseTo(10);
+        expect(at(out, (curveOf(out, circle) as { center: string }).center)).toEqual([20, 0]);
+        expect(out.constraints.find((c) => c.kind === 'diameter')).toMatchObject({ value: 20 });
+        expect(transformEntities(g, [circle], { kind: 'scale', centre: [0, 0], factor: 0 }, false)).toHaveProperty('error');
+        expect(transformEntities(g, [], { kind: 'move', by: [1, 0] }, false)).toHaveProperty('error');
     });
 });

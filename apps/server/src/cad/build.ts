@@ -8,8 +8,8 @@ import {
     localGC, makeAx3, measureVolume, Plane, revolution, setOC, Solid, twistExtrude, Vector, Wire, type Edge, type Face, type Shape3D,
 } from 'replicad';
 import type {
-    EdgeSelect, FaceSelect, FastenerShape, Feature, HelixPath, PlaneRef, PrintSettings, Repeat, Shape, Sketch, ThreadSize,
-    Vec3,
+    EdgeSelect, FacePickRef, FaceSelect, FastenerShape, Feature, HelixPath, PlaneRef, PrintSettings, Repeat, Shape, Sketch,
+    ThreadSize, Vec3,
 } from '@jarvis/core';
 import {
     heatsetData, holeDimensions, nutData, screwHead, STANDARD_LENGTHS, threadData, washerData, type HoleDimensions,
@@ -17,10 +17,12 @@ import {
 } from '@jarvis/core/fasteners';
 import type { MeshData } from './kernel.js';
 import { runScript } from './script.js';
+import { planeOfFace, resolveEdges, resolveFaces } from './refs.js';
+import { chamferEdges, draftFaces, filletEdges, shellFaces, type ChamferSpec } from './applied.js';
 import { resolveAxis, resolvePlane } from '@jarvis/core/reference';
 import { relativePlacement, type CombineContext } from './context.js';
 import {
-    extrudeRange, extrudeSketch, loftSketches, pathWire, profileWire, revolveSketch, throughRange,
+    extrudeRange, extrudeSketch, extrudeTool, isPlainExtrude, loftSketches, pathWire, profileWire, revolveSketch, throughRange,
 } from './sketch.js';
 
 type P2 = [number, number];
@@ -863,19 +865,45 @@ function threadFeature(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>, pr
     return asSolid(bored.fuse(at(ridge.shape), { simplify: false }), 'thread');
 }
 
+/** The edges a fillet or chamfer picked in the view: its picked edges, and every edge of its picked faces. */
+function pickedEdges(shape: Shape3D, f: { at?: Vec3[]; faces?: FacePickRef[]; tangent?: boolean }): Edge[] {
+    const edges = [
+        ...resolveEdges(shape, f.at ?? [], { tangent: f.tangent }),
+        ...resolveFaces(shape, f.faces ?? [], { tangent: f.tangent }).flatMap((face) => face.edges),
+    ];
+    return edges.filter((edge, i) => edges.findIndex((other) => other.isSame(edge)) === i);
+}
+
 function applyToBody(shape: Shape3D, f: Extract<Feature, { op: 'fillet' | 'chamfer' | 'shell' | 'thread' | 'mirror' }>,
     print: PrintSettings): Shape3D {
     switch (f.op) {
         case 'fillet':
             if (!(f.radius > 0)) throw new Error('radius must be positive');
             singleSolid(shape, 'fillet');
+            // Edges picked in the view win over the group.
+            if (f.at?.length || f.faces?.length) {
+                return filletEdges(shape, pickedEdges(shape, f), f.radius2 !== undefined ? { radii: [f.radius, f.radius2] } : { radius: f.radius });
+            }
             return roundEdges(shape, f.radius, edgePicker(shape, f.edges ?? 'all'), false);
-        case 'chamfer':
+        case 'chamfer': {
             if (!(f.size > 0)) throw new Error('size must be positive');
             singleSolid(shape, 'chamfer');
+            const spec: ChamferSpec = f.angle !== undefined ? { distance: f.size, angle: f.angle, side: f.side }
+                : f.distance2 !== undefined ? { distances: [f.size, f.distance2], side: f.side } : { distance: f.size };
+            if (f.at?.length || f.faces?.length) {
+                return chamferEdges(shape, pickedEdges(shape, f), spec);
+            }
+            if (f.angle !== undefined || f.distance2 !== undefined) {
+                return chamferEdges(shape, shape.edges.filter(edgePicker(shape, f.edges ?? 'all')), spec);
+            }
             return roundEdges(shape, f.size, edgePicker(shape, f.edges ?? 'all'), true);
+        }
         case 'shell':
             singleSolid(shape, 'shell');
+            if (f.remove?.length || f.outward) {
+                const faces = [...(f.open ?? []).flatMap((side) => outermostFaces(shape, side)), ...resolveFaces(shape, f.remove ?? [])];
+                return shellFaces(shape, f.thickness, faces, { outward: f.outward });
+            }
             return shell(shape, f.thickness, f.open ?? []);
         case 'thread':
             return threadFeature(shape, f, print);
@@ -1057,8 +1085,13 @@ function stepTool(shape: Shape3D | null, f: Feature, state: BuildState, index: n
         }
         case 'extrude': {
             const sketch = resolveSketch(f, state, index);
+            if (!isPlainExtrude(f)) {
+                if (f.mode === 'cut') needBody(shape);
+                const tool = extrudeTool(sketch, f, f.regions, shape, shape ? shapeBounds(shape) : null);
+                return { tool, mode: f.mode, what: 'extrude' };
+            }
             let range: [number, number];
-            if (f.through) {
+            if (f.end ? f.end === 'throughAll' : f.through) {
                 if (!shape) {
                     throw new Error('through needs a body to pass through; give a distance for the first extrude');
                 }
@@ -1203,9 +1236,27 @@ function draft(shape: Shape3D, f: Extract<Feature, { op: 'draft' }>, state: Buil
         throw new Error('draft angle must be between 0 and 45 degrees');
     }
     singleSolid(shape, 'draft');
-    const faces = [...new Set(f.faces ?? [])].flatMap((select) => outermostFaces(shape, select));
+    const sides = [...new Set(f.faces ?? [])].flatMap((select) => outermostFaces(shape, select));
+    if (f.picked?.length || f.neutralFace || f.flip) {
+        // Faces and/or the neutral plane picked in the view.
+        const picked = [...sides, ...resolveFaces(shape, f.picked ?? [], { tangent: f.tangent })];
+        if (picked.length === 0) {
+            throw new Error('no faces selected');
+        }
+        if (!f.neutralFace && !f.neutral) {
+            throw new Error('pick a neutral plane');
+        }
+        const plane = f.neutralFace
+            ? planeOfFace(resolveFaces(shape, [f.neutralFace])[0], f.neutralFace.at)
+            : resolvePlane(f.neutral!, before(state), 'neutral plane');
+        return draftFaces(shape, picked, f.angle, { origin: plane.origin, normal: plane.normal }, { flip: f.flip });
+    }
+    const faces = sides;
     if (faces.length === 0) {
         throw new Error('no faces selected');
+    }
+    if (!f.neutral) {
+        throw new Error('pick a neutral plane');
     }
     const neutral = replicadPlane(f.neutral, before(state), 'neutral plane');
     let result: Shape3D;

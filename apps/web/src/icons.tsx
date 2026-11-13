@@ -209,6 +209,18 @@ const PATHS: Record<string, ReactNode> = {
             <path d="M8 12.5l2.7 2.7L16 9.8" />
         </>
     ),
+    measure: (
+        <g transform="rotate(-30 12 12)">
+            <rect x="2.5" y="8.5" width="19" height="7" rx="1" />
+            <path d="M6.5 8.5v3M9.5 8.5v2M12.5 8.5v3M15.5 8.5v2M18.5 8.5v3" />
+        </g>
+    ),
+    mass: (
+        <>
+            <path d="M6.5 9h11l2.5 11.5h-16z" />
+            <circle cx="12" cy="6" r="2.5" />
+        </>
+    ),
     undo: <path d="M9 5L4 10l5 5M4 10h10a5.5 5.5 0 0 1 0 11h-3" />,
     redo: <path d="M15 5l5 5-5 5M20 10H10a5.5 5.5 0 0 0 0 11h3" />,
     line: (
@@ -400,6 +412,45 @@ const PATHS: Record<string, ReactNode> = {
         </>
     ),
     menu: <path d="M4 7h16M4 12h16M4 17h16" />,
+    'sk-point': (
+        <>
+            <path d="M12 4v4M12 16v4M4 12h4M16 12h4" opacity="0.5" />
+            <circle cx="12" cy="12" r="2" fill="currentColor" />
+        </>
+    ),
+    centerline: <path d="M3 21L21 3" strokeDasharray="5 2.5 1 2.5" />,
+    scale: (
+        <>
+            <rect x="3.5" y="11.5" width="9" height="9" rx="1" />
+            <path d="M3.5 7.5v-4h17v17h-4" opacity="0.5" />
+            <path d="M12 12l7-7M14.5 5H19v4.5" />
+        </>
+    ),
+    relations: (
+        <>
+            <path d="M4 6h3M4 12h3M4 18h3" />
+            <path d="M10 6h10M10 12h10M10 18h6" opacity="0.6" />
+            <path d="M17 16.5l3 3M20 16.5l-3 3" />
+        </>
+    ),
+    snap: (
+        <>
+            <path d="M6 4v8a6 6 0 0 0 12 0V4h-4v8a2 2 0 0 1-4 0V4z" />
+            <path d="M6 8h4M14 8h4" opacity="0.6" />
+        </>
+    ),
+    repair: (
+        <>
+            <path d="M14.5 6.5a4 4 0 0 0 5 5L13 18l-2 2a2.1 2.1 0 0 1-3-3l2-2z" />
+            <path d="M3 9h5M5.5 6.5v5" opacity="0.6" />
+        </>
+    ),
+    'fully-define': (
+        <>
+            <path d="M4 18h16M4 15v6M20 15v6" />
+            <path d="M6 5l4 4 8-7" />
+        </>
+    ),
 };
 
 export type IconName = keyof typeof PATHS;

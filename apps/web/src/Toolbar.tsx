@@ -122,6 +122,9 @@ const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}`>, string> = {
     select: 'Click to select, Shift adds · drag points, lines or dimension values to move · double-click a dimension to edit · Delete removes',
     dimension: 'Drag a line or circle outwards to dimension it · or click two points, a point and a line/axis/origin, or two lines, then where the value goes',
     line: 'Click points · type a length (or length,angle) + Enter · click the start to close · Esc stops',
+    centerline: 'Click points for a construction line · type a length (or length,angle) + Enter · Esc stops',
+    point: 'Click to place a sketch point · it snaps to points, middles and curves',
+    xform: 'Click points in the view for the form (move: from, then to) · Shift+click changes the selection',
     rect: 'Click two corners · type width,height + Enter',
     circle: 'Click the centre, then a point · type the diameter + Enter',
     arc: 'Click start and end, then a point on the arc · type a radius + Enter',
@@ -345,6 +348,18 @@ export function Toolbar() {
         }
         setPopup((p) => (p?.tool.id === tool.id ? null : { tool, anchor }));
     };
+
+    // Other panels ask for a tool's form by id (the components list opens Pattern for a part).
+    useEffect(() => {
+        const onRequest = (event: Event) => {
+            const id = (event as CustomEvent<string>).detail;
+            if (ALL_TOOLS.some((t) => t.id === id)) {
+                openById(id);
+            }
+        };
+        window.addEventListener('jarvis:open-tool', onRequest);
+        return () => window.removeEventListener('jarvis:open-tool', onRequest);
+    });
 
     const openById = (id: string) => {
         const tool = ALL_TOOLS.find((t) => t.id === id)!;

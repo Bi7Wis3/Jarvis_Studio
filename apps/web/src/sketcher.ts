@@ -4,7 +4,7 @@
 
 import { create } from 'zustand';
 import type {
-    ExtrudeDirection, Feature, Sketch, SketchConstraint, SketchGeometry, SketchPlane, SketchProfile,
+    ExtrudeDirection, ExtrudeEnd, ExtrudeSide, Feature, Sketch, SketchConstraint, SketchGeometry, SketchPlane, SketchProfile,
 } from '@jarvis/core';
 import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { useStudio } from './state';
@@ -12,15 +12,16 @@ import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, loadSolver, measure, poin
 import { regionsOf } from './regionPick';
 import {
     EMPTY_GEOMETRY, PICKS_NEEDED, addArc, addCircle, addConstraint, addLine, addPolygon, addRect, addSlot, constraintFromPicks,
-    curveAt, dimensionFromPicks, evaluate, geometryEntities, geometryProfiles, pickAt, profilesToGeometry, removeItems, toggleConstruction,
-    type ConstraintTool, type NewConstraint, type Pick, type PointRef,
+    curveAt, dimensionFromPicks, evaluate, geometryEntities, geometryProfiles, pickAt, placePoint, profilesToGeometry, removeItemsKeepingPoints,
+    toggleConstruction, type ConstraintTool, type NewConstraint, type Pick, type PointRef,
 } from './sketchGeometry';
 import {
     addCentreArc, addCentreRect, chamferCorner, circularPattern, cornerOf, curvePoints, extendAt, filletCorner, linearPattern, mirrorCurves, offsetChain,
-    offsetPreview, sideDistance, trimAt,
+    offsetPreview, sideDistance, transformEntities, transformPoint, trimAt, type Transform,
 } from './sketchEdit';
+import { fixAll, fixProblem, fullyDefine, type Problem } from './sketchRepair';
 import { dist, mid, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
-import { snapCursor, type Snap, type SnapKind } from './snapping';
+import { snapCursor, type QuickSnap, type Snap, type SnapKind } from './snapping';
 
 export type { SnapKind } from './snapping';
 
@@ -29,10 +30,13 @@ void loadSolver(wasmUrl);
 /** What the finish popup offers first: the operation the sketch was started for. */
 export type SketchIntent = 'extrude' | 'cut' | 'revolve' | 'sketch';
 
-export type DrawTool = 'line' | 'rect' | 'centerRect' | 'circle' | 'arc' | 'centerArc' | 'slot' | 'polygon';
+export type DrawTool = 'line' | 'centerline' | 'point' | 'rect' | 'centerRect' | 'circle' | 'arc' | 'centerArc' | 'slot' | 'polygon';
 /** Tools that change existing geometry. */
 export type EditTool = 'trim' | 'extend' | 'fillet' | 'chamfer' | 'offset' | 'mirror';
-export type SketchTool = 'select' | DrawTool | EditTool | 'dimension' | `c:${ConstraintTool}`;
+/** xform: picking points for Move, Copy, Rotate or Scale while their form is open. */
+export type SketchTool = 'select' | DrawTool | EditTool | 'dimension' | 'xform' | `c:${ConstraintTool}`;
+
+export type TransformKind = 'move' | 'copy' | 'rotate' | 'scale';
 
 const EDIT_TOOLS: readonly string[] = ['trim', 'extend', 'fillet', 'chamfer', 'offset', 'mirror'];
 export const isEditTool = (tool: SketchTool): tool is EditTool => EDIT_TOOLS.includes(tool);
@@ -47,6 +51,13 @@ export interface FinishOp {
     through: boolean;
     axis: 'u' | 'v';
     angle: number;
+    /** Extrude options beyond distance and direction (see the extrude feature); absent: the defaults. */
+    end?: ExtrudeEnd;
+    from?: number;
+    draft?: number;
+    draftOutward?: boolean;
+    flipSide?: boolean;
+    second?: ExtrudeSide | null;
 }
 
 export type Selected = { type: 'point' | 'curve' | 'constraint'; id: string };
@@ -135,6 +146,12 @@ interface SketcherState {
     fitToSketch: boolean;
     undo: SketchGeometry[];
     redo: SketchGeometry[];
+    /** Geometry to light up from outside the view (the relations and repair lists, on hover). */
+    highlight: string[];
+    /** Quick snaps: the kinds switched off are false. Kept in localStorage. */
+    snapKinds: Partial<Record<QuickSnap, boolean>>;
+    /** Move, copy, rotate, scale: which form is open and the points picked in the view for it so far. */
+    xform: { kind: TransformKind; picks: Pt[] } | null;
     /** Part workspace: draw the other parts as faint ghosts (else hide them). */
     showOthers: boolean;
     /** Draw the active part's sketch steps as thin curves (an override over the per-sketch eye). */
@@ -182,7 +199,21 @@ const IDLE = {
     finishing: null,
     undo: [],
     redo: [],
+    highlight: [],
+    xform: null,
 };
+
+const SNAPS_KEY = 'jarvis.sketch.snaps';
+
+function loadSnapKinds(): Partial<Record<QuickSnap, boolean>> {
+    try {
+        const raw = globalThis.localStorage?.getItem(SNAPS_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
 
 export const useSketcher = create<SketcherState>(() => ({
     ...IDLE,
@@ -197,6 +228,7 @@ export const useSketcher = create<SketcherState>(() => ({
     picked: null,
     fitToSketch: false,
     anchor: [0, 0],
+    snapKinds: loadSnapKinds(),
 }));
 
 /** Frames the sketch, looking straight at its plane (F while sketching). */
@@ -319,7 +351,7 @@ export function setTool(tool: SketchTool): void {
     const picks = tool === 'mirror' ? get().selection.filter((x): x is Pick => x.type === 'curve') : [];
     set({
         tool, draft: [], chainStart: null, typed: '', picks, hover: null, dimDrag: null, dimDraft: null, message: null,
-        editPreview: [], editText: null, offsetCurve: null, mirrorAbout: false, arcSweep: 0,
+        editPreview: [], editText: null, offsetCurve: null, mirrorAbout: false, arcSweep: 0, ...(tool === 'xform' ? {} : { xform: null }),
     });
 }
 
@@ -346,7 +378,7 @@ export function redoSketch(): void {
 export function deleteSelected(): void {
     const { selection, geometry } = get();
     if (selection.length) {
-        commit(removeItems(geometry, selection.map((s) => s.id)), { selection: [] });
+        commit(removeItemsKeepingPoints(geometry, selection.map((s) => s.id)), { selection: [] });
     }
 }
 
@@ -364,7 +396,7 @@ export function toggleConstructionSelected(): void {
 
 function snapAt(raw: Pt, tolerance: number): Snap {
     const s = get();
-    return snapCursor(s.geometry, raw, { enabled: s.snap, grid: s.grid, tolerance, last: s.draft[s.draft.length - 1]?.at });
+    return snapCursor(s.geometry, raw, { enabled: s.snap, grid: s.grid, tolerance, last: s.draft[s.draft.length - 1]?.at, kinds: s.snapKinds });
 }
 
 // ---- Pointer input ------------------------------------------------------------------------------------
@@ -392,6 +424,9 @@ export function sketchMove(raw: Pt, tolerance: number): void {
     const hover = !picking || s.dimDrag || s.dimDraft ? null
         : s.tool === 'dimension' ? dimensionPick(s.geometry, raw, tolerance) : pickAt(s.geometry, raw, tolerance);
     set({ cursor: snapped.p, snapKind: snapped.kind, snapRef: snapped.ref, snapGuides: snapped.guides, snapHints: snapped.hints, hover });
+    if (s.tool === 'xform') {
+        set({ editPreview: xformPreview(s, snapped.p) });
+    }
     if (s.tool === 'centerArc' && s.draft.length === 2) {
         // Follow the cursor round from the start, so the arc can go either way and past half a turn.
         const [c, start] = s.draft.map((d) => d.at);
@@ -510,9 +545,7 @@ export function sketchClick(raw: Pt, tolerance: number, additive = false): void 
         return;
     }
     if (s.tool === 'select') {
-        const pick = pickAt(s.geometry, raw, tolerance);
-        const item: Selected | null = pick && pick.id !== AXIS_U && !pick.id.startsWith('axis-') && pick.id !== ORIGIN ? pick : null;
-        set({ selection: item ? (additive ? toggle(s.selection, item) : [item]) : additive ? s.selection : [] });
+        selectAt(raw, tolerance, additive);
         return;
     }
     if (s.tool === 'dimension') {
@@ -527,8 +560,20 @@ export function sketchClick(raw: Pt, tolerance: number, additive = false): void 
         editClick(s.tool, raw, tolerance);
         return;
     }
+    if (s.tool === 'xform') {
+        xformClick(raw, tolerance, additive);
+        return;
+    }
     const snapped = snapAt(raw, tolerance);
     place(snapped.ref, snapped.kind);
+}
+
+/** The select tool's click: the point or curve under the cursor becomes the selection (Shift adds or removes it). */
+function selectAt(raw: Pt, tolerance: number, additive: boolean): void {
+    const s = get();
+    const pick = pickAt(s.geometry, raw, tolerance);
+    const item: Selected | null = pick && pick.id !== AXIS_U && !pick.id.startsWith('axis-') && pick.id !== ORIGIN ? pick : null;
+    set({ selection: item ? (additive ? toggle(s.selection, item) : [item]) : additive ? s.selection : [] });
 }
 
 function toggle(list: Selected[], item: Selected): Selected[] {
@@ -561,13 +606,24 @@ function place(ref: PointRef, kind: SnapKind, typed?: number[]): void {
         return out;
     };
     switch (tool as DrawTool) {
-        case 'line': {
+        case 'point': {
+            if (ref.point) {
+                set({ message: 'There is a point there already.' });
+                return;
+            }
+            commit(placePoint(g, ref).g, { typed: '' });
+            return;
+        }
+        case 'line':
+        case 'centerline': {
             if (!last) {
                 set({ draft: [ref], typed: '', chainStart: null });
                 return;
             }
             const infer = kind === 'horizontal' || kind === 'vertical' ? kind : null;
-            const r = addLine(g, last, ref, infer);
+            const drawn = addLine(g, last, ref, infer);
+            // A centre line is construction geometry from the start.
+            const r = tool === 'centerline' ? { ...drawn, g: toggleConstruction(drawn.g, [drawn.id]) } : drawn;
             const line = r.g.curves.find((c) => c.id === r.id);
             const start = chainStart ?? (line?.kind === 'line' ? line.a : null);
             const closes = draft.length > 0 && ref.point !== undefined && ref.point === chainStart;
@@ -752,6 +808,7 @@ export function applyTyped(): string | null {
     };
     switch (s.tool) {
         case 'line':
+        case 'centerline':
             place({ at: step(last.at, a, b) }, null, nums);
             break;
         case 'rect': {
@@ -1036,8 +1093,8 @@ export function sketchEscape(): void {
         set({ typed: '' });
     } else if (s.draft.length) {
         set({ draft: [], chainStart: null });
-    } else if (s.picks.length || s.offsetCurve || s.mirrorAbout) {
-        set({ picks: [], offsetCurve: null, mirrorAbout: false, editPreview: [], editText: null });
+    } else if (s.picks.length || s.offsetCurve || s.mirrorAbout || s.xform?.picks.length) {
+        set((x) => ({ picks: [], offsetCurve: null, mirrorAbout: false, editPreview: [], editText: null, xform: x.xform && { ...x.xform, picks: [] } }));
     } else if (s.tool !== 'select') {
         set({ tool: 'select', message: null });
     } else if (s.selection.length) {
@@ -1254,6 +1311,194 @@ export function circularPatternSelected(count: number, angle: number, centre: Pt
     return commit(r.g, { selection: [] }) ? null : get().message;
 }
 
+// ---- Move, copy, rotate, scale ----------------------------------------------------------------------------
+
+/** The selected curves and points (not relations). */
+function selectedGeometry(): string[] {
+    return get().selection.filter((x) => x.type !== 'constraint').map((x) => x.id);
+}
+
+/** While the Move, Copy, Rotate or Scale form is open, clicks in the view pick points for it. */
+export function startTransformPick(kind: TransformKind): void {
+    setTool('xform');
+    set({ xform: { kind, picks: [] } });
+}
+
+/** The form closed: back to selecting. */
+export function stopTransformPick(): void {
+    // Keep the status line: it says what the form just did.
+    const { message } = get();
+    if (get().tool === 'xform') {
+        setTool('select');
+    }
+    set({ xform: null, editPreview: [], message });
+}
+
+/** Forgets the points picked so far (after the form used them). */
+export function clearTransformPicks(): void {
+    set((s) => ({ xform: s.xform && { ...s.xform, picks: [] }, editPreview: [] }));
+}
+
+/** A click while picking: with nothing selected yet, or with Shift, it selects; else it picks a (snapped) point. */
+function xformClick(raw: Pt, tolerance: number, additive: boolean): void {
+    const s = get();
+    if (additive || !selectedGeometry().length || !s.xform) {
+        selectAt(raw, tolerance, additive);
+        return;
+    }
+    const p = snapAt(raw, tolerance).p;
+    set({ xform: { ...s.xform, picks: [...s.xform.picks, p] } });
+}
+
+/** Moving or copying by two points: the selection drawn at the cursor once the first point is picked. */
+function xformPreview(s: SketcherState, cursor: Pt): NewEntity[] {
+    const from = s.xform?.picks[0];
+    if (!from || (s.xform?.kind !== 'move' && s.xform?.kind !== 'copy')) {
+        return [];
+    }
+    const t: Transform = { kind: 'move', by: [cursor[0] - from[0], cursor[1] - from[1]] };
+    const ids = new Set(selectedGeometry());
+    const q = (p: Pt) => transformPoint(t, p);
+    return geometryEntities(s.geometry).filter((e) => ids.has(e.id)).flatMap((e): NewEntity[] => {
+        switch (e.kind) {
+            case 'line':
+                return [{ kind: 'line', a: q(e.a), b: q(e.b) }];
+            case 'arc':
+                return [{ kind: 'arc', a: q(e.a), b: q(e.b), m: q(e.m) }];
+            case 'circle':
+                return [{ kind: 'circle', c: q(e.c), r: e.r }];
+            default:
+                return [];
+        }
+    });
+}
+
+/**
+ * Moves, turns or scales the selected curves and points, or copies them. Returns an error to show, or null; the
+ * status line says what was done and how many relations to the rest of the sketch a move removed.
+ */
+export function transformSelected(t: Transform, copy: boolean): string | null {
+    const s = get();
+    const r = transformEntities(s.geometry, selectedGeometry(), t, copy);
+    if ('error' in r) {
+        return r.error;
+    }
+    // Dimension labels inside the moved set go with it.
+    const kept = new Set(r.g.constraints.map((c) => c.id));
+    const labels = copy ? s.labels : Object.fromEntries(Object.entries(s.labels).map(([id, at]) => [id, kept.has(id) && movedDimension(s.geometry, id, r.created) ? transformPoint(t, at) : at]));
+    const selection: Selected[] = copy
+        ? r.created.map((id) => ({ type: r.g.curves.some((c) => c.id === id) ? 'curve' : 'point', id }))
+        : s.selection;
+    if (!commit(r.g, { selection, labels, editPreview: [] })) {
+        return get().message;
+    }
+    const verb = { move: copy ? 'Copied' : 'Moved', rotate: copy ? 'Copied and turned' : 'Turned', scale: copy ? 'Copied and scaled' : 'Scaled' }[t.kind];
+    const count = selectedGeometry().length;
+    const what = `${count} item${count === 1 ? '' : 's'}`;
+    set({ message: r.dropped ? `${verb} ${what}; removed ${r.dropped} relation${r.dropped === 1 ? '' : 's'} to the rest of the sketch.` : `${verb} ${what}.` });
+    return null;
+}
+
+/** Whether a dimension refers only to the moved curves (or their points). */
+function movedDimension(g: SketchGeometry, id: string, curves: string[]): boolean {
+    const c = g.constraints.find((k) => k.id === id);
+    if (!c) {
+        return false;
+    }
+    const inSet = new Set([...curves, ...curves.flatMap((x) => {
+        const curve = curveOf(g, x);
+        return curve ? curvePoints(curve) : [];
+    })]);
+    return Object.entries(c).every(([key, v]) => key === 'id' || key === 'kind' || key === 'axis' || typeof v !== 'string' || inSet.has(v));
+}
+
+/** Where Rotate and Scale turn about by default: the selected loose point, else the origin. */
+export { patternCentre as transformCentre };
+
+// ---- Relations, highlight, quick snaps -------------------------------------------------------------------
+
+/** Lights up geometry from a list outside the view (empty clears it). */
+export function setHighlight(ids: string[]): void {
+    const now = get().highlight;
+    if (now.length !== ids.length || now.some((id, i) => id !== ids[i])) {
+        set({ highlight: ids });
+    }
+}
+
+/**
+ * Removes relations and dimensions. Removing can only take conflicts away, so it applies even when the sketch is
+ * still over-constrained afterwards; the status line then says so.
+ */
+export function deleteConstraints(ids: string[]): void {
+    const s = get();
+    const gone = new Set(ids);
+    if (!s.geometry.constraints.some((c) => gone.has(c.id))) {
+        return;
+    }
+    const next = { ...s.geometry, constraints: s.geometry.constraints.filter((c) => !gone.has(c.id)) };
+    const patch = { selection: s.selection.filter((x) => !gone.has(x.id)), highlight: [] };
+    if (!commit(next, patch)) {
+        set({ ...patch, geometry: next, undo: [...s.undo.slice(-80), s.geometry], redo: [] });
+        resolve();
+    }
+}
+
+/** Switches one quick snap on or off, or all of them on (kind null); remembered in this browser. */
+export function setSnapKind(kind: QuickSnap | null, on = true): void {
+    const next = kind ? { ...get().snapKinds, [kind]: on } : {};
+    if (kind && on) {
+        delete next[kind];
+    }
+    set({ snapKinds: next });
+    try {
+        globalThis.localStorage?.setItem(SNAPS_KEY, JSON.stringify(next));
+    } catch {
+        // Storage can be full or blocked; the setting still holds for this session.
+    }
+}
+
+// ---- Repair and fully define ------------------------------------------------------------------------------
+
+/** Fixes one problem Repair sketch found. */
+export function repairProblem(problem: Problem): boolean {
+    return commit(fixProblem(get().geometry, problem), { selection: [], highlight: [] });
+}
+
+/** Fixes everything Repair sketch finds; says how many. */
+export function repairAll(): boolean {
+    const r = fixAll(get().geometry);
+    if (!r.fixed) {
+        set({ message: 'Nothing to repair.' });
+        return true;
+    }
+    if (!commit(r.g, { selection: [], highlight: [] })) {
+        return false;
+    }
+    set({ message: `Repaired ${r.fixed} problem${r.fixed === 1 ? '' : 's'}.` });
+    return true;
+}
+
+/** Adds the dimensions the sketch still needs to be fully defined; says how many. */
+export function fullyDefineSketch(): void {
+    if (!solverReady()) {
+        set({ message: 'The solver is still loading; try again in a moment.' });
+        return;
+    }
+    const s = get();
+    const r = fullyDefine(s.geometry);
+    if ('error' in r) {
+        set({ message: r.error });
+        return;
+    }
+    if (!r.added) {
+        set({ message: r.dof === 0 ? 'The sketch is fully defined already.' : `No dimension could be added; ${r.dof} DOF left.` });
+        return;
+    }
+    commit(r.g);
+    const n = `Added ${r.added} dimension${r.added === 1 ? '' : 's'}`;
+    set({ message: r.dof === 0 ? `${n}; the sketch is fully defined.` : `${n}; ${r.dof} DOF left.` });
+}
+
 // ---- Output -------------------------------------------------------------------------------------------
 
 export function sketchProfiles(): { profiles: SketchProfile[]; open: number } {
@@ -1298,8 +1543,10 @@ export function finishDefaults(feature: Feature | null, base: { extrude?: { dist
         return { ...op, mode: 'sketch' };
     }
     if (feature?.op === 'extrude') {
+        const end = feature.end ?? (feature.through ? 'throughAll' : 'blind');
         return { ...op, op: 'extrude', mode: feature.mode, distance: feature.distance ?? 10, direction: feature.direction ?? 'normal',
-            through: feature.through ?? false };
+            through: end === 'throughAll', end, from: feature.from ?? 0,
+            draft: feature.draft ?? 0, draftOutward: !!feature.draftOutward, flipSide: !!feature.flipSide, second: feature.second ?? null };
     }
     if (feature?.op === 'revolve') {
         return { ...op, op: 'revolve', mode: feature.mode, axis: feature.axis, angle: feature.angle ?? 360 };

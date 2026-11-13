@@ -57,6 +57,7 @@ function draftEntity(tool: string, draft: Pt[], cursor: Pt, sides: number, sweep
     const [a, b] = draft;
     switch (tool) {
         case 'line':
+        case 'centerline':
             return { kind: 'line', a: draft[draft.length - 1], b: cursor };
         case 'rect':
             return { kind: 'rect', a, b: cursor };
@@ -504,7 +505,7 @@ function Glyphs({ offset }: { offset: number }) {
 export function Drawing() {
     const {
         geometry: g, draft, cursor, tool, selection, picks, hover, dimDrag, sides, typed, snapKind, snapGuides, snapHints, dof, conflicting,
-        arcSweep, editPreview, editText,
+        arcSweep, editPreview, editText, highlight, xform,
     } = useSketcher();
     const camera = useThree((s) => s.camera) as PerspectiveCamera;
     const size = useThree((s) => s.size);
@@ -516,6 +517,9 @@ export function Drawing() {
     const picked = new Set((dimDrag?.picks ?? picks).map((p) => p.id));
     const picking = tool === 'dimension' || tool.startsWith('c:') || isEditTool(tool);
     const hovered = picking && hover ? hover.id : null;
+    // Lit from the relations or repair list.
+    const lit = new Set(highlight);
+    const xformFrom = tool === 'xform' && xform?.picks.length === 1 && (xform.kind === 'move' || xform.kind === 'copy') ? xform.picks[0] : null;
     const conflictRefs = new Set(g.constraints.filter((c) => conflicting.includes(c.id)).flatMap((c) => Object.values(c).filter((v) => typeof v === 'string')));
     const at = draft.map((d) => d.at);
     const preview = cursor && draft.length && !['select', 'dimension'].includes(tool) && !tool.startsWith('c:') && !isEditTool(tool)
@@ -525,24 +529,24 @@ export function Drawing() {
     return (
         <>
             {entities.map((e) => {
-                const lit = picked.has(e.id) || hovered === e.id;
-                const color = selected.has(e.id) ? SELECTED : lit ? PICKED : conflictRefs.has(e.id) ? CONFLICT
+                const on = picked.has(e.id) || hovered === e.id || lit.has(e.id);
+                const color = lit.has(e.id) ? PICKED : selected.has(e.id) ? SELECTED : on ? PICKED : conflictRefs.has(e.id) ? CONFLICT
                     : e.construction ? CONSTRUCTION : curveColor;
                 return (
-                    <EntityLine key={e.id} entity={e} color={color} dashed={e.construction} width={selected.has(e.id) || lit ? 3.8 : e.construction ? 1.8 : 2.8} />
+                    <EntityLine key={e.id} entity={e} color={color} dashed={e.construction} width={selected.has(e.id) || on ? 3.8 : e.construction ? 1.8 : 2.8} />
                 );
             })}
             {g.points.map((p) => {
-                const state = selected.has(p.id) ? 'selected' : picked.has(p.id) || hovered === p.id ? 'picked' : p.fixed ? 'fixed' : '';
+                const state = lit.has(p.id) ? 'picked' : selected.has(p.id) ? 'selected' : picked.has(p.id) || hovered === p.id ? 'picked' : p.fixed ? 'fixed' : '';
                 return (
                     <Label key={p.id} at={[p.u, p.v]} className={`pt ${state} ${dof === 0 ? 'done' : ''}`}>
                         <span />
                     </Label>
                 );
             })}
-            {(picked.has(AXIS_U) || hovered === AXIS_U) && <Line points={[[-1e4, 0, 0], [1e4, 0, 0]]} color={PICKED} lineWidth={2} depthTest={false} />}
-            {(picked.has(AXIS_V) || hovered === AXIS_V) && <Line points={[[0, -1e4, 0], [0, 1e4, 0]]} color={PICKED} lineWidth={2} depthTest={false} />}
-            <Label at={[0, 0]} className={`pt origin ${picked.has('origin') || hovered === 'origin' ? 'picked' : ''}`}>
+            {(picked.has(AXIS_U) || hovered === AXIS_U || lit.has(AXIS_U)) && <Line points={[[-1e4, 0, 0], [1e4, 0, 0]]} color={PICKED} lineWidth={2} depthTest={false} />}
+            {(picked.has(AXIS_V) || hovered === AXIS_V || lit.has(AXIS_V)) && <Line points={[[0, -1e4, 0], [0, 1e4, 0]]} color={PICKED} lineWidth={2} depthTest={false} />}
+            <Label at={[0, 0]} className={`pt origin ${picked.has('origin') || hovered === 'origin' || lit.has('origin') ? 'picked' : ''}`}>
                 <span />
             </Label>
             <Glyphs offset={unit * 0.9} />
@@ -552,9 +556,10 @@ export function Drawing() {
             {preview && <EntityLine entity={preview} color={DRAFT} dashed width={2.4} />}
             {tool === 'centerArc' && draft.length === 2 && <EntityLine entity={{ kind: 'line', a: at[0], b: at[1] }} color={DRAFT} dashed />}
             {/* Trim: the piece that goes, in red; extend and offset: what gets added. */}
-            {isEditTool(tool) && editPreview.map((e, i) => (
+            {(isEditTool(tool) || tool === 'xform') && editPreview.map((e, i) => (
                 <EntityLine key={`edit-${i}`} entity={e} color={tool === 'trim' ? CONFLICT : DRAFT} dashed={tool !== 'trim'} width={tool === 'trim' ? 4.2 : 2.4} />
             ))}
+            {xformFrom && cursor && <EntityLine entity={{ kind: 'line', a: xformFrom, b: cursor }} color={DRAFT} dashed width={1.4} />}
             {tool === 'slot' && draft.length === 2 && <EntityLine entity={{ kind: 'line', a: at[0], b: at[1] }} color={DRAFT} />}
             {tool === 'arc' && draft.length === 2 && cursor && !circleThrough(at[0], cursor, at[1]) && (
                 <EntityLine entity={{ kind: 'line', a: at[0], b: at[1] }} color={DRAFT} dashed />

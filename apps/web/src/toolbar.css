@@ -529,3 +529,144 @@
     font-size: 11px;
     cursor: pointer;
 }
+
+/* Sketch lists: relations, repair problems; and the quick snaps popup. */
+.sk-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 360px;
+    overflow-y: auto;
+}
+
+.sk-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 5px;
+    font-size: 12px;
+    cursor: default;
+}
+
+.sk-row:hover {
+    background: rgba(255, 209, 102, 0.1);
+}
+
+.sk-row.on {
+    background: rgba(196, 139, 255, 0.16);
+}
+
+.sk-row-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.sk-row-text b {
+    font-weight: 600;
+}
+
+.sk-row-text small {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sk-state {
+    font-size: 10.5px;
+    color: var(--muted);
+}
+
+.sk-state.conflicting,
+.sk-state.dangling {
+    color: #ff9aa5;
+}
+
+.sk-state.redundant {
+    color: #ffd166;
+}
+
+.sk-row-x {
+    padding: 0 5px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.2;
+    cursor: pointer;
+}
+
+.sk-row-x:hover {
+    background: rgba(255, 93, 108, 0.2);
+    color: #fff;
+}
+
+.sk-small {
+    padding: 2px 9px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 11.5px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.sk-small:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.sk-small:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.sk-small.danger:hover:not(:disabled) {
+    border-color: rgba(255, 93, 108, 0.6);
+    background: rgba(255, 93, 108, 0.16);
+}
+
+.sk-list-filter,
+.sk-list-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 6px 0;
+}
+
+.sk-list-filter select {
+    flex: 1;
+    padding: 3px 6px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.25);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+}
+
+.sk-snaps {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 12px;
+}
+
+.sk-snaps label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.sk-snaps .sk-small {
+    align-self: flex-start;
+    margin-top: 4px;
+}

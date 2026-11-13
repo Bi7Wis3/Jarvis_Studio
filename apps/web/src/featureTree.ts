@@ -8,7 +8,10 @@ import { featureName, stepRefs } from './historyText';
 export type SketchRole = 'sketch' | 'section' | 'profile' | 'path';
 
 export interface TreeNode {
-    /** Unique in the tree: the step id, or `<parent id>:<role><n>` for a sketch stored inline in its parent. */
+    /**
+     * Unique in the tree: the step id, `<parent id>:<role><n>` for a sketch stored inline in its parent, or
+     * `<sketch id>@<parent id>` where a shared sketch shows again under a further step that uses it.
+     */
     key: string;
     /** The real history step this node shows; null for an inline sketch (it is part of its parent step). */
     stepId: string | null;
@@ -21,6 +24,8 @@ export interface TreeNode {
     role: string | null;
     /** How many steps use this step. */
     users: number;
+    /** A nested sketch that other steps use too: it shows under each of them and does not move with any. */
+    shared?: boolean;
     children: TreeNode[];
 }
 
@@ -51,8 +56,9 @@ export function sketchSources(feature: Feature): Source[] {
 }
 
 /**
- * Builds the display tree. A `sketch` step used by exactly one later step, through a sketch reference, nests under
- * that step; so do sketches stored inline. Shared and unused sketch steps stay at top level.
+ * Builds the display tree. A `sketch` step nests under every later step that uses it through a sketch reference
+ * (an extrude and a cut from one sketch both show it), and so do sketches stored inline. Only sketch steps that
+ * nothing uses yet stay at top level.
  */
 export function buildFeatureTree(features: Feature[]): TreeNode[] {
     const index = new Map(features.map((f, i) => [f.id, i]));
@@ -62,20 +68,24 @@ export function buildFeatureTree(features: Feature[]): TreeNode[] {
             users.set(id, (users.get(id) ?? 0) + 1);
         }
     }
-    const owner = new Map<string, string>();
+    /** Is `ref` an earlier sketch step that step `i` can show as its child? */
+    const usable = (ref: string | undefined, i: number): ref is string => {
+        const at = ref ? index.get(ref) : undefined;
+        return at !== undefined && at < i && features[at].op === 'sketch';
+    };
+    const nested = new Set<string>();
     features.forEach((feature, i) => {
         for (const { source } of sketchSources(feature)) {
-            const ref = source.sketchRef;
-            const at = ref ? index.get(ref) : undefined;
-            if (ref && at !== undefined && at < i && features[at].op === 'sketch' && users.get(ref) === 1) {
-                owner.set(ref, feature.id);
+            if (usable(source.sketchRef, i)) {
+                nested.add(source.sketchRef);
             }
         }
     });
 
+    const shown = new Set<string>();
     const nodes: TreeNode[] = [];
     features.forEach((feature, i) => {
-        if (owner.has(feature.id)) {
+        if (nested.has(feature.id)) {
             return;
         }
         const children: TreeNode[] = [];
@@ -93,18 +103,22 @@ export function buildFeatureTree(features: Feature[]): TreeNode[] {
                     users: 1,
                     children: [],
                 });
-            } else if (ref && owner.get(ref) === feature.id && !children.some((c) => c.stepId === ref)) {
+            } else if (usable(ref, i) && !children.some((c) => c.stepId === ref)) {
                 const at = index.get(ref)!;
+                const count = users.get(ref) ?? 1;
                 children.push({
-                    key: ref,
+                    // The first place a sketch shows keeps its own id as key, so it is found by step id.
+                    key: shown.has(ref) ? `${ref}@${feature.id}` : ref,
                     stepId: ref,
                     index: at,
                     parentId: feature.id,
                     label: featureName(features[at]),
                     role: sources.length > 1 ? label : null,
-                    users: 1,
+                    users: count,
+                    shared: count > 1,
                     children: [],
                 });
+                shown.add(ref);
             }
         });
         nodes.push({
@@ -121,9 +135,12 @@ export function buildFeatureTree(features: Feature[]): TreeNode[] {
     return nodes;
 }
 
-/** The real steps a top-level node stands for: itself and the sketch steps nested under it, in history order. */
+/**
+ * The real steps a top-level node stands for: itself and the sketch steps only it uses, in history order. A shared
+ * sketch belongs to none of its users.
+ */
 export function blockIds(node: TreeNode): string[] {
-    return [node, ...node.children]
+    return [node, ...node.children.filter((c) => !c.shared)]
         .filter((n) => n.stepId !== null)
         .sort((a, b) => a.index - b.index)
         .map((n) => n.stepId!);

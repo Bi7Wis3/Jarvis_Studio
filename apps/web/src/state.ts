@@ -4,6 +4,9 @@ import type { ActivityEntry, AgentStatus, ClientMessage, ImageAttachment, MeshSt
 import { enqueue, onSpeech, silence, unlockAudio } from './audio';
 import { captureViewport } from './capture';
 import { togglePick, type PickedEntity } from './picking';
+import { CAPTURED, captureCall, type Preview } from './preview';
+
+export { captureToolCalls } from './preview';
 
 interface StudioState {
     /** The project as shown: hidden parts left out. */
@@ -73,6 +76,11 @@ interface StudioState {
     voice: string | null;
     ears: boolean;
     error: string | null;
+    /**
+     * What the open tool form would do, drawn by the 3D view only (the tree and HUD show the real project):
+     * changed and new parts, their mesh keys, and why the preview failed if it did.
+     */
+    preview: Preview | null;
 }
 
 export const useStudio = create<StudioState>(() => ({
@@ -106,6 +114,7 @@ export const useStudio = create<StudioState>(() => ({
     voice: null,
     ears: false,
     error: null,
+    preview: null,
 }));
 
 let socket: WebSocket | null = null;
@@ -270,6 +279,9 @@ export function draftPrompt(text: string): void {
  * parts_add, parts_update, parts_remove, features_add, view_set, export_stl, ...).
  */
 export function runTool(name: string, args: Record<string, unknown> = {}): Promise<{ text: string; isError: boolean }> {
+    if (captureCall(name, args)) {
+        return Promise.resolve({ ...CAPTURED });
+    }
     const id = `t${nextToolCall++}`;
     return new Promise((resolve) => {
         if (socket?.readyState !== WebSocket.OPEN) {
@@ -284,6 +296,16 @@ export function runTool(name: string, args: Record<string, unknown> = {}): Promi
             }
         }, 120_000);
     });
+}
+
+export function setPreview(preview: Preview): void {
+    useStudio.setState({ preview });
+}
+
+export function clearPreview(): void {
+    if (useStudio.getState().preview) {
+        useStudio.setState({ preview: null });
+    }
 }
 
 /** Picks a face or edge; `additive` (Shift) adds it to the picks, or removes it if it is already picked. */

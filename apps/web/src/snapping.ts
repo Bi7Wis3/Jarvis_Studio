@@ -28,7 +28,23 @@ export interface SnapOptions {
     tolerance: number;
     /** The previous point of the entity being drawn: alignment with it also infers a constraint. */
     last?: Pt;
+    /** Quick snaps: a kind set to false is skipped (missing means on). */
+    kinds?: Partial<Record<QuickSnap, boolean>>;
 }
+
+/** The snap kinds that can be switched off one by one; 'aligned' covers horizontal and vertical too. */
+export type QuickSnap = 'point' | 'centre' | 'mid' | 'quadrant' | 'intersection' | 'curve' | 'aligned' | 'grid';
+
+export const QUICK_SNAPS: { kind: QuickSnap; label: string }[] = [
+    { kind: 'point', label: 'End points' },
+    { kind: 'centre', label: 'Centres' },
+    { kind: 'mid', label: 'Midpoints' },
+    { kind: 'quadrant', label: 'Quadrants' },
+    { kind: 'intersection', label: 'Intersections' },
+    { kind: 'curve', label: 'On curve' },
+    { kind: 'aligned', label: 'Alignment guides' },
+    { kind: 'grid', label: 'Grid' },
+];
 
 /** A curve resolved to coordinates. */
 type Shape =
@@ -143,11 +159,13 @@ export function snapCursor(g: SketchGeometry, raw: Pt, o: SnapOptions): Snap {
     const centres = new Set(g.curves.flatMap((c) => (c.kind === 'line' ? [] : [c.center])));
     const points: { p: Pt; id: string }[] = [{ p: [0, 0], id: ORIGIN }, ...g.points.filter((p) => p.id !== ORIGIN).map((p) => ({ p: [p.u, p.v] as Pt, id: p.id }))];
 
+    const on = (kind: QuickSnap) => o.kinds?.[kind] !== false;
+
     // Lines under the cursor offer their midpoint.
     const over = new Set<string>();
     const hints: Pt[] = [];
     for (const s of shapes) {
-        if (s.kind === 'line' && dist(raw, nearestOn(s, raw)!) < o.tolerance * 1.5) {
+        if (on('mid') && s.kind === 'line' && dist(raw, nearestOn(s, raw)!) < o.tolerance * 1.5) {
             over.add(s.id);
             hints.push(mid(s.a, s.b));
         }
@@ -156,6 +174,9 @@ export function snapCursor(g: SketchGeometry, raw: Pt, o: SnapOptions): Snap {
     // 1. Existing points win: placing there shares the point.
     let best: { d: number; snap: Snap } | null = null;
     const consider = (p: Pt, kind: SnapKind, ref: PointRef, reach = 1) => {
+        if (!on(kind as QuickSnap)) {
+            return;
+        }
         const d = dist(raw, p);
         if (d < o.tolerance * reach && (!best || d < best.d - 1e-9)) {
             best = { d, snap: { p, kind, ref, guides: [], hints } };
@@ -214,10 +235,10 @@ export function snapCursor(g: SketchGeometry, raw: Pt, o: SnapOptions): Snap {
     // 4. The grid, then alignment per axis: with the last point first (that infers horizontal / vertical),
     // else with the nearest sketch point in line.
     const step = (n: number) => (o.grid > 0 ? round(Math.round(n / o.grid) * o.grid) : n);
-    const p: Pt = [step(raw[0]), step(raw[1])];
-    let kind: SnapKind = 'grid';
+    const p: Pt = on('grid') ? [step(raw[0]), step(raw[1])] : [raw[0], raw[1]];
+    let kind: SnapKind = on('grid') ? 'grid' : null;
     const guides: Pt[] = [];
-    const candidates = [...(o.last ? [o.last] : []), ...points.map((x) => x.p)];
+    const candidates = on('aligned') ? [...(o.last ? [o.last] : []), ...points.map((x) => x.p)] : [];
     for (const axis of [0, 1] as const) {
         let near: { d: number; q: Pt } | null = null;
         for (const q of candidates) {
@@ -236,7 +257,7 @@ export function snapCursor(g: SketchGeometry, raw: Pt, o: SnapOptions): Snap {
         // Same u as the last point: a vertical line; same v: horizontal. The last point's alignment wins the label.
         if (withLast && kind !== 'vertical' && kind !== 'horizontal') {
             kind = axis === 0 ? 'vertical' : 'horizontal';
-        } else if (kind === 'grid') {
+        } else if (kind === 'grid' || kind === null) {
             kind = 'aligned';
         }
     }

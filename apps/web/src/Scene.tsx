@@ -11,12 +11,13 @@ import {
 import { explodeOffsets, shapeHalfExtents, type Part, type Project, type Vec3 } from '@jarvis/core';
 import { buildGeometry, instanceTransforms } from '@jarvis/core/geometry';
 import { layoutLabels } from './Labels';
-import { useKernelMesh, type KernelMesh } from './meshes';
+import { useKernelMesh, useMeshByKey, type KernelMesh } from './meshes';
 import { edgeSegments, faceSoup, nearestEdge, pixelSize, type P3, type PickedEntity } from './picking';
 import { clearPicked, pickEntity, select, setWorkspace, useStudio } from './state';
 import { chooseFace, useSketcher } from './sketcher';
 import { planePickerSize, SketchLayer, SketchSteps, sketchView } from './SketchLayer';
 import { PartDecals } from './Decals';
+import { Manipulators } from './Manipulators';
 
 /** Animated values shared between the scene and the label overlay. */
 export const anim = { explode: 0, settleAt: 0 };
@@ -26,6 +27,9 @@ const DEFAULT_AZIMUTH = 28;
 const DEFAULT_ELEVATION = 16;
 const SELECT_COLOR = '#c48bff';
 const CLICK_SLOP_PX = 4;
+/** Colour of the ghost that shows what an open tool form would make. */
+const GHOST_COLOR = '#ffd34d';
+const NO_OFFSET: Vec3 = [0, 0, 0];
 /** A pointer this close (screen pixels) to an edge picks the edge rather than the face under it. */
 const EDGE_PICK_PX = 6;
 
@@ -325,6 +329,49 @@ function CursorTracker() {
 }
 
 const noRaycast = () => null;
+
+/**
+ * What an open tool form would make of a part, as a see-through copy over the untouched model: its surface where it
+ * sticks out, and all its edges (also the ones inside the model, so a cut or a fillet shows). Never clickable.
+ */
+function GhostPart({ part, meshKey, offset }: { part: Part; meshKey: string | null; offset: Vec3 }) {
+    const group = useRef<Group>(null);
+    const committed = useStudio((s) => s.meshes.keys[part.id] ?? null);
+    const kernel = useMeshByKey(meshKey ?? committed);
+    const placeholder = useMemo(() => buildGeometry(part.shape), [JSON.stringify(part.shape)]);
+    const instances = useMemo(() => instanceTransforms(part), [JSON.stringify(part.repeat)]);
+    useEffect(() => () => placeholder.dispose(), [placeholder]);
+    useFrame(() => {
+        group.current?.position.set(offset[0] * anim.explode, offset[1] * anim.explode, offset[2] * anim.explode);
+    });
+    const rotation = part.rotation.map(MathUtils.degToRad) as Vec3;
+    return (
+        <group ref={group}>
+            {instances.map((matrix, i) => (
+                <group key={i} matrix={matrix} matrixAutoUpdate={false}>
+                    <mesh geometry={kernel?.surface ?? placeholder} position={part.position} rotation={rotation} raycast={noRaycast} renderOrder={3}>
+                        {/* Pushed a hair back, so where the ghost matches the model the model shows, untinted. */}
+                        <meshBasicMaterial
+                            color={GHOST_COLOR}
+                            transparent
+                            opacity={0.3}
+                            depthWrite={false}
+                            side={DoubleSide}
+                            polygonOffset
+                            polygonOffsetFactor={1}
+                            polygonOffsetUnits={2}
+                        />
+                    </mesh>
+                    {kernel && (
+                        <lineSegments geometry={kernel.edges} position={part.position} rotation={rotation} raycast={noRaycast} renderOrder={4}>
+                            <lineBasicMaterial color={GHOST_COLOR} transparent opacity={0.6} depthTest={false} />
+                        </lineSegments>
+                    )}
+                </group>
+            ))}
+        </group>
+    );
+}
 
 function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: boolean }) {
     const sketching = useStudio((s) => s.mode === 'sketch');
@@ -780,6 +827,18 @@ export function Scene({ project }: { project: Project }) {
     const sketchPart = useSketcher((s) => s.partId);
     const placingDecal = useStudio((s) => !!s.placingDecal);
     const activeShown = activePart !== null && project.parts.some((p) => p.id === activePart);
+    // The open tool form's preview: changed parts drawn as they would be, new ones added.
+    const preview = useStudio((s) => s.preview);
+    const allParts = useStudio((s) => s.history?.parts);
+    // The model itself stays as it is; what the form would make is drawn over it as a ghost.
+    const parts = project.parts;
+    const ghosts = useMemo(() => {
+        if (!preview) {
+            return [];
+        }
+        const hidden = new Set((allParts ?? []).map((p) => p.id).filter((id) => !project.parts.some((p) => p.id === id)));
+        return Object.values(preview.parts).filter((p) => !hidden.has(p.id));
+    }, [project.parts, preview, allParts]);
     return (
         <Canvas
             style={placingDecal ? { cursor: 'crosshair' } : undefined}
@@ -811,14 +870,17 @@ export function Scene({ project }: { project: Project }) {
                 <Lightformer form="ring" intensity={1.5} position={[0, 1, 10]} scale={4} />
             </Environment>
 
-            {project.parts.map((part) => {
+            {parts.map((part) => {
                 const other = workspace === 'part' && activeShown && part.id !== activePart;
                 if (other && !showOthers) {
                     return null;
                 }
                 const dimmed = other || (workspace !== 'part' && focus !== null && focus !== part.id);
-                return <PartMesh key={part.id} part={part} offset={offsets[part.id]} dimmed={dimmed} />;
+                return <PartMesh key={part.id} part={part} offset={offsets[part.id] ?? NO_OFFSET} dimmed={dimmed} />;
             })}
+            {ghosts.map((part) => (
+                <GhostPart key={part.id} part={part} meshKey={preview?.keys[part.id] ?? null} offset={offsets[part.id] ?? NO_OFFSET} />
+            ))}
             <SketchSteps
                 part={(workspace === 'part' && project.parts.find((p) => p.id === activePart)) || null}
                 offset={(activePart && offsets[activePart]) || [0, 0, 0]}
@@ -827,6 +889,8 @@ export function Scene({ project }: { project: Project }) {
                 part={project.parts.find((p) => p.id === sketchPart) ?? null}
                 offset={(sketchPart && offsets[sketchPart]) || [0, 0, 0]}
             />
+
+            <Manipulators offsets={offsets} />
 
             <ContactShadows position={[0, -0.5, 0]} scale={900} far={400} blur={2.4} opacity={0.55} resolution={1024} />
             <CameraControls makeDefault dollyToCursor minDistance={1} maxDistance={20000} smoothTime={0.22} draggingSmoothTime={0.08} />

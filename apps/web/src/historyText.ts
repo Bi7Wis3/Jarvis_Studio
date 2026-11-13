@@ -279,9 +279,20 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
             return `${size} ${kind} · ${depth}${repeatText(feature.repeat)}`.trim();
         }
         case 'extrude': {
-            const amount = feature.through ? 'through' : `${mm(feature.distance ?? 0)} mm`;
+            const endText = (end: string | undefined, distance: number | undefined): string =>
+                end === 'upToNext' ? 'up to next' : end === 'throughAll' ? 'through' : `${mm(distance ?? 0)} mm`;
+            const draftText = (draft: number | undefined, outward: boolean | undefined): string[] =>
+                draft ? [`draft ${mm(draft)}°${outward ? ' outward' : ''}`] : [];
+            const amount = endText(feature.end ?? (feature.through ? 'throughAll' : 'blind'), feature.distance);
             const dir = feature.direction && feature.direction !== 'normal' ? ` ${feature.direction}` : '';
-            return `Extrude ${amount}${dir} · ${feature.mode} · ${sourceText(feature, part)}`;
+            const second = feature.second;
+            const extras = [
+                ...(feature.from ? [`from ${mm(feature.from)} mm`] : []),
+                ...draftText(feature.draft, feature.draftOutward),
+                ...(feature.flipSide && feature.mode === 'cut' ? ['flip side'] : []),
+                ...(second ? [`2nd ${[endText(second.end, second.distance), ...draftText(second.draft, second.draftOutward)].join(' ')}`] : []),
+            ];
+            return [`Extrude ${amount}${dir}`, ...extras, feature.mode, sourceText(feature, part)].join(' · ');
         }
         case 'revolve':
             return `Revolve ${mm(feature.angle ?? 360)}° about ${feature.axis} · ${feature.mode} · ${sourceText(feature, part)}`;
@@ -342,7 +353,11 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
         case 'split':
             return `By ${planeRefText(feature.plane, part)} · keep ${feature.keep}`;
         case 'draft':
-            return `${mm(feature.angle)}° · ${feature.faces.join(', ')} · from ${planeRefText(feature.neutral, part)}`;
+            return [
+                `${mm(feature.angle)}°`,
+                [...(feature.faces ?? []), ...(feature.picked?.length ? [`${feature.picked.length} picked face${feature.picked.length === 1 ? '' : 's'}`] : [])].join(', '),
+                `from ${feature.neutralFace ? 'a picked face' : feature.neutral ? planeRefText(feature.neutral, part) : 'no plane'}`,
+            ].join(' · ');
         case 'thread':
             return `${feature.kind} ⌀${mm(feature.diameter)} · P ${mm(feature.pitch)} · ${mm(feature.length)} mm`;
     }

@@ -871,6 +871,157 @@ export function circularPattern(g: SketchGeometry, curveIds: string[], count: nu
     }, true);
 }
 
+// ---- Move, copy, rotate, scale ----------------------------------------------------------------------
+
+/** How selected geometry is moved: by an offset, turned about a centre (degrees, counter-clockwise), or scaled. */
+export type Transform =
+    | { kind: 'move'; by: Pt }
+    | { kind: 'rotate'; centre: Pt; angle: number }
+    | { kind: 'scale'; centre: Pt; factor: number };
+
+export function transformPoint(t: Transform, p: Pt): Pt {
+    if (t.kind === 'move') {
+        return [p[0] + t.by[0], p[1] + t.by[1]];
+    }
+    const [x, y] = [p[0] - t.centre[0], p[1] - t.centre[1]];
+    if (t.kind === 'scale') {
+        return [t.centre[0] + x * t.factor, t.centre[1] + y * t.factor];
+    }
+    const a = (t.angle * Math.PI) / 180;
+    return [t.centre[0] + x * Math.cos(a) - y * Math.sin(a), t.centre[1] + x * Math.sin(a) + y * Math.cos(a)];
+}
+
+/** Whole quarter turns of the transform (0..3), or null for any other angle. */
+function quarterTurns(t: Transform): number | null {
+    if (t.kind !== 'rotate') {
+        return 0;
+    }
+    const q = t.angle / 90;
+    return Math.abs(q - Math.round(q)) < 1e-9 ? ((Math.round(q) % 4) + 4) % 4 : null;
+}
+
+/** A constraint carried along with the transformed geometry: scaled, turned, or null when it no longer holds. */
+function carried(c: NewConstraint, t: Transform): NewConstraint | null {
+    const q = quarterTurns(t);
+    if (c.kind === 'horizontal' || c.kind === 'vertical') {
+        if (q === null) {
+            return null;
+        }
+        return q % 2 ? { ...c, kind: c.kind === 'horizontal' ? 'vertical' : 'horizontal' } : c;
+    }
+    // Relations and angles hold under any of these transforms.
+    if (!('value' in c) || c.kind === 'angle') {
+        return c;
+    }
+    const f = t.kind === 'scale' ? t.factor : 1;
+    if (c.kind === 'distance' && c.axis) {
+        if (q === null) {
+            return null;
+        }
+        return { ...c, value: c.value * f, ...(q % 2 ? { axis: c.axis === 'u' ? 'v' : 'u' } : {}) };
+    }
+    return { ...c, value: c.value * f } as NewConstraint;
+}
+
+/** A constraint without its id (and label position), with its references renamed. */
+function renamed(c: SketchConstraint, rename: (id: string) => string): NewConstraint {
+    return Object.fromEntries(Object.entries(c).filter(([key]) => key !== 'id' && key !== 'at')
+        .map(([key, v]) => [key, typeof v === 'string' && key !== 'kind' && key !== 'axis' ? rename(v) : v])) as NewConstraint;
+}
+
+export interface TransformResult {
+    g: SketchGeometry;
+    /** Copy: the new curves and points; move: the same ids as given. */
+    created: string[];
+    /** Move: relations and dimensions to geometry that stays put, removed so they do not pull it back. */
+    dropped: number;
+}
+
+/**
+ * Moves, turns or scales the curves and points `ids` (with the points the curves are built on), or copies them with
+ * `copy`. Relations among them go along (scaled with a scale; turned with a quarter turn); a move drops the ones that
+ * tie them to the rest of the sketch, and points shared with curves that stay are split off, so nothing pulls back.
+ */
+export function transformEntities(g: SketchGeometry, ids: string[], t: Transform, copy: boolean): TransformResult | { error: string } {
+    const curves = ids.map((id) => curveOf(g, id)).filter((c): c is SketchCurve => !!c);
+    const loose = ids.filter((id) => id !== ORIGIN && g.points.some((p) => p.id === id));
+    if (!curves.length && !loose.length) {
+        return { error: 'Select the curves or points first.' };
+    }
+    if (t.kind === 'scale' && !(t.factor > 0)) {
+        return { error: 'The scale factor must be above zero.' };
+    }
+    const curveSet = new Set(curves.map((c) => c.id));
+    const pointSet = new Set([...curves.flatMap(curvePoints), ...loose]);
+    const f = t.kind === 'scale' ? t.factor : 1;
+    // Points that must split off: copies get all new points; a move splits those that stay with other curves.
+    const split = new Set([...pointSet].filter((id) => copy || id === ORIGIN || g.curves.some((c) => !curveSet.has(c.id) && curvePoints(c).includes(id))));
+    let out = g;
+    const map = new Map<string, string>();
+    for (const id of pointSet) {
+        if (split.has(id)) {
+            const r = newPoint(out, transformPoint(t, P(g, id)));
+            out = r.g;
+            map.set(id, r.id);
+        }
+    }
+    const moved = new Set([...pointSet].filter((id) => !split.has(id)));
+    out = { ...out, points: out.points.map((p) => {
+        if (!moved.has(p.id)) {
+            return p;
+        }
+        const [u, v] = transformPoint(t, [p.u, p.v]);
+        return { ...p, u, v };
+    }) };
+    const created: string[] = [];
+    for (const c of curves) {
+        const id = copy ? newId('c', out) : c.id;
+        map.set(c.id, id);
+        const p = (x: string) => map.get(x) ?? x;
+        const next: SketchCurve = c.kind === 'line' ? { ...c, id, a: p(c.a), b: p(c.b) }
+            : c.kind === 'circle' ? { ...c, id, center: p(c.center), radius: c.radius * f }
+                : { ...c, id, center: p(c.center), start: p(c.start), end: p(c.end) };
+        out = putCurve(out, next);
+        created.push(id);
+    }
+    if (!curves.length || copy) {
+        created.push(...loose.map((id) => map.get(id) ?? id));
+    }
+    const rename = (id: string) => map.get(id) ?? id;
+    const inSet = (id: string) => curveSet.has(id) || pointSet.has(id);
+    let dropped = 0;
+    if (copy) {
+        // The copy keeps the relations among its own geometry (a lock would pin it where it is made: left out).
+        for (const c of g.constraints) {
+            const refs = constraintRefs(c);
+            if (c.kind !== 'fix' && refs.every(inSet)) {
+                const next = carried(renamed(c, rename), t);
+                out = next ? addConstraint(out, next).g : out;
+            }
+        }
+        return { g: out, created: created.filter((id, i) => created.indexOf(id) === i), dropped: 0 };
+    }
+    const constraints: SketchConstraint[] = [];
+    for (const c of out.constraints) {
+        const refs = constraintRefs(c);
+        const moving = refs.some((r) => curveSet.has(r) || moved.has(r));
+        const staying = refs.some((r) => !inSet(r));
+        if (!moving) {
+            constraints.push(c);
+        } else if (staying) {
+            dropped += 1;
+        } else {
+            const next = carried(renamed(c, rename), t);
+            if (next) {
+                constraints.push({ ...next, id: c.id, ...('at' in c && c.at ? { at: c.at } : {}) } as SketchConstraint);
+            } else {
+                dropped += 1;
+            }
+        }
+    }
+    return { g: { ...out, constraints }, created, dropped };
+}
+
 // ---- Drawing: centre-point arc and centre rectangle -----------------------------------------------------
 
 /** Arc about `center` from `start` round to the direction of `toward`, counter-clockwise when `ccw`. */

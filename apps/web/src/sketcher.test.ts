@@ -2,9 +2,11 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadSolver } from './solver';
 import { addCircle, addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import {
-    applyTyped, circularPatternSelected, currentSketch, linearPatternSelected, moveLabel, redoSketch, setTool, sketchClick, sketchDown, sketchEnter,
-    sketchEscape, sketchMove, sketchUp, startSketch, toggleLock, typeKey, undoSketch, useSketcher,
+    applyTyped, circularPatternSelected, currentSketch, deleteConstraints, deleteSelected, fullyDefineSketch, linearPatternSelected, moveLabel, redoSketch,
+    repairAll, setSnapKind, setTool, sketchClick, sketchDown, sketchEnter, sketchEscape, sketchMove, sketchUp, startSketch, startTransformPick,
+    stopTransformPick, toggleLock, transformSelected, typeKey, undoSketch, useSketcher,
 } from './sketcher';
+import { addConstraint } from './sketchGeometry';
 import { curveRadius } from './solver';
 import type { SketchGeometry } from '@jarvis/core';
 
@@ -330,5 +332,140 @@ describe('centre draw tools', () => {
         applyTyped();
         expect(state().geometry.points.some((p) => Math.abs(p.u - 46) < 1e-6 && Math.abs(p.v + 2) < 1e-6)).toBe(true);
         expect(state().geometry.constraints.filter((c) => c.kind === 'length')).toHaveLength(2);
+    });
+});
+
+describe('point, centreline, quick snaps', () => {
+    const begin = (g: SketchGeometry, tool: Parameters<typeof setTool>[0]) => {
+        useSketcher.setState({ active: true, stage: 'draw', geometry: g, undo: [], redo: [], selection: [], typed: '', draft: [], snapKinds: {} });
+        setTool(tool);
+    };
+
+    it('places loose points, snapped onto curves, and keeps them when other things are deleted', () => {
+        begin(addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [20, 0] }).g, 'point');
+        sketchClick([7.3, 0.2], TOL);
+        sketchClick([5, 9.8], TOL);
+        const g = state().geometry;
+        expect(g.points).toHaveLength(4);
+        const onLine = g.points.find((p) => Math.abs(p.u - 7.3) < 1e-6)!;
+        expect(onLine.v).toBeCloseTo(0);
+        expect(g.constraints.some((c) => c.kind === 'pointOnCurve' && c.point === onLine.id)).toBe(true);
+        // On an existing point: nothing new.
+        sketchClick([20.1, 0.1], TOL);
+        expect(state().geometry.points).toHaveLength(4);
+        expect(state().message).toMatch(/already/);
+        // Deleting the line keeps the loose point at (5, 10) (the one on the line loses its relation).
+        setTool('select');
+        useSketcher.setState({ selection: [{ type: 'curve', id: g.curves[0].id }] });
+        deleteSelected();
+        expect(state().geometry.curves).toHaveLength(0);
+        expect(state().geometry.points.map((p) => [p.u, p.v])).toEqual([[7.3, 0], [5, 10]]);
+    });
+
+    it('draws centrelines as construction lines', () => {
+        begin(EMPTY_GEOMETRY, 'centerline');
+        sketchClick([0, 0], TOL);
+        sketchClick([0, 30], TOL);
+        expect(state().geometry.curves).toMatchObject([{ kind: 'line', construction: true }]);
+        expect(state().geometry.constraints).toMatchObject([{ kind: 'vertical' }]);
+        typeKey('1');
+        typeKey('0');
+        applyTyped();
+        expect(state().geometry.curves).toHaveLength(2);
+        expect(state().geometry.curves[1].construction).toBe(true);
+    });
+
+    it('skips snap kinds switched off in quick snaps', () => {
+        begin(addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [20, 0] }).g, 'line');
+        sketchMove([10.2, 0.2], TOL);
+        expect(state().snapKind).toBe('mid');
+        setSnapKind('mid', false);
+        expect(state().snapKinds).toEqual({ mid: false });
+        sketchMove([10.2, 0.2], TOL);
+        expect(state().snapKind).toBe('curve');
+        setSnapKind(null);
+        expect(state().snapKinds).toEqual({});
+    });
+});
+
+describe('move, copy, rotate, scale', () => {
+    const begin = (g: SketchGeometry) => {
+        useSketcher.setState({ active: true, stage: 'draw', geometry: g, undo: [], redo: [], selection: [], typed: '', draft: [], labels: {} });
+        setTool('select');
+    };
+
+    it('moves the selection by two picked points, and says what it dropped', () => {
+        const rect = addRect(EMPTY_GEOMETRY, [0, 0], [20, 10]);
+        // Its first corner held on the v axis: that relation ties it to the rest and goes with the move.
+        const corner = (rect.g.curves[0] as { a: string }).a;
+        begin(addConstraint(rect.g, { kind: 'pointOnCurve', point: corner, curve: 'axis-v' }).g);
+        useSketcher.setState({ selection: rect.lines.map((id) => ({ type: 'curve' as const, id })) });
+        startTransformPick('move');
+        expect(state().tool).toBe('xform');
+        sketchClick([0.1, 0.1], TOL);
+        expect(state().xform?.picks).toEqual([[0, 0]]);
+        sketchMove([30, 30], TOL);
+        expect(state().editPreview).toHaveLength(4);
+        expect(transformSelected({ kind: 'move', by: [30, 30] }, false)).toBeNull();
+        // Closing the form goes back to selecting and keeps the status line.
+        stopTransformPick();
+        expect(state().tool).toBe('select');
+        expect(state().message).toMatch(/Moved 4 items; removed 1 relation/);
+        expect(state().geometry.points.some((p) => p.u === 30 && p.v === 30)).toBe(true);
+        expect(state().undo).toHaveLength(1);
+    });
+
+    it('copies, rotates and scales, keeping the original for a copy', () => {
+        const c = addCircle(EMPTY_GEOMETRY, { at: [10, 0] }, 2);
+        begin(c.g);
+        useSketcher.setState({ selection: [{ type: 'curve', id: c.id }] });
+        expect(transformSelected({ kind: 'rotate', centre: [0, 0], angle: 90 }, true)).toBeNull();
+        expect(state().geometry.curves).toHaveLength(2);
+        expect(state().geometry.points.some((p) => Math.abs(p.u) < 1e-6 && Math.abs(p.v - 10) < 1e-6)).toBe(true);
+        // The copy is selected now; scale it.
+        expect(transformSelected({ kind: 'scale', centre: [0, 0], factor: 0.5 }, false)).toBeNull();
+        const copy = state().geometry.curves[1];
+        expect(curveRadius(state().geometry, copy.id)).toBeCloseTo(1);
+        useSketcher.setState({ selection: [] });
+        expect(transformSelected({ kind: 'move', by: [1, 0] }, false)).toMatch(/Select/);
+    });
+});
+
+describe('relations, repair, fully define', () => {
+    const begin = (g: SketchGeometry) => {
+        useSketcher.setState({ active: true, stage: 'draw', geometry: g, undo: [], redo: [], selection: [], typed: '', draft: [], labels: {}, message: null });
+        setTool('select');
+    };
+
+    it('deletes relations in one undo step', () => {
+        const rect = addRect(EMPTY_GEOMETRY, [0, 0], [20, 10]);
+        begin(rect.g);
+        const ids = state().geometry.constraints.slice(0, 2).map((c) => c.id);
+        useSketcher.setState({ selection: [{ type: 'constraint', id: ids[0] }] });
+        deleteConstraints(ids);
+        expect(state().geometry.constraints).toHaveLength(2);
+        expect(state().selection).toEqual([]);
+        undoSketch();
+        expect(state().geometry.constraints).toHaveLength(4);
+    });
+
+    it('repairs everything and reports it', () => {
+        let g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [10, 0] }).g;
+        g = addLine(g, { at: [10.2, 0] }, { at: [10, 10] }).g;
+        begin(g);
+        expect(repairAll()).toBe(true);
+        expect(state().geometry.points).toHaveLength(3);
+        expect(state().message).toMatch(/Repaired 1 problem/);
+        repairAll();
+        expect(state().message).toMatch(/Nothing/);
+    });
+
+    it('fully defines a rectangle', () => {
+        begin(addRect(EMPTY_GEOMETRY, [5, 5], [25, 15]).g);
+        fullyDefineSketch();
+        expect(state().dof).toBe(0);
+        expect(state().message).toMatch(/Added 4 dimensions; the sketch is fully defined/);
+        fullyDefineSketch();
+        expect(state().message).toMatch(/already/);
     });
 });

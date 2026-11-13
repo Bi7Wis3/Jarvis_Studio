@@ -160,6 +160,20 @@ export interface SketchGeometry {
 export type ExtrudeDirection = 'normal' | 'reverse' | 'symmetric';
 
 /**
+ * Where an extrusion stops: after its distance, through the whole body, or up to next (until it reaches the body
+ * ahead, for a boss; through the first wall of material it meets, for a cut).
+ */
+export type ExtrudeEnd = 'blind' | 'throughAll' | 'upToNext';
+
+/** The second direction of an extrude: opposite to the first, from the same start. */
+export interface ExtrudeSide {
+    end: ExtrudeEnd;
+    distance?: number;
+    draft?: number;
+    draftOutward?: boolean;
+}
+
+/**
  * Where a sketch-based step gets its sketch: inline, or by the id of an earlier `sketch` step of the same part
  * (editing that sketch then updates every step that uses it).
  */
@@ -240,6 +254,9 @@ export interface HoleSpec {
 }
 
 /** Edges picked in the part's local frame: 'top'/'bottom' lie at its highest/lowest Y, 'vertical' run along Y. */
+/** A face picked in the view: a point on it and its outward normal there, in the part's own frame. */
+export type FacePickRef = { at: Vec3; normal?: Vec3 };
+
 export type EdgeSelect = 'all' | 'top' | 'bottom' | 'vertical' | 'horizontal';
 /** Faces picked by their outward direction in the part's local frame. front = +Z, right = +X, top = +Y. */
 export type FaceSelect = 'top' | 'bottom' | 'front' | 'back' | 'left' | 'right';
@@ -255,10 +272,23 @@ interface FeatureBase {
 
 /** One step of a part's history. Applied in order to the part's body, in its local frame. */
 export type Feature = FeatureBase & (
-    | { op: 'fillet'; radius: number; edges?: EdgeSelect }
-    | { op: 'chamfer'; size: number; edges?: EdgeSelect }
+    /**
+     * Rounds edges. Edges picked in the view (`at`: a point on each) and the edges of picked `faces` are used when
+     * given, else the `edges` group. tangent: follow each picked edge along its smooth chain. radius2: the radius at
+     * the far end of each edge, for a fillet that changes along it.
+     */
+    | { op: 'fillet'; radius: number; edges?: EdgeSelect; at?: Vec3[]; faces?: FacePickRef[]; tangent?: boolean; radius2?: number }
+    /**
+     * Bevels edges, picked like a fillet's. size alone: equal distance; with distance2: two distances; with angle
+     * (degrees): distance and angle. `side` is the normal of the face that `size` is measured on.
+     */
+    | {
+        op: 'chamfer'; size: number; edges?: EdgeSelect; at?: Vec3[]; faces?: FacePickRef[]; tangent?: boolean;
+        distance2?: number; angle?: number; side?: Vec3;
+    }
     /** Hollows the solid to a wall `thickness`, removing the `open` faces (none: a closed hollow body). */
-    | { op: 'shell'; thickness: number; open?: FaceSelect[] }
+    /** Hollows the body. Faces to remove: by side (`open`) and/or picked in the view (`remove`). outward: grow the wall outside. */
+    | { op: 'shell'; thickness: number; open?: FaceSelect[]; remove?: FacePickRef[]; outward?: boolean }
     | { op: 'add'; shape: Shape; position?: Vec3; rotation?: Vec3; repeat?: Repeat }
     | { op: 'cut'; shape: Shape; position?: Vec3; rotation?: Vec3; repeat?: Repeat }
     /**
@@ -267,10 +297,16 @@ export type Feature = FeatureBase & (
      */
     | { op: 'hole'; spec: HoleSpec; position: Vec3; direction?: Vec3; depth?: number; repeat?: Repeat }
     /**
-     * Sketch extruded into the part: mode add joins material, cut removes it. `through` cuts or extends
-     * through the whole part in that direction instead of `distance`.
+     * Sketch extruded into the part: mode add joins material, cut removes it. Direction 1 ends by `end`
+     * (default blind: `distance`; `through: true` is the older spelling of throughAll). `from` starts it that far
+     * from the sketch plane along direction 1. `draft` tapers the walls (degrees, narrowing along the extrusion;
+     * draftOutward widens). `flipSide` (cuts) removes what is outside the profile instead. `second` extrudes the
+     * other way from the same start (not with direction symmetric; null: none).
      */
-    | ({ op: 'extrude'; distance?: number; through?: boolean; direction?: ExtrudeDirection; mode: 'add' | 'cut' } & SketchSource & RegionPicks)
+    | ({
+        op: 'extrude'; distance?: number; through?: boolean; direction?: ExtrudeDirection; mode: 'add' | 'cut';
+        end?: ExtrudeEnd; from?: number; draft?: number; draftOutward?: boolean; flipSide?: boolean; second?: ExtrudeSide | null;
+    } & SketchSource & RegionPicks)
     /** Sketch revolved about its u or v axis (through the sketch origin) by `angle` degrees (default 360). */
     | ({ op: 'revolve'; axis: 'u' | 'v'; angle?: number; mode: 'add' | 'cut' } & SketchSource & RegionPicks)
     /** A sketch as its own history step. It builds nothing; extrude, revolve and loft steps after it use it by id. */
@@ -307,7 +343,13 @@ export type Feature = FeatureBase & (
     /** Cuts the body with a plane and keeps one side (or both, as separate solids). */
     | { op: 'split'; plane: PlaneRef; keep: 'positive' | 'negative' | 'both' }
     /** Tilts faces by `angle` degrees relative to a neutral plane (draft for moulding, easier printing). */
-    | { op: 'draft'; faces: FaceSelect[]; angle: number; neutral: PlaneRef }
+    | {
+        op: 'draft'; angle: number;
+        /** Faces to tilt: by side and/or picked in the view. */
+        faces?: FaceSelect[]; picked?: FacePickRef[]; tangent?: boolean;
+        /** The plane the faces pivot about: a plane, or a flat face picked in the view. flip reverses the pull direction. */
+        neutral?: PlaneRef; neutralFace?: FacePickRef; flip?: boolean;
+    }
     /** Printable ISO-style thread: external on a boss of `diameter`, or internal in a bore of `diameter`. */
     | { op: 'thread'; kind: 'external' | 'internal'; diameter: number; pitch: number; length: number; position?: Vec3 }
 );
