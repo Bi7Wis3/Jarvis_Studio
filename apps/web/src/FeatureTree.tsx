@@ -17,6 +17,7 @@ import {
 import { StepIcon } from './stepIcons';
 import { DecalPanel } from './DecalPanel';
 import { choosePlane, startSketch, useSketcher } from './sketcher';
+import { DEFAULT_COLOR, newPart } from './newPart';
 import { loadSolver, solverReady } from './solver';
 import { definitionMark, updateRecent, type RecentSteps } from './sketchState';
 import {
@@ -34,8 +35,6 @@ const ORIGIN = '__origin';
 const HISTORY = '__history';
 const RECENT = '__recent:';
 
-/** The material new parts start with: shown as "not specified". */
-const DEFAULT_COLOR = '#9aa3b5';
 
 /** Tree geometry in px: left padding, width of one indent column; the box and lines sit at a column's centre. */
 const PAD = 2;
@@ -47,26 +46,6 @@ const PLANES: { key: string; plane: SketchPlaneName; label: string }[] = [
     { key: '__top', plane: 'top', label: 'Top Plane' },
     { key: '__right', plane: 'right', label: 'Right Plane' },
 ];
-
-/** Adds an empty part (it starts with a sketch) and opens it in isolation. */
-async function newPart(parts: Part[]): Promise<void> {
-    let n = parts.length + 1;
-    while (parts.some((p) => p.name === `Part ${n}`)) {
-        n++;
-    }
-    const result = await tool('parts_add', {
-        parts: [{
-            name: `Part ${n}`,
-            shape: { kind: 'empty' },
-            position: [0, 0, 0],
-            material: { color: DEFAULT_COLOR, metalness: 0, roughness: 0.6 },
-        }],
-    });
-    const id = /: ([^,.\s]+)\.?$/.exec(result.text.trim())?.[1];
-    if (!result.isError && id) {
-        setWorkspace('part', id, 'isolated');
-    }
-}
 
 // Steps added or edited this session, per part (kept while the tree is closed; not across a reload).
 const recentByPart = new Map<string, { features: Feature[]; state: RecentSteps }>();
@@ -358,6 +337,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         focusList();
     };
     /** What double-click or Enter does on a line. */
+    /** Opens the Material form for this part (the toolbar owns the form). */
+    const editMaterial = () => window.dispatchEvent(new CustomEvent('jarvis:open-tool', { detail: 'material' }));
     const activate = (key: string) => {
         if (key === ROOT || key === HISTORY) {
             setOpen(key, !isOpen(key));
@@ -367,6 +348,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             }
         } else if (key === BODY) {
             editItem(part.id, null);
+        } else if (key === MATERIAL) {
+            editMaterial();
         } else {
             const node = nodeOf(key);
             const parent = node?.parentId ? byId.get(node.parentId) : undefined;
@@ -434,7 +417,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             case 'body':
                 return [{ label: 'Edit body', onSelect: () => editItem(part.id, null) }];
             case 'fixed':
-                return entry.plane ? [{ label: 'Sketch on this plane', onSelect: () => sketchOn(entry.plane!) }] : [];
+                return entry.plane ? [{ label: 'Sketch on this plane', onSelect: () => sketchOn(entry.plane!) }]
+                    : entry.key === MATERIAL ? [{ label: 'Edit material', hint: 'double-click', onSelect: editMaterial }] : [];
             case 'node':
                 return nodeMenu(entry.node);
             default:

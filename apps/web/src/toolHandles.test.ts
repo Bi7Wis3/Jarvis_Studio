@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Feature, Part, SketchRegion, Vec3 } from '@jarvis/core';
 import {
-    axisParam, beginDrag, dragLabel, dragValues, gimbalAxes, gripShapes, handlesFor, pickGrip, profileCentre, ringAngle, rotateAbout, snapValue,
+    axisParam, beginDrag, dragLabel, dragStep, dragValues, gimbalAxes, gripShapes, handlesFor, pickGrip, profileCentre, ringAngle, rotateAbout, snapValue,
     tipOf, wrapDegrees, type Handle, type HandleEnv, type Ray,
 } from './toolHandles';
 import type { Ctx, Values } from './toolDefs';
@@ -143,7 +143,7 @@ describe('handle registry', () => {
             .toEqual([{ kind: 'translate', keys: ['pos0', 'pos1', 'pos2'], position: [4, 5, 6], step: 1 }]);
         expect(handlesFor('move', { pos0: '4', pos1: '', pos2: '6' }, ctxOf(p0), noEnv)).toEqual([]);
         expect(handlesFor('rotate', { rot0: '10', rot1: '20', rot2: '30' }, ctxOf(p0), noEnv))
-            .toEqual([{ kind: 'rotate', keys: ['rot0', 'rot1', 'rot2'], position: [1, 2, 3], rotation: [10, 20, 30], step: 5 }]);
+            .toEqual([{ kind: 'rotate', keys: ['rot0', 'rot1', 'rot2'], position: [1, 2, 3], rotation: [10, 20, 30], step: 1 }]);
         expect(handlesFor('duplicate', { off0: '50', off1: '0', off2: '0' }, ctxOf(p0), noEnv)[0])
             .toMatchObject({ kind: 'translate', position: [51, 2, 3], keys: ['off0', 'off1', 'off2'] });
         const [hole] = handlesFor('hole', { face: 'top', pos0: '0', pos1: '5', pos2: '0', through: false, depth: '6' }, ctxOf(part([], [0, 0, 0])), noEnv);
@@ -175,6 +175,13 @@ describe('handle maths', () => {
         expect(snapValue(17.333, 0.5, { alt: true })).toBe(17.33);
         expect(snapValue(-3, 0.5, {}, 0)).toBe(0);
         expect(snapValue(400, 5, {}, 0, 360)).toBe(360);
+        // Zoomed in, a length drag steps finer than the handle's own step; Alt follows the pointer to a pixel's worth.
+        expect(dragStep(0.5, 0.2)).toBe(0.5);
+        expect(dragStep(0.5, 0.01)).toBe(0.1);
+        expect(dragStep(0.5, 0.0001)).toBe(0.001);
+        expect(dragStep(0.5)).toBe(0.5);
+        expect(snapValue(17.3337, 0.001, { perPixel: 0.0001 })).toBe(17.334);
+        expect(snapValue(17.33374, 0.5, { alt: true, perPixel: 0.0001 })).toBe(17.3337);
         expect(wrapDegrees(270)).toBe(-90);
         expect(wrapDegrees(-180)).toBe(180);
         expect(wrapDegrees(540)).toBe(180);

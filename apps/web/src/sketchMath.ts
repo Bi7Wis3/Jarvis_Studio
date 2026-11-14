@@ -22,7 +22,13 @@ const EPS = 1e-3;
 export const dist = (p: Pt, q: Pt): number => Math.hypot(q[0] - p[0], q[1] - p[1]);
 export const mid = (p: Pt, q: Pt): Pt => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
 export const same = (p: Pt, q: Pt): boolean => dist(p, q) < EPS;
-export const round = (n: number, step = 1e-4): number => Math.round(n / step) * step + 0;
+/** Rounds to a step (default 0.000001 mm). Decimal steps divide by a whole number, so 12.3 stays 12.3 as text. */
+export const round = (n: number, step = 1e-6): number => {
+    const per = Math.round(1 / step);
+    return (per >= 1 && Math.abs(per * step - 1) < 1e-9 ? Math.round(n * per) / per : Math.round(n / step) * step) + 0;
+};
+/** Rounding for values read off the drawn model (its mesh is good to about this). */
+export const PICKED = 1e-4;
 
 // ---- Planes -------------------------------------------------------------------------------------------
 
@@ -98,13 +104,13 @@ export function planeForFace(normal: Vec3, point: Vec3, tangent = false): { plan
     if (!tangent) {
         const [x, y, z] = n.map(Math.abs);
         if (y >= ALIGNED) {
-            return { plane: 'top', offset: round(point[1], 0.01) };
+            return { plane: 'top', offset: round(point[1], PICKED) };
         }
         if (z >= ALIGNED) {
-            return { plane: 'front', offset: round(point[2], 0.01) };
+            return { plane: 'front', offset: round(point[2], PICKED) };
         }
         if (x >= ALIGNED) {
-            return { plane: 'right', offset: round(point[0], 0.01) };
+            return { plane: 'right', offset: round(point[0], PICKED) };
         }
     }
     // Through the part origin's projection (planar faces) so dimensions to the sketch origin mean something.

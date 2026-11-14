@@ -1,6 +1,7 @@
 // The form behind a tool: its values, apply and result, shared by the floating popup and the property manager.
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { stepText } from './numberText';
 import { fetchPreview, LatestOnly, toPreview, type PreviewResponse, type ToolCall } from './preview';
 import { useRegionPick } from './regionPick';
 import { captureToolCalls, clearPreview, setPreview } from './state';
@@ -156,20 +157,23 @@ export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
             run(() => tool.apply!(values, ctx));
         }
     };
-    const shown = result ?? (preview.note ? { text: `Preview: ${preview.note}`, isError: true } : null);
+    const shown = result ?? (preview.note ? { text: previewNote(preview.note, ctx), isError: true } : null);
     return { values, result: shown, busy, form, missingPart, fields, change, api, submit };
 }
 
-/** Steps a number field's text value up or down; leaves expressions it cannot read alone. */
-function stepped(value: string, field: Field, sign: number): string | null {
-    const n = Number(value);
-    if (value.trim() === '' || !Number.isFinite(n)) {
-        return null;
+/** The preview's error; says so when the change breaks a later step, not the one being edited. */
+function previewNote(note: string, ctx: Ctx): string {
+    const failed = /^feature "([^"]+)" \(\w+\): ([\s\S]*)$/.exec(note);
+    const editing = ctx.edit?.feature;
+    if (failed && editing && failed[1] !== (editing.name ?? editing.id)) {
+        return `Preview: this change makes a later step fail. ${failed[1]}: ${failed[2]}`;
     }
-    const step = field.step ?? 1;
-    const next = Math.round((n + sign * step) / step) * step;
-    return String(Math.round((field.min !== undefined ? Math.max(field.min, next) : next) * 1e6) / 1e6);
+    return `Preview: ${note}`;
 }
+
+/** The field's increment for the arrows and the Up and Down keys: with Ctrl ten times as much, with Alt a tenth. */
+const increment = (field: Field, keys: { ctrlKey: boolean; altKey: boolean }): number =>
+    (field.step ?? 1) * (keys.ctrlKey ? 10 : keys.altKey ? 0.1 : 1);
 
 export function FieldInput(props: { field: Field; values: Values; change: (key: string, value: Values[string]) => void; spin?: boolean }) {
     const { field, values, change, spin } = props;
@@ -277,8 +281,9 @@ export function FieldInput(props: { field: Field; values: Values; change: (key: 
         }
         default: {
             const number = field.kind !== 'text';
-            const nudge = (sign: number) => {
-                const next = stepped(String(value ?? ''), field, sign);
+            // The step is only an increment: any value can be typed (a step on the input would refuse 0.123 on OK).
+            const nudge = (sign: number, keys: { ctrlKey: boolean; altKey: boolean }) => {
+                const next = stepText(String(value ?? ''), increment(field, keys), sign, field.min, field.max);
                 if (next !== null) {
                     change(field.key, next);
                 }
@@ -289,18 +294,24 @@ export function FieldInput(props: { field: Field; values: Values; change: (key: 
                     <span className="tb-input">
                         <input
                             type={number ? 'number' : 'text'}
-                            step={field.step ?? 'any'}
+                            step={number ? 'any' : undefined}
                             min={field.min}
                             value={value as string}
                             onChange={(e) => change(field.key, e.target.value)}
+                            onKeyDown={number ? (e) => {
+                                if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                                    e.preventDefault();
+                                    nudge(e.key === 'ArrowUp' ? 1 : -1, e);
+                                }
+                            } : undefined}
                         />
                         {unit}
                         {spin && number && (
                             <span className="pm-spin">
-                                <button type="button" tabIndex={-1} onClick={() => nudge(1)} aria-label={`Increase ${field.label}`}>
+                                <button type="button" tabIndex={-1} onClick={(e) => nudge(1, e)} aria-label={`Increase ${field.label}`}>
                                     <svg width="8" height="5" viewBox="0 0 8 5" aria-hidden="true"><path d="M1 4l3-3 3 3" /></svg>
                                 </button>
-                                <button type="button" tabIndex={-1} onClick={() => nudge(-1)} aria-label={`Decrease ${field.label}`}>
+                                <button type="button" tabIndex={-1} onClick={(e) => nudge(-1, e)} aria-label={`Decrease ${field.label}`}>
                                     <svg width="8" height="5" viewBox="0 0 8 5" aria-hidden="true"><path d="M1 1l3 3 3-3" /></svg>
                                 </button>
                             </span>

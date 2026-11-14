@@ -3,10 +3,11 @@
 import type {
     AxisRef, EdgeSelect, Feature, FastenerType, Part, PlaneRef, PointRef, Repeat, RevolveAxis, Shape, Sketch, SketchPlane, SketchSource, Vec3,
 } from '@jarvis/core';
+import { valueText } from './numberText';
 
 /** Number in mm without trailing zeros: 4, 2.5, 0.25. */
 export function mm(value: number): string {
-    return String(Math.round(value * 100) / 100);
+    return valueText(value);
 }
 
 const FASTENERS: Record<FastenerType, string> = {

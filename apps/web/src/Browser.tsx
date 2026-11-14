@@ -6,6 +6,7 @@ import { focusPart, runTool, select, setHidden, setWorkspace, useStudio } from '
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
 import { PartHistory } from './FeatureTree';
 import { usePropertyManager } from './PropertyManager';
+import { valueText } from './numberText';
 import './browser.css';
 
 const PANEL_INSET = 274;
@@ -284,7 +285,7 @@ async function removeParts(ids: string[]): Promise<void> {
 function PatternRow({ part, onEdit, onMenu }: { part: Part; onEdit: () => void; onMenu: (event: MouseEvent) => void }) {
     const r = part.repeat!;
     const detail = r.kind === 'linear'
-        ? `step ${r.step.map((n) => Math.round(n * 100) / 100).join(', ')} mm`
+        ? `step ${r.step.map(valueText).join(', ')} mm`
         : `over ${r.angle ?? 360}°`;
     return (
         <li

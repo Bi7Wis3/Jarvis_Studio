@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { createPortal } from 'react-dom';
 import type { Feature } from '@jarvis/core';
 import { Icon } from './icons';
+import { showError } from './menus';
 import { clearEditing, clearPicked, runTool, select, setRollback, setWorkspace, useStudio } from './state';
 import {
     closeSketch, deleteSelected, enterKey, fitSketch, redoSketch, setTool, toggleConstructionSelected, sketchEscape, startSketch, typeKey,
@@ -352,7 +353,20 @@ export function Toolbar() {
 
     const open = (tool: ToolDef, anchor: Anchor) => {
         setMenu(null);
-        if (tool.soon || (tool.needsPart && !latest.current.ctx.part)) {
+        if (tool.soon) {
+            return;
+        }
+        if (tool.needsPart && !latest.current.ctx.part) {
+            // A tool that works on a part, with none selected: take the only part there is, else say what to do
+            // (a greyed button that does nothing leaves the user guessing).
+            const all = useStudio.getState().project?.parts ?? [];
+            if (all.length === 1) {
+                select(all[0].id);
+                window.setTimeout(() => open(tool, anchor), 0);
+            } else {
+                showError(all.length ? `${tool.label} works on one part: click a part in the view or in the list first.`
+                    : `${tool.label} needs a part, and there is none yet.`);
+            }
             return;
         }
         if (tool.instant && !tool.popupIf?.(latest.current.ctx)) {

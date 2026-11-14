@@ -4,6 +4,7 @@
 
 import type { Feature, RevolveAxis, RevolveType, SketchGeometry } from '@jarvis/core';
 import { sketchCentrelines } from '@jarvis/core/reference';
+import { valueText } from './numberText';
 import type { Pt } from './sketchMath';
 
 /** The Revolve form keeps one axis field per sketch step (each sketch has its own lines). */
@@ -87,7 +88,7 @@ export interface RevolveOptionValues {
     angle2?: number | null;
 }
 
-const fmt = (n: number): string => String(Math.round(n * 100) / 100);
+const fmt = valueText;
 
 /** Form values for a revolve's options (the axis is its own field). */
 export function revolveValues(o: Partial<RevolveOptionValues>): Record<string, string | boolean> {

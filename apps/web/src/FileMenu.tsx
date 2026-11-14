@@ -290,11 +290,11 @@ function PrintForm({ onBack, onSaved }: { onBack: () => void; onSaved: () => voi
     const [form, setForm] = useState<PrintSettings>(() => ({ ...DEFAULT_PRINT, ...print }));
     const [busy, setBusy] = useState(false);
     const num = (value: string, fallback: number) => (Number.isFinite(parseFloat(value)) ? parseFloat(value) : fallback);
-    const field = (label: string, value: number, onChange: (v: number) => void, step: string, unit = 'mm') => (
+    const field = (label: string, value: number, onChange: (v: number) => void, unit = 'mm') => (
         <label className="fm-field">
             <span>{label}</span>
             <span className="fm-input">
-                <input type="number" step={step} min="0" value={value} onChange={(e) => onChange(num(e.target.value, value))} />
+                <input type="number" step="any" min="0" value={value} onChange={(e) => onChange(num(e.target.value, value))} />
                 <span className="unit">{unit}</span>
             </span>
         </label>
@@ -325,7 +325,7 @@ function PrintForm({ onBack, onSaved }: { onBack: () => void; onSaved: () => voi
                             <input
                                 type="number"
                                 min="1"
-                                step="1"
+                                step="any"
                                 value={form.bed[i]}
                                 onChange={(e) => bed(i)(num(e.target.value, form.bed[i]))}
                                 aria-label={`Bed ${axis}`}
@@ -334,9 +334,9 @@ function PrintForm({ onBack, onSaved }: { onBack: () => void; onSaved: () => voi
                     ))}
                 </span>
             </div>
-            {field('Nozzle', form.nozzle, (nozzle) => setForm({ ...form, nozzle }), '0.05')}
-            {field('Layer height', form.layerHeight, (layerHeight) => setForm({ ...form, layerHeight }), '0.02')}
-            {field('Hole tolerance', form.holeTolerance, (holeTolerance) => setForm({ ...form, holeTolerance }), '0.05')}
+            {field('Nozzle', form.nozzle, (nozzle) => setForm({ ...form, nozzle }))}
+            {field('Layer height', form.layerHeight, (layerHeight) => setForm({ ...form, layerHeight }))}
+            {field('Hole tolerance', form.holeTolerance, (holeTolerance) => setForm({ ...form, holeTolerance }))}
             <p className="fm-foot">Hole tolerance is added to printed hole diameters so hardware fits.</p>
             <div className="fm-buttons">
                 <button type="button" onClick={() => setForm({ ...DEFAULT_PRINT })}>Defaults</button>

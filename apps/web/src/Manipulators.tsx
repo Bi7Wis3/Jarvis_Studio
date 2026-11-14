@@ -420,7 +420,11 @@ export function Manipulators({ offsets }: { offsets: Record<string, Vec3> }) {
                     return;
                 }
                 current.moved = true;
-                const next = dragValues(current.drag, rayOf(e), { alt: e.altKey, shift: e.shiftKey });
+                const { camera: cam } = latest.current;
+                const a = anchorOf(current.drag.handle);
+                const s = shiftNow();
+                const perPx = perPixel(cam, canvas.getBoundingClientRect().height, new Vector3(a[0] + s[0], a[1] + s[1], a[2] + s[2]));
+                const next = dragValues(current.drag, rayOf(e), { alt: e.altKey, shift: e.shiftKey, perPixel: perPx });
                 if (next) {
                     pending = { ...pending, ...next };
                     if (!frame) {

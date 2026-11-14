@@ -3,11 +3,12 @@
 // shows is what the feature becomes (features_update merges fields and removes those set to null).
 
 import type { Feature, Vec3 } from '@jarvis/core';
+import { valueText } from './numberText';
 import { chamferSide, edgePoints, faceRefs, pickItems } from './pickField';
 
 type FormValues = Record<string, unknown>;
 
-const round = (n: number): string => String(Math.round(n * 100) / 100);
+const round = valueText;
 
 function number(v: FormValues, key: string, label: string, max?: number): number {
     const raw = v[key];

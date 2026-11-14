@@ -5,6 +5,7 @@
 import { Euler, MathUtils, Matrix4, Quaternion, Vector3 } from 'three';
 import type { Feature, Part, SketchGeometry, SketchPlane, SketchRegion, Vec3 } from '@jarvis/core';
 import { resolveRevolveAxis } from '@jarvis/core/reference';
+import { niceStep, roundTo, valueText } from './numberText';
 import { pickedRegions } from './regionPick';
 import { axisFromValue, revolveAxisKey } from './revolveAxis';
 import { planeFrame, profilePoints, type Pt } from './sketchMath';
@@ -36,10 +37,13 @@ export interface HandleEnv {
 type HandleFn = (values: Values, ctx: Ctx, env: HandleEnv) => Handle[];
 
 export const AXIS_COLORS = ['#ff4d5e', '#3ddc84', '#4d8dff'];
-export const DEFAULT_STEP = { length: 0.5, position: 1, angle: 5 };
+/** Coarsest drag steps; lengths and positions get finer as the view zooms in (see dragStep). */
+export const DEFAULT_STEP = { length: 0.5, position: 1, angle: 1 };
+/** Pixels of pointer travel one drag step should take, at least. */
+const STEP_PX = 6;
 
 /** Same text format as the form fields (toolDefs `fmt`). */
-export const fmt = (n: number): string => String(Math.round(n * 100) / 100);
+export const fmt = valueText;
 
 // ---- Small vector helpers --------------------------------------------------------------------------------
 
@@ -481,23 +485,31 @@ export function ringAngle(ray: Ray, centre: Vec3, axis: Vec3, ref: Vec3): number
 }
 
 export interface Modifiers {
-    /** Free: no rounding. */
+    /** Free: follows the pointer, rounded only to what one pixel is worth. */
     alt?: boolean;
     /** Coarse: ten times the step. */
     shift?: boolean;
+    /** Model units per screen pixel at the handle; lets the step follow the zoom. */
+    perPixel?: number;
 }
 
-/** Rounds to the step (Shift: 10x; Alt: not at all, beyond the form's 0.01) and clamps. */
+/** The step of a length drag: the handle's own at most, finer when zoomed in so that one step is a few pixels. */
+export function dragStep(base: number, perPixel?: number): number {
+    return perPixel && perPixel > 0 ? Math.min(base, niceStep(perPixel * STEP_PX)) : base;
+}
+
+/** Rounds to the step (Shift: 10x; Alt: only to a pixel's worth, or 0.01 when the zoom is not known) and clamps. */
 export function snapValue(value: number, step: number, mods: Modifiers = {}, min?: number, max?: number): number {
-    const s = mods.shift ? step * 10 : step;
-    let v = mods.alt || s <= 0 ? value : Math.round(value / s) * s;
+    const free = mods.perPixel && mods.perPixel > 0 ? niceStep(mods.perPixel) : 0.01;
+    const s = mods.alt ? Math.min(free, step) : mods.shift ? step * 10 : step;
+    let v = s <= 0 ? value : Math.round(value / s) * s;
     if (min !== undefined) {
         v = Math.max(min, v);
     }
     if (max !== undefined) {
         v = Math.min(max, v);
     }
-    return Math.round(v * 100) / 100;
+    return roundTo(v);
 }
 
 /** Wraps degrees into (-180, 180]. */
@@ -572,11 +584,12 @@ export function dragValues(drag: Drag, ray: Ray, mods: Modifiers = {}): Values |
         }
         const moved = (t - (drag.from as number)) * line.gain;
         if (h.kind === 'distance') {
-            return { [h.key]: fmt(snapValue(startNumber(drag, h.key) + moved, h.step ?? DEFAULT_STEP.length, mods, h.min, h.max)) };
+            const step = dragStep(h.step ?? DEFAULT_STEP.length, mods.perPixel);
+            return { [h.key]: fmt(snapValue(startNumber(drag, h.key) + moved, step, mods, h.min, h.max)) };
         }
         if (h.kind === 'translate' && drag.grip.kind === 'axis') {
             const key = h.keys[drag.grip.axis];
-            return { [key]: fmt(snapValue(startNumber(drag, key) + moved, h.step ?? DEFAULT_STEP.position, mods)) };
+            return { [key]: fmt(snapValue(startNumber(drag, key) + moved, dragStep(h.step ?? DEFAULT_STEP.position, mods.perPixel), mods)) };
         }
         return null;
     }
@@ -586,9 +599,10 @@ export function dragValues(drag: Drag, ray: Ray, mods: Modifiers = {}): Values |
             return null;
         }
         const delta = sub(hit, drag.from as Vec3);
+        const step = dragStep(h.step ?? DEFAULT_STEP.position, mods.perPixel);
         const out: Values = {};
         for (const i of [(drag.grip.normal + 1) % 3, (drag.grip.normal + 2) % 3]) {
-            out[h.keys[i]] = fmt(snapValue(startNumber(drag, h.keys[i]) + delta[i], h.step ?? DEFAULT_STEP.position, mods));
+            out[h.keys[i]] = fmt(snapValue(startNumber(drag, h.keys[i]) + delta[i], step, mods));
         }
         return out;
     }
@@ -602,12 +616,14 @@ export function dragValues(drag: Drag, ray: Ray, mods: Modifiers = {}): Values |
     }
     drag.turned += wrapDegrees(a - drag.last);
     drag.last = a;
+    // Angles do not follow the zoom: Alt rounds to 0.01 degrees.
+    const turn: Modifiers = { alt: mods.alt, shift: mods.shift };
     if (h.kind === 'rotate' && drag.grip.kind === 'ring') {
         const key = h.keys[drag.grip.axis];
-        return { [key]: fmt(wrapDegrees(snapValue(startNumber(drag, key) + drag.turned, h.step ?? DEFAULT_STEP.angle, mods))) };
+        return { [key]: fmt(wrapDegrees(snapValue(startNumber(drag, key) + drag.turned, h.step ?? DEFAULT_STEP.angle, turn))) };
     }
     if (h.kind === 'angle') {
-        return { [h.key]: fmt(snapValue(startNumber(drag, h.key) + drag.turned, h.step ?? DEFAULT_STEP.angle, mods, h.min, h.max)) };
+        return { [h.key]: fmt(snapValue(startNumber(drag, h.key) + drag.turned, h.step ?? DEFAULT_STEP.angle, turn, h.min, h.max)) };
     }
     return null;
 }

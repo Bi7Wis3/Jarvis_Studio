@@ -7,6 +7,7 @@ import {
     clearPickSession, itemLabel, nextBox, pickItems, togglePickItem, usePickSession, type PickBox, type PickItem,
 } from './pickField';
 import type { P3 } from './picking';
+import { valueText } from './numberText';
 import type { Ctx, Field, ToolDef, Values } from './toolDefs';
 
 const boxesOf = (fields: Field[]): PickBox[] => fields.filter((f) => f.kind === 'pick' || (f.kind === 'vec' && f.pickable)).map((f) => ({
@@ -71,7 +72,7 @@ export function usePickBoxes(tool: ToolDef, ctx: Ctx, fields: Field[], values: V
                 let next = latest.current.values;
                 position.forEach((c, i) => {
                     const key = `${box.key}${i}`;
-                    next = { ...next, [key]: String(Math.round(c * 1000) / 1000) };
+                    next = { ...next, [key]: valueText(c) };
                     next = { ...next, ...(tool.onChange?.(key, next, latest.current.ctx) ?? {}) };
                 });
                 latest.current = { ...latest.current, values: next };

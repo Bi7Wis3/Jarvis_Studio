@@ -10,6 +10,7 @@ import {
     AXIS_KINDS, PLANE_KINDS, axisDefaults, axisDefinition, axisValues, checkReference, lineKey, planeDefaults, planeDefinition,
     planeValues, type RefValues,
 } from './referenceDefs';
+import { valueText } from './numberText';
 import type { Ctx, Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
 
 const opts = (...pairs: [string, string][]) => pairs.map(([value, label]) => ({ value, label }));
@@ -238,7 +239,7 @@ const pointTool: ToolDef = {
     defaults: (ctx) => {
         const stored = edited(ctx, 'point');
         const p: Vec3 = stored?.op === 'point' ? stored.position : [0, 0, 0];
-        return Object.fromEntries(p.map((c, i) => [`pos${i}`, String(Math.round(c * 100) / 100)]));
+        return Object.fromEntries(p.map((c, i) => [`pos${i}`, valueText(c)]));
     },
     apply: (v, ctx) => attempt(async () => saveStep(ctx, { op: 'point', position: readVec(v, 'pos') })),
 };

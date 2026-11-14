@@ -231,6 +231,11 @@ Reference geometry
 
 Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.md` part E.
 
+- [x] Number fields take any value: a field's step is only its spin increment (arrows and Up/Down keys; Ctrl ten
+  times, Alt a tenth). Worked-out values (drags, picks, dimensions) are kept to 0.000001 mm; labels in the view
+  show up to four decimals. Drag handles step finer as the view zooms in (Shift coarser, Alt to a pixel's worth).
+- [ ] Still fixed, not yet a setting: the number of decimals shown (SolidWorks: 0 to 8 per document, Units), and
+  the spin increments (System Options). Sketch end points closer than 0.001 mm still count as one point.
 - [ ] Document properties: unit system (MKS, CGS, MMGS, IPS, custom), length units with decimals or fractions,
   angle units; dimension standard and precision; grid and snap (display grid, major spacing, minor lines per
   major, snap points per minor); image quality (tessellation deviation); material density.

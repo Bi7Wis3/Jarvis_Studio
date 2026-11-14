@@ -891,14 +891,27 @@ export function Scene({ project }: { project: Project }) {
     // The open tool form's preview: changed parts drawn as they would be, new ones added.
     const preview = useStudio((s) => s.preview);
     const allParts = useStudio((s) => s.history?.parts);
-    // The model itself stays as it is; what the form would make is drawn over it as a ghost.
-    const parts = project.parts;
-    const ghosts = useMemo(() => {
+    // The model itself stays as it is; what the form would make is drawn over it as a ghost. A change of material
+    // alone (colour, finish) is the exception: a ghost cannot show it, so the part itself wears the new material
+    // while the form is open.
+    const { parts, ghosts } = useMemo(() => {
         if (!preview) {
-            return [];
+            return { parts: project.parts, ghosts: [] as Part[] };
         }
-        const hidden = new Set((allParts ?? []).map((p) => p.id).filter((id) => !project.parts.some((p) => p.id === id)));
-        return Object.values(preview.parts).filter((p) => !hidden.has(p.id));
+        const shown = new Map(project.parts.map((p) => [p.id, p]));
+        const hidden = new Set((allParts ?? []).map((p) => p.id).filter((id) => !shown.has(id)));
+        const sameButMaterial = (a: Part, b: Part) => JSON.stringify({ ...a, material: null }) === JSON.stringify({ ...b, material: null });
+        const repainted = new Map<string, Part>();
+        const ghostParts: Part[] = [];
+        for (const p of Object.values(preview.parts)) {
+            const now = shown.get(p.id);
+            if (now && sameButMaterial(now, p)) {
+                repainted.set(p.id, { ...now, material: p.material });
+            } else if (!hidden.has(p.id)) {
+                ghostParts.push(p);
+            }
+        }
+        return { parts: project.parts.map((p) => repainted.get(p.id) ?? p), ghosts: ghostParts };
     }, [project.parts, preview, allParts]);
     return (
         <Canvas

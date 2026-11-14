@@ -9,6 +9,7 @@ import type { SketchConstraint, SketchGeometry } from '@jarvis/core';
 import type { CameraControlsImpl } from '@react-three/drei';
 import { AXIS_U, AXIS_V, curveOf, isDimension, measure, pointOf } from './solver';
 import { arcMiddle, constraintRefs, dimensionFromPicks, geometryEntities, rectCorners3, tangentArcThrough, tangentAt } from './sketchGeometry';
+import { shownText } from './numberText';
 import { definedEntities } from './sketchStatus';
 import { circleThrough, dist, entityPoints, regularPolygon, type Entity, type NewEntity, type Pt } from './sketchMath';
 import {
@@ -34,7 +35,7 @@ let planePoint: (clientX: number, clientY: number) => { p: Pt; perPx: number } |
 export const v3 = ([u, v]: Pt, z = 0): [number, number, number] => [u, v, z];
 
 function fmt(n: number): string {
-    return String(Math.round(n * 100) / 100);
+    return shownText(n);
 }
 
 export function Label({ at, children, className = '' }: { at: Pt; children: ReactNode; className?: string }) {

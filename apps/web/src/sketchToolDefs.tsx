@@ -13,9 +13,10 @@ import { constraintRefs, liveIds } from './sketchGeometry';
 import { findProblems, GAP } from './sketchRepair';
 import type { Transform } from './sketchEdit';
 import { QUICK_SNAPS } from './snapping';
+import { valueText } from './numberText';
 import type { Pt } from './sketchMath';
 
-const fmt = (n: number): string => String(Math.round(n * 100) / 100);
+const fmt = valueText;
 
 async function attempt(build: () => Promise<Result>): Promise<Result> {
     try {
@@ -211,7 +212,7 @@ function RepairList() {
         <label className="tb-field">
             <span>Showing gaps smaller than</span>
             <span className="tb-input">
-                <input type="number" min={0} step={0.1} value={gapText} onChange={(e) => setGapText(e.target.value)} aria-label="Gap size" />
+                <input type="number" min={0} step="any" value={gapText} onChange={(e) => setGapText(e.target.value)} aria-label="Gap size" />
                 <em>mm</em>
             </span>
         </label>

@@ -28,7 +28,7 @@ import { circularSketchPattern, linearSketchPattern, type CircularPatternOptions
 import { chamferSides, filletCornerAt, filletCornerOf, filletSides, type ChamferOptions, type FilletCorner } from './sketchFillet';
 import { fixAll, fixProblem, fullyDefine, mergePoints, type Problem } from './sketchRepair';
 import { unmetConstraints } from './sketchCheck';
-import { dist, mid, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
+import { dist, mid, PICKED, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
 import { snapCursor, type QuickSnap, type Snap, type SnapKind } from './snapping';
 
 export type { SnapKind } from './snapping';
@@ -381,7 +381,7 @@ export function describe(g: SketchGeometry, id: string): string {
     if (isDimension(c)) {
         const unit = c.kind === 'angle' ? '°' : ' mm';
         const label = c.kind === 'diameter' ? 'Ø' : c.kind === 'radius' ? 'R' : c.kind === 'angle' ? 'angle ' : '';
-        return `${label}${round(c.value, 0.01)}${unit}`;
+        return `${label}${round(c.value, 1e-4)}${unit}`;
     }
     return c.kind.replace(/Points$/, '').replace(/([A-Z])/g, ' $1').toLowerCase();
 }
@@ -418,7 +418,7 @@ export function startSketch(partId: string | null, intent: SketchIntent = 'extru
 }
 
 export function choosePlane(plane: SketchPlane, offset = 0, notice: string | null = null, anchor: Pt = [0, 0]): void {
-    set((s) => ({ plane, offset: round(offset, 0.01), stage: 'draw', tool: 'line', look: s.look + 1, fitToSketch: false, notice, anchor }));
+    set((s) => ({ plane, offset: round(offset), stage: 'draw', tool: 'line', look: s.look + 1, fitToSketch: false, notice, anchor }));
 }
 
 /** Sketch on the planar face under the cursor: its axis-aligned plane and offset, in the part frame. */
@@ -426,7 +426,7 @@ export function chooseFace(normal: [number, number, number], point: [number, num
     const { plane, offset } = planeForFace(normal, point, curved);
     const f = planeFrame(plane, offset, get().context);
     const rel = [0, 1, 2].map((i) => point[i] - f.origin[i]);
-    const anchor: Pt = [round(rel[0] * f.u[0] + rel[1] * f.u[1] + rel[2] * f.u[2], 0.01), round(rel[0] * f.v[0] + rel[1] * f.v[1] + rel[2] * f.v[2], 0.01)];
+    const anchor: Pt = [round(rel[0] * f.u[0] + rel[1] * f.u[1] + rel[2] * f.u[2], PICKED), round(rel[0] * f.v[0] + rel[1] * f.v[1] + rel[2] * f.v[2], PICKED)];
     choosePlane(plane, offset, curved ? 'Sketching on the tangent plane of a curved face.' : null, anchor);
 }
 
@@ -1101,7 +1101,7 @@ export function applyTyped(): string | null {
             set({ typed: '' });
             return 'Type a size above zero';
         }
-        set(s.tool === 'fillet' ? { filletRadius: size, typed: '', editText: `R${round(size, 0.01)}` } : { chamferDistance: size, typed: '', editText: `${round(size, 0.01)}` });
+        set(s.tool === 'fillet' ? { filletRadius: size, typed: '', editText: `R${round(size)}` } : { chamferDistance: size, typed: '', editText: `${round(size)}` });
         return null;
     }
     if (s.tool === 'offset') {
@@ -1202,7 +1202,7 @@ function placeDimension(picks: Pick[], at: Pt): void {
         return;
     }
     const value = measure(s.geometry, { ...constraint, id: 'measuring' } as SketchConstraint) ?? 0;
-    set({ dimDraft: { constraint, at, text: String(round(value, 0.01)), editing: null, error: null }, hover: null, message: null });
+    set({ dimDraft: { constraint, at, text: String(round(value)), editing: null, error: null }, hover: null, message: null });
 }
 
 function dimensionClick(raw: Pt, tolerance: number): void {
@@ -1233,7 +1233,7 @@ export function editDimension(id: string): void {
         return;
     }
     const { id: _id, ...constraint } = c;
-    set({ dimDraft: { constraint, at: s.labels[id] ?? dimensionAnchor(s.geometry, c), text: String(round(c.value, 0.0001)), editing: id, error: null } });
+    set({ dimDraft: { constraint, at: s.labels[id] ?? dimensionAnchor(s.geometry, c), text: String(round(c.value)), editing: id, error: null } });
 }
 
 export function setDimText(text: string): void {
@@ -1555,7 +1555,7 @@ function editHover(s: SketcherState, raw: Pt, tolerance: number): Partial<Sketch
         }
         case 'fillet':
         case 'chamfer': {
-            const size = s.tool === 'fillet' ? `R${round(s.filletRadius, 0.01)}` : `${round(s.chamferDistance, 0.01)}`;
+            const size = s.tool === 'fillet' ? `R${round(s.filletRadius)}` : `${round(s.chamferDistance)}`;
             const pick = cornerPick(g, raw, tolerance);
             // A corner under the pointer: the fillet or chamfer it would get.
             let preview: NewEntity[] = [];

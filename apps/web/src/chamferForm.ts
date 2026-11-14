@@ -2,6 +2,7 @@
 // the feature's size / distance2 / angle, so editing a chamfer keeps and shows what it is.
 
 import type { Feature } from '@jarvis/core';
+import { valueText } from './numberText';
 
 type Values = Record<string, string | boolean | string[]>;
 type Chamfer = Extract<Feature, { op: 'chamfer' }>;
@@ -14,7 +15,7 @@ export const CHAMFER_TYPES: { value: ChamferType; label: string }[] = [
     { value: 'angle', label: 'Angle distance' },
 ];
 
-const text = (n: number): string => String(Math.round(n * 100) / 100);
+const text = valueText;
 
 export function chamferTypeValues(f: Chamfer | null): Values {
     const type: ChamferType = f?.angle !== undefined ? 'angle' : f?.distance2 !== undefined ? 'distances' : 'equal';

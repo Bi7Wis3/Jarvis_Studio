@@ -15,6 +15,7 @@ import { circleOfEdge, edgePick } from './pickRefs';
 import { captureToolCalls, type ToolCall } from './preview';
 import { RegionPickSession, useRegionPick } from './regionPick';
 import { showError } from './menus';
+import { newPart } from './newPart';
 import { addPicture, PicturePicker } from './DecalPanel';
 import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchToolDefs';
 import { editToolForms } from './sketchEditForms';
@@ -37,6 +38,7 @@ import { evaluate, type ConstraintTool } from './sketchGeometry';
 import { angledPlane, planeLabel } from './sketchMath';
 import { itemsOf, pickItems, type PickEntity, type PickItem } from './pickField';
 import { chamferFeature, draftFeature, filletFeature, shellFeature } from './pickFeatures';
+import { valueText } from './numberText';
 import {
     axisOptions, axisValue, defaultAxis, readRevolve, revolveAxisKey, revolveStepFields, revolveValues, type RevolveOptionValues,
 } from './revolveAxis';
@@ -150,7 +152,7 @@ export interface ToolGroup {
 
 // ---- Helpers ------------------------------------------------------------------------------------------
 
-export const fmt = (n: number): string => String(Math.round(n * 100) / 100);
+export const fmt = valueText;
 
 function num(v: Values, key: string, label: string, opts: { min?: number; positive?: boolean } = {}): number {
     const raw = v[key];
@@ -2525,14 +2527,10 @@ const pictureTool: ToolDef = {
 
 const newPartTool: ToolDef = {
     id: 'new-part',
-    label: 'New part from sketch',
+    label: 'New part',
     icon: 'sketch',
-    hint: 'sketch and extrude a new part',
-    instant: () => {
-        setWorkspace('part');
-        useStudio.setState({ activePart: null, selected: null });
-        startSketch(null, 'extrude');
-    },
+    hint: 'an empty part: sketch on a plane, add planes, then build features from them',
+    instant: () => void newPart(),
 };
 
 /** Shown in the editing popup for history items the toolbar cannot edit. */

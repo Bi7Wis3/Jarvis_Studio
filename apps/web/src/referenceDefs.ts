@@ -3,11 +3,12 @@
 
 import type { AxisDefinition, AxisRef, Feature, PlaneDefinition, PlaneRef, PointRef, Vec3 } from '@jarvis/core';
 import { resolveAxis, resolvePlane } from '@jarvis/core/reference';
+import { valueText } from './numberText';
 import { revolveAxisKey } from './revolveAxis';
 
 export type RefValues = Record<string, string | boolean | string[]>;
 
-const fmt = (n: number): string => String(Math.round(n * 100) / 100);
+const fmt = valueText;
 const NAMED = ['top', 'front', 'right'];
 
 function num(v: RefValues, key: string, label: string): number {

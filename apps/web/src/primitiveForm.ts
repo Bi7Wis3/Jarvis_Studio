@@ -2,6 +2,7 @@
 // automatic, and a cylinder keeps its top radius (taper) and bevel. Pure, so the round trips can be tested.
 
 import type { Shape } from '@jarvis/core';
+import { valueText } from './numberText';
 
 /** Values a form hands back. */
 type Values = Record<string, string | boolean | string[]>;
@@ -10,7 +11,7 @@ type Input = Record<string, string | boolean | string[] | object[]>;
 type Box = Extract<Shape, { kind: 'box' }>;
 type Cylinder = Extract<Shape, { kind: 'cylinder' }>;
 
-const text = (n: number): string => String(Math.round(n * 100) / 100);
+const text = valueText;
 
 function read(v: Input, key: string, label: string, positive: boolean): number {
     const raw = v[key];
