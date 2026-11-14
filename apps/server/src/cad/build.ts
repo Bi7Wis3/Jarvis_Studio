@@ -1,6 +1,7 @@
 // Real OpenCascade solids for part specs (via replicad), in the part's local frame: Y up, millimetres.
 // Conventions match the three.js preview in @jarvis/core/geometry.
 
+import { createHash } from 'node:crypto';
 import opencascade from 'replicad-opencascadejs';
 import {
     assembleWire, basicFaceExtrusion, cast, genericSweep, getOC, makeBox, makeBSplineApproximation, makeCircle,
@@ -17,7 +18,7 @@ import {
 } from '@jarvis/core/fasteners';
 import type { MeshData } from './kernel.js';
 import { runScript } from './script.js';
-import { planeOfFace, resolveEdges, resolveFaces } from './refs.js';
+import { pickTolerance, planeOfFace, resolveEdges, resolveFaces } from './refs.js';
 import { chamferEdges, draftFaces, filletEdges, shellFaces, type ChamferSpec } from './applied.js';
 import { resolveAxis, resolvePlane } from '@jarvis/core/reference';
 import { relativePlacement, type CombineContext } from './context.js';
@@ -846,34 +847,70 @@ function cutChecked(shape: Shape3D, tool: Shape3D, what: string): Shape3D {
 /** ISO metric: the minor (tap drill) diameter is the major diameter less 1.0825 x pitch. */
 const MINOR_DEPTH = 1.0825;
 
+/** Centre, unit normal and radius of a circular edge. */
+function circleOf(edge: Edge): { centre: Vec3; normal: Vec3; radius: number } {
+    const oc = getOC();
+    const [r, gc] = localGC();
+    try {
+        const circle = r(r(new oc.BRepAdaptor_Curve(edge.wrapped)).Circle());
+        const loc = r(circle.Location());
+        const dir = r(r(circle.Axis()).Direction());
+        return { centre: [loc.X(), loc.Y(), loc.Z()], normal: [dir.X(), dir.Y(), dir.Z()], radius: circle.Radius() };
+    } finally {
+        gc();
+    }
+}
+
+/**
+ * The full-circle end of a cylindrical face that a thread was picked on. When the mouth has been chamfered or rounded
+ * since (the picked edge is gone), the nearest end of a cylinder the pick still lies on: the thread then starts
+ * behind the chamfer.
+ */
+function threadStart(shape: Shape3D, at: Vec3): { edge: Edge; face: Face } {
+    const cylinders = shape.faces.filter((f) => f.geomType === 'CYLINDRE');
+    const ends = (edge: Edge): boolean => edge.geomType === 'CIRCLE' && edge.isClosed;
+    let picked: Edge | null = null;
+    try {
+        [picked] = resolveEdges(shape, [at]);
+    } catch {
+        picked = null;
+    }
+    if (picked && ends(picked)) {
+        const exact = picked;
+        const face = cylinders.find((f) => f.edges.some((e) => e.isSame(exact)));
+        if (face) {
+            return { edge: exact, face };
+        }
+    }
+    const tolerance = pickTolerance(shape);
+    let best: { edge: Edge; face: Face; gap: number } | null = null;
+    for (const face of cylinders) {
+        for (const edge of face.edges.filter(ends)) {
+            const { centre, normal, radius } = circleOf(edge);
+            const rel = sub3(at, centre);
+            const k = dot3(rel, normal);
+            const gap = Math.abs(k);
+            const off = Math.hypot(...sub3(rel, [normal[0] * k, normal[1] * k, normal[2] * k]));
+            if (Math.abs(off - radius) <= tolerance && gap <= radius && (!best || gap < best.gap)) {
+                best = { edge, face, gap };
+            }
+        }
+    }
+    if (!best) {
+        throw new Error(picked && !ends(picked)
+            ? 'the thread needs the circular edge at the end of a shaft or hole; the picked edge is not a full circle'
+            : 'the thread needs the circular edge at the end of a shaft or hole, and it is no longer on the part; pick it again');
+    }
+    return best;
+}
+
 /**
  * Where a thread picked on a circular edge sits: the edge's centre, the unit axis pointing from the edge into its
  * cylindrical face, the edge radius, how far the cylinder runs from the edge, and whether it is a hole.
  */
 function threadEdge(shape: Shape3D, at: Vec3): { centre: Vec3; axis: Vec3; radius: number; reach: number; hole: boolean } {
-    const [edge] = resolveEdges(shape, [at]);
-    if (edge.geomType !== 'CIRCLE' || !edge.isClosed) {
-        throw new Error('the thread needs the circular edge at the end of a shaft or hole; the picked edge is not a full circle');
-    }
-    const oc = getOC();
-    const [r, gc] = localGC();
-    let centre: Vec3;
-    let normal: Vec3;
-    let radius: number;
-    try {
-        const circle = r(r(new oc.BRepAdaptor_Curve(edge.wrapped)).Circle());
-        const loc = r(circle.Location());
-        const dir = r(r(circle.Axis()).Direction());
-        centre = [loc.X(), loc.Y(), loc.Z()];
-        normal = [dir.X(), dir.Y(), dir.Z()];
-        radius = circle.Radius();
-    } finally {
-        gc();
-    }
-    const face = shape.faces.find((f) => f.geomType === 'CYLINDRE' && f.edges.some((e) => e.isSame(edge)));
-    if (!face) {
-        throw new Error('the picked circular edge is not the end of a cylindrical face (a shaft or hole)');
-    }
+    const { edge, face } = threadStart(shape, at);
+    const { centre, normal, radius } = circleOf(edge);
     // The face's centre of mass lies on the axis halfway along it: that gives the side and the length.
     const mid = face.center.toTuple() as Vec3;
     const along = dot3(sub3(mid, centre), normal);
@@ -980,7 +1017,7 @@ function threadFeature(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>, pr
     return asSolid(bored.fuse(at(trimmed(ridges(ridge), rMaj + pitch)), { simplify: false }), 'thread');
 }
 
-const fmtMm = (mm: number): string => `${Math.round(mm * 100) / 100} mm`;
+const fmtMm = (mm: number): string => `${Math.round(mm * 1e6) / 1e6} mm`;
 
 /** The edges a fillet or chamfer picked in the view: its picked edges, and every edge of its picked faces. */
 function pickedEdges(shape: Shape3D, f: { at?: Vec3[]; faces?: FacePickRef[]; tangent?: boolean }): Edge[] {
@@ -989,6 +1026,48 @@ function pickedEdges(shape: Shape3D, f: { at?: Vec3[]; faces?: FacePickRef[]; ta
         ...resolveFaces(shape, f.faces ?? [], { tangent: f.tangent }).flatMap((face) => face.edges),
     ];
     return edges.filter((edge, i) => edges.findIndex((other) => other.isSame(edge)) === i);
+}
+
+interface ThreadAxis {
+    point: Vec3;
+    dir: Vec3;
+    radius: number;
+    pitch: number;
+}
+
+/** Where a thread step runs on the body it is cut into. */
+function threadAxis(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>): ThreadAxis {
+    if (!f.at) {
+        return { point: f.position ?? [0, 0, 0], dir: [0, 1, 0], radius: (f.diameter ?? 0) / 2, pitch: f.pitch };
+    }
+    const edge = threadEdge(shape, f.at);
+    return { point: edge.centre, dir: edge.axis, radius: f.diameter !== undefined ? f.diameter / 2 : edge.radius, pitch: f.pitch };
+}
+
+/**
+ * The ids of the threads that a picked edge of the step runs around: an end of the threaded hole or shaft. Beside a
+ * cut thread the wall pinches out between the helical faces, so the kernel cannot fillet or chamfer there.
+ */
+function threadsUnder(shape: Shape3D, f: { at?: Vec3[]; faces?: FacePickRef[]; tangent?: boolean },
+    threads: Map<string, ThreadAxis>): string[] {
+    if (threads.size === 0 || !(f.at?.length || f.faces?.length)) {
+        return [];
+    }
+    let edges: Vec3[][];
+    try {
+        edges = pickedEdges(shape, f).map((edge) => [edge.startPoint, edge.pointAt(0.5), edge.endPoint].map((p) => p.toTuple() as Vec3));
+    } catch {
+        return [];
+    }
+    const tolerance = pickTolerance(shape);
+    // An edge is on the thread when it stays at about the thread's radius from its axis: the mouth circle, at the major
+    // or minor radius give or take the print clearance, or a piece of the ridge that crosses it.
+    return [...threads].filter(([, axis]) => edges.some((points) => points.every((p) => {
+        const rel = sub3(p, axis.point);
+        const k = dot3(rel, axis.dir);
+        const off = Math.hypot(...sub3(rel, [axis.dir[0] * k, axis.dir[1] * k, axis.dir[2] * k]));
+        return Math.abs(off - axis.radius) <= axis.pitch + tolerance;
+    }))).map(([id]) => id);
 }
 
 function applyToBody(shape: Shape3D, f: Extract<Feature, { op: 'fillet' | 'chamfer' | 'shell' | 'thread' }>,
@@ -1080,6 +1159,8 @@ interface BuildState {
     /** Index of the step being applied. */
     index: number;
     sketches: Map<string, Sketch>;
+    /** Where each thread built so far runs: a point on its axis, the axis, its nominal radius and pitch. */
+    threads: Map<string, ThreadAxis>;
     context?: CombineContext;
     /** Parts being built, outermost first, to catch combine cycles. */
     stack: string[];
@@ -1543,23 +1624,48 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
         case 'draft':
             return draft(needBody(shape), f, state);
         case 'fillet':
-        case 'chamfer':
+        case 'chamfer': {
+            const body = needBody(shape);
             try {
-                return applyToBody(needBody(shape), f, state.print);
+                return applyToBody(body, f, state.print);
             } catch (e) {
-                // Rounding an edge that ends on an earlier fillet or chamfer only works up to about that one's size:
-                // the usual cure is to do this step first.
-                const earlier = before(state).filter((s) => !s.suppressed && (s.op === 'fillet' || s.op === 'chamfer'));
-                if (earlier.length && e instanceof Error && /failed on|not done|could not/i.test(e.message)) {
-                    const names = earlier.map((s) => s.name ?? s.id).join(', ');
-                    throw new Error(`${e.message}. If these edges end on ${names}, this step is limited to about that size: `
-                        + 'drag it above that step in the feature tree (corners first, then the edges that run around them)');
+                if (!(e instanceof Error) || !/failed on|not done|could not/i.test(e.message)) {
+                    throw e;
+                }
+                const earlier = before(state).filter((s) => !s.suppressed);
+                const label = `${f.op} of ${fmtMm(f.op === 'fillet' ? f.radius : f.size)}`;
+                const self = f.name ?? 'this step';
+                // Beside a cut thread the wall of the hole or shaft pinches out between the helical faces, so no kernel
+                // blend fits there at any size: the thread has to come after.
+                const threads = threadsUnder(body, f, state.threads)
+                    .map((id) => earlier.find((s) => s.id === id)).filter((s): s is Feature => !!s);
+                if (threads.length) {
+                    const names = threads.map((s) => s.name ?? s.id).join(', ');
+                    throw new Error(`${label}: a selected edge runs along a thread (${names}), which leaves too little of the `
+                        + `hole or shaft wall beside it for the kernel to ${f.op}, at any size. Cut the thread afterwards: `
+                        + `drag ${threads[0].name ?? threads[0].id} below ${self} in the feature tree. The thread then starts behind it`);
+                }
+                // An edge that ends on an earlier fillet or chamfer only works up to about that one's size.
+                const blends = earlier.filter((s) => s.op === 'fillet' || s.op === 'chamfer');
+                if (blends.length) {
+                    const names = blends.map((s) => s.name ?? s.id).join(', ');
+                    throw new Error(`${label} could not be built. If its edges end on ${names}: the kernel only blends into an `
+                        + `earlier ${f.op === 'fillet' ? 'fillet' : 'fillet or chamfer'} up to a limited size (roughly two to three times `
+                        + `the earlier one), so ${self} has to come first: drag ${self} above ${blends[0].name ?? blends[0].id} in the `
+                        + 'feature tree (corners first, then the edges around them). Otherwise the size is too large for the faces '
+                        + 'next to the edges');
                 }
                 throw e;
             }
+        }
         case 'shell':
-        case 'thread':
             return applyToBody(needBody(shape), f, state.print);
+        case 'thread': {
+            const body = needBody(shape);
+            const threaded = applyToBody(body, f, state.print);
+            state.threads.set(f.id, threadAxis(body, f));
+            return threaded;
+        }
         case 'mirror':
             return mirror(shape, f, state);
         default: {
@@ -1584,6 +1690,40 @@ export interface PartialBuild {
     error: string | null;
 }
 
+// The body after each step, kept so that a build which shares its first steps with an earlier one (editing a later
+// step, a preview while typing) starts from there instead of from nothing.
+interface Prefix {
+    shape: Shape3D | null;
+    threads: [string, ThreadAxis][];
+}
+
+const PREFIX_LIMIT = 48;
+const prefixes = new Map<string, Prefix>();
+
+const digest = (text: string): string => createHash('sha1').update(text).digest('hex');
+
+/** One key per step: everything that decides the body after it (names aside). */
+function prefixKeys(part: PartSpec, print: PrintSettings, history: boolean, context: CombineContext | undefined): string[] {
+    let key = digest(JSON.stringify([part.shape, print, history, context ?? null]));
+    return (part.features ?? []).map(({ name: _name, ...step }) => {
+        key = digest(key + JSON.stringify(step));
+        return key;
+    });
+}
+
+function remember(key: string, shape: Shape3D | null, threads: Map<string, ThreadAxis>): void {
+    if (prefixes.has(key)) {
+        return;
+    }
+    // A copy of the handle: steps may dispose of the body they are given.
+    prefixes.set(key, { shape: shape ? shape.clone() : null, threads: [...threads] });
+    while (prefixes.size > PREFIX_LIMIT) {
+        const oldest = prefixes.keys().next().value as string;
+        prefixes.get(oldest)?.shape?.delete();
+        prefixes.delete(oldest);
+    }
+}
+
 /**
  * Builds as far as possible: on a failing feature, returns the solid before it and the error. `context` supplies
  * the other parts that combine steps use.
@@ -1593,7 +1733,23 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
     const features = part.features ?? [];
     // Reference steps build nothing, so they do not count as a history for the default edge softening.
     const history = features.some((f) => !f.suppressed && !['sketch', 'plane', 'axis', 'point'].includes(f.op));
-    if (part.shape.kind !== 'empty') {
+    const state: BuildState = {
+        print, features, index: 0, sketches: new Map(), threads: new Map(), context, stack: stack ?? (context ? [context.self] : []),
+    };
+    // Start from the longest run of first steps that was built before.
+    const keys = prefixKeys(part, print, history, context);
+    let start = 0;
+    for (let index = features.length - 1; index >= 0 && start === 0; index--) {
+        const hit = prefixes.get(keys[index]);
+        if (hit) {
+            prefixes.delete(keys[index]);
+            prefixes.set(keys[index], hit);
+            shape = hit.shape ? hit.shape.clone() : null;
+            state.threads = new Map(hit.threads);
+            start = index + 1;
+        }
+    }
+    if (start === 0 && part.shape.kind !== 'empty') {
         try {
             shape = buildShape(part.shape, !history);
         } catch (e) {
@@ -1601,9 +1757,6 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
             return { shape: null, error: part.shape.kind === 'script' ? message : `shape (${part.shape.kind}): ${message}` };
         }
     }
-    const state: BuildState = {
-        print, features, index: 0, sketches: new Map(), context, stack: stack ?? (context ? [context.self] : []),
-    };
     for (let index = 0; index < features.length; index++) {
         const feature = features[index];
         state.index = index;
@@ -1613,13 +1766,13 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
             try {
                 state.sketches.set(feature.id, concrete(feature.sketch, before(state)));
             } catch (e) {
-                if (!feature.suppressed) {
+                if (!feature.suppressed && index >= start) {
                     return { shape, error: `${label}: ${errorMessage(e)}` };
                 }
             }
             continue;
         }
-        if (feature.suppressed) {
+        if (feature.suppressed || index < start) {
             continue;
         }
         try {
@@ -1628,6 +1781,7 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
         } catch (e) {
             return { shape, error: `${label}: ${errorMessage(e)}` };
         }
+        remember(keys[index], shape, state.threads);
     }
     return { shape, error: null };
 }

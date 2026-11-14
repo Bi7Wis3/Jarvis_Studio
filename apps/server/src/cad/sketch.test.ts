@@ -631,6 +631,6 @@ describe('fillet order', () => {
     it('rounds corners generously when they come first, and says so when they come after the edges around them', async () => {
         const first = await mesh(empty, [block, corners(15), top]);
         expect(volume(first)).toBeLessThan(14 * 60 * 60 - 4 * (15 * 15 - (Math.PI * 15 * 15) / 4) * 11);
-        await expect(mesh(empty, [block, top, corners(15)])).rejects.toThrow(/drag it above that step/);
+        await expect(mesh(empty, [block, top, corners(15)])).rejects.toThrow(/fillet of 15 mm could not be built.*drag Fillet2 above Fillet1 in the feature tree/);
     }, SLOW);
 });

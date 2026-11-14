@@ -375,6 +375,21 @@ describe('features', () => {
         await expect(mesh(block, [hole, { id: 't', op: 'thread', kind: 'internal', at: [10, 10, 10], pitch: 1.5, length: 12 }]))
             .rejects.toThrow(/not a full circle/);
     }, SLOW);
+
+    it('threads a hole whose mouth was chamfered first, and asks for the thread last when a chamfer comes after it', async () => {
+        const block = sharpBox([20, 20, 20]);
+        const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 8 }, position: [10, 0, 0], direction: [-1, 0, 0] };
+        const r = (8 + DEFAULT_PRINT.holeTolerance) / 2;
+        const thread: Feature = { id: 't', name: 'Thread1', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5, length: 12 };
+        const mouth: Feature = { id: 'c', op: 'chamfer', size: 2, at: [[10, r, 0]] };
+        // The picked edge is gone after the chamfer: the thread starts behind it, on the same hole.
+        const chamfered = await mesh(block, [hole, mouth]);
+        const lead = await mesh(block, [hole, mouth, thread]);
+        expect(openEdges(lead)).toBe(0);
+        expectBounds(lead, [-10, -10, -10], [10, 10, 10]);
+        expect(volume(lead)).toBeLessThan(volume(chamfered));
+        await expect(mesh(block, [hole, thread, mouth])).rejects.toThrow(/runs along a thread \(Thread1\).*drag Thread1 below this step/);
+    }, SLOW);
 });
 
 describe('fasteners', () => {
