@@ -46,12 +46,15 @@ export async function startRecording(): Promise<void> {
     next.start();
 }
 
-/** Stops recording and resolves with the transcript, or '' when nothing usable was heard. */
-export async function stopRecording(): Promise<string> {
+/**
+ * Stops recording and resolves with the transcript: null when there was nothing to send (no recording, or one too
+ * short to be speech), '' when no words were heard. Rejects when the server could not transcribe it.
+ */
+export async function stopRecording(): Promise<string | null> {
     const active = recorder;
     recorder = null;
     if (!active || active.state === 'inactive') {
-        return '';
+        return null;
     }
     const duration = performance.now() - startedAt;
     await new Promise<void>((resolve) => {
@@ -59,23 +62,18 @@ export async function stopRecording(): Promise<string> {
         active.stop();
     });
     if (duration < MIN_DURATION_MS || chunks.length === 0) {
-        return '';
+        return null;
     }
     const blob = new Blob(chunks, { type: active.mimeType || 'audio/webm' });
     chunks = [];
-    try {
-        const response = await fetch('/api/stt', {
-            method: 'POST',
-            headers: { 'content-type': blob.type },
-            body: blob,
-        });
-        if (!response.ok) {
-            return '';
-        }
-        const { text } = (await response.json()) as { text?: unknown };
-        return typeof text === 'string' ? text.trim() : '';
-    } catch (e) {
-        console.error('Could not transcribe recording', e);
-        return '';
+    const response = await fetch('/api/stt', {
+        method: 'POST',
+        headers: { 'content-type': blob.type },
+        body: blob,
+    });
+    if (!response.ok) {
+        throw new Error(`Transcription failed (${response.status})`);
     }
+    const { text } = (await response.json()) as { text?: unknown };
+    return typeof text === 'string' ? text.trim() : '';
 }

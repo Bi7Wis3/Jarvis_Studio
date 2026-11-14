@@ -50,6 +50,10 @@ function StatusChip() {
 function MicButton() {
     const [phase, setPhase] = useState<'idle' | 'listening' | 'transcribing'>('idle');
 
+    const note = (message: string) => {
+        useStudio.setState({ error: message });
+        window.setTimeout(() => useStudio.setState({ error: null }), 8000);
+    };
     const begin = () => {
         if (phase !== 'idle') {
             return;
@@ -58,8 +62,7 @@ function MicButton() {
         setPhase('listening');
         startRecording().catch(() => {
             setPhase('idle');
-            useStudio.setState({ error: 'The microphone is not available.' });
-            window.setTimeout(() => useStudio.setState({ error: null }), 8000);
+            note('The microphone is not available.');
         });
     };
     const end = async () => {
@@ -67,10 +70,18 @@ function MicButton() {
             return;
         }
         setPhase('transcribing');
-        const text = await stopRecording();
+        let text: string | null = null;
+        try {
+            text = await stopRecording();
+        } catch (e) {
+            console.error('Could not transcribe recording', e);
+            note('Speech recognition is not answering, so nothing was sent to Jarvis.');
+        }
         setPhase('idle');
         if (text) {
             ask(text);
+        } else if (text === '') {
+            note('No words were heard. Hold the button while you speak.');
         }
     };
 

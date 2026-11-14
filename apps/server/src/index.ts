@@ -31,6 +31,15 @@ const kernel = CadKernel.start();
 const meshes = new MeshService(kernel, (status) => broadcast({ type: 'meshes', ...status }));
 const voice = new Voice();
 const ears = new Ears();
+// Set before the slow start-up, so a restart in the middle of it still stops the voice and speech processes.
+const shutdown = () => {
+    voice.close();
+    ears.close();
+    void kernel.close();
+    process.exit(0);
+};
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 const clips = new Map<string, Buffer>();
 const MAX_IMAGES = 4;
 const MAX_ACTIVITY = 20;
@@ -403,15 +412,6 @@ app.get('/api/health', async () => ({
 }));
 
 registerMcpHttp(app, tools);
-
-const shutdown = () => {
-    voice.close();
-    ears.close();
-    void kernel.close();
-    process.exit(0);
-};
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
 
 await app.listen({ host: '127.0.0.1', port: PORT });
 console.log(`[server] Jarvis Studio listening on http://127.0.0.1:${PORT} (voice: ${voice.name ?? 'browser'})`);
