@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { DEFAULT_PRINT, type PrintSettings } from '@jarvis/core';
 import { InlineInput, tool, typingInField, useDismiss } from './menus';
 import { createProject, deleteProject, openProject, renameProject, saveProjectAs, useStudio } from './state';
+import { confirmDeletes, openOptions } from './options';
+import { OptionsButton } from './OptionsPage';
 import './browser.css';
 
 type View = 'menu' | 'open' | 'new' | 'saveAs' | 'print';
@@ -85,6 +87,7 @@ export function FileMenu() {
                 >
                     File <span className="caret">▾</span>
                 </button>
+                <OptionsButton />
                 {renaming !== null ? (
                     <InlineInput
                         key={renaming}
@@ -116,6 +119,10 @@ export function FileMenu() {
                                 setRenaming(name);
                             }}
                             onRun={run}
+                            onOptions={() => {
+                                close();
+                                openOptions();
+                            }}
                         />
                     )}
                     {view === 'open' && <OpenList onBack={() => setView('menu')} onDone={close} />}
@@ -163,8 +170,9 @@ function MainMenu(props: {
     onView: (view: View) => void;
     onRename: () => void;
     onRun: (label: string, tool: string, args?: Record<string, unknown>) => void;
+    onOptions: () => void;
 }) {
-    const { onView, onRename, onRun } = props;
+    const { onView, onRename, onRun, onOptions } = props;
     const item = (label: string, onClick: () => void, hint?: string) => (
         <button type="button" role="menuitem" onClick={onClick}>
             <span>{label}</span>
@@ -183,6 +191,7 @@ function MainMenu(props: {
             {item('Export history for FreeCAD', () => onRun('Exporting history for FreeCAD', 'export_freecad'))}
             <div className="ctx-sep" role="separator" />
             {item('Print settings…', () => onView('print'))}
+            {item('Options…', onOptions)}
             <div className="ctx-sep" role="separator" />
             {item('Undo', () => onRun('Undo', 'undo'))}
             {item('Redo', () => onRun('Redo', 'redo'))}
@@ -243,7 +252,7 @@ function OpenList({ onBack, onDone }: { onBack: () => void; onDone: () => void }
                         <button
                             type="button"
                             className="fm-delete"
-                            onClick={() => setConfirming(entry.slug)}
+                            onClick={() => (confirmDeletes() ? setConfirming(entry.slug) : deleteProject(entry.slug))}
                             title={`Delete ${entry.name}`}
                             aria-label={`Delete ${entry.name}`}
                         >

@@ -13,7 +13,7 @@ import { CameraControlsImpl } from '@react-three/drei';
 import { AXIS_U, AXIS_V, curveOf, isDimension, measure, pointOf } from './solver';
 import { arcMiddle, broughtIn, constraintRefs, geometryEntities, rectCorners3, tangentArcThrough, tangentAt } from './sketchGeometry';
 import { pixelSizeAt, rayFromCamera } from './viewProjection';
-import { shownText } from './numberText';
+import { angleText, shownText } from './numberText';
 import { drawPreview } from './sketchDrawVariants';
 import { circleThrough, dist, entityPoints, regularPolygon, type Entity, type NewEntity, type Pt } from './sketchMath';
 import { conicDraftEntity, conicDraftText, conicGuides, isConicTool } from './sketchConics';
@@ -33,6 +33,8 @@ import { ModifyDragDrawing } from './sketchModifyDrawing';
 import { Instant2dDrawing } from './sketchInstant2dDrawing';
 import { viewPress } from './sketchViewPress';
 import { contourAltClick } from './sketchContours';
+import { pieceClick, pieceHover } from './sketchPieces';
+import { PieceDrawing } from './sketchPiecesDrawing';
 import { partFaceHit, rapidClick } from './sketchRapid';
 import { DimExtrasDrawing, DrivenChoice } from './sketchDimExtrasDrawing';
 import { smartDimension } from './sketchDimTools';
@@ -309,7 +311,7 @@ function dimensionText(c: Extract<SketchConstraint, { value: number }>): string 
     }
     switch (c.kind) {
         case 'angle':
-            return `${fmt(c.value)}°`;
+            return angleText(c.value);
         case 'diameter':
             return `Ø${fmt(c.value)}`;
         case 'radius':
@@ -700,6 +702,7 @@ export function Drawing() {
             <ItemsDrawing />
             <PathDrawing />
             <SplineOverlays unit={unit} />
+            <PieceDrawing />
             <FullyDefineGhosts unit={unit} lines={dimensionLines} text={dimensionText} spots={glyphSpots} glyphs={GLYPHS} />
             {preview && <EntityLine entity={preview} color={DRAFT} dashed width={2.4} />}
             {variant?.map((e, i) => <EntityLine key={`draw-${i}`} entity={e} color={DRAFT} dashed width={2.4} />)}
@@ -862,10 +865,16 @@ export function Catcher({ frame }: { frame: RefObject<Group | null> }) {
                 const hit = toSketch(e);
                 if (hit) {
                     sketchMove(hit.p, hit.tolerance, e.nativeEvent.clientX, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
+                    pieceHover(hit.p, hit.tolerance, e.altKey);
                 }
             }}
             onClick={(e) => {
                 const hit = toSketch(e);
+                // Alt + click on a curve: the piece of it between crossings (sketchPieces.ts).
+                if (hit && e.delta <= CLICK_SLOP_PX && pieceClick(hit.p, hit.tolerance, e.altKey, e.shiftKey)) {
+                    e.stopPropagation();
+                    return;
+                }
                 // Alt + click on a shaded contour: its context toolbar.
                 if (hit && e.delta <= CLICK_SLOP_PX && e.altKey && contourAltClick(hit.p)) {
                     e.stopPropagation();

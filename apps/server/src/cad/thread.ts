@@ -224,11 +224,11 @@ export function internalRidge(pitch: number, rMajor: number, yLow: number, yHigh
 }
 
 /** Exact helical mesh of a thread ridge: four strips (smooth within, sharp between) and two end caps. */
-export function ridgeMesh(spec: RidgeSpec): MeshData {
+export function ridgeMesh(spec: RidgeSpec, angularTolerance = ANGULAR_TOLERANCE): MeshData {
     const { pitch, rBase, rCrest, wBase, wCrest, y0, height } = spec;
     const lead = spec.lead ?? pitch;
     const turns = height / lead;
-    const steps = Math.max(8, Math.ceil(turns * Math.ceil((2 * Math.PI) / ANGULAR_TOLERANCE)));
+    const steps = Math.max(8, Math.ceil(turns * Math.ceil((2 * Math.PI) / angularTolerance)));
     const profile: P2[] = [[rBase, -wBase / 2], [rCrest, -wCrest / 2], [rCrest, wCrest / 2], [rBase, wBase / 2]];
     const sweep = 2 * Math.PI * turns * (spec.leftHanded ? -1 : 1);
     const turn = ((spec.turn ?? 0) * Math.PI) / 180;
@@ -329,8 +329,8 @@ export interface ThreadGhost {
 }
 
 /** The ghost's ridge, meshed analytically and placed on its axis. */
-export function ghostMesh(ghost: ThreadGhost): MeshData {
-    const mesh = ridgeMesh(ghost.spec);
+export function ghostMesh(ghost: ThreadGhost, angularTolerance = ANGULAR_TOLERANCE): MeshData {
+    const mesh = ridgeMesh(ghost.spec, angularTolerance);
     const frame = frameOf(ghost.origin, ghost.axis, ghost.angle);
     const map = (values: Float32Array, direction: boolean): void => {
         for (let i = 0; i < values.length; i += 3) {

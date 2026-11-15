@@ -1603,6 +1603,44 @@
     color: var(--text);
 }
 
+/* A step or body hidden in the view: its icon faded, as SolidWorks greys a hidden item's icon. */
+.ft-row.hidden .ft-icon {
+    opacity: 0.45;
+}
+
+/* A body's see-through toggle, beside its eye. */
+.br .ft-see {
+    display: none;
+    flex: none;
+    width: 18px;
+    height: 18px;
+    margin-left: auto;
+    border-radius: 4px;
+    color: var(--muted);
+}
+
+.ft-row:hover .ft-see,
+.ft-row.current .ft-see,
+.br .ft-see.on {
+    display: grid;
+    place-items: center;
+}
+
+.br .ft-see.on {
+    color: #8fd3ff;
+}
+
+.br .ft-see:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text);
+}
+
+.ft-row:hover .ft-see + .ft-eye,
+.ft-row.current .ft-see + .ft-eye,
+.br .ft-see.on + .ft-eye {
+    margin-left: 0;
+}
+
 .ft-confirm {
     padding-left: calc(2px + (var(--depth, 0) + 1) * 16px + 4px);
 }

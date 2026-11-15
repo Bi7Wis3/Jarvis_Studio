@@ -1,6 +1,8 @@
 import { createSdkMcpServer, query, tool, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentStatus, ImageAttachment } from '@jarvis/core';
+import type { Effort } from '@jarvis/core/settings';
 import { PROJECTS_DIR } from './paths.js';
+import { serverDefaults, type AiConfig } from './settings.js';
 import type { ProjectStore } from './store.js';
 import { callTool, sceneDigest, type AnyTool } from './tools.js';
 
@@ -97,13 +99,37 @@ export interface JarvisEvents {
     error: (message: string) => void;
 }
 
-/** fast: Sonnet at medium effort. best: Opus at high effort, slower and heavier on plan limits, much better at design. */
+/**
+ * fast and best: the two model choices of Options > AI assistant (by default Sonnet at medium effort, and Opus at high
+ * effort, slower and heavier on plan limits but much better at design).
+ */
 export type Quality = 'fast' | 'best';
 
-const PRESETS: Record<Quality, { model: string; effort: 'low' | 'medium' | 'high' }> = {
-    fast: { model: process.env.JARVIS_MODEL ?? 'sonnet', effort: (process.env.JARVIS_EFFORT as 'medium') ?? 'medium' },
-    best: { model: 'opus', effort: 'high' },
-};
+export type SessionSetup = { model: string; effort: Effort; env?: Record<string, string | undefined> } | { error: string };
+
+/**
+ * Model, effort and environment of the Claude Code session for these settings. With an API key the session gets it as
+ * ANTHROPIC_API_KEY (and no other Anthropic credential, so the key is what it uses); with the local login the session
+ * inherits the server's environment, as it always has.
+ */
+export function sessionSetup(config: AiConfig, quality: Quality, env: NodeJS.ProcessEnv = process.env): SessionSetup {
+    const { model, effort } = config[quality];
+    if (config.auth !== 'apiKey') {
+        return { model, effort };
+    }
+    if (!config.apiKey) {
+        return { error: 'No API key is set. Add one in Options, AI assistant, or choose the Claude Code login there.' };
+    }
+    const { ANTHROPIC_AUTH_TOKEN: _token, CLAUDE_CODE_OAUTH_TOKEN: _oauth, ANTHROPIC_API_KEY: _key, ...rest } = env;
+    return { model, effort, env: { ...rest, ANTHROPIC_API_KEY: config.apiKey } };
+}
+
+/** What a running session was started with, to tell whether new settings need a new session. */
+function signature(setup: SessionSetup): string {
+    return 'error' in setup ? 'error' : JSON.stringify([setup.model, setup.effort, setup.env?.ANTHROPIC_API_KEY ?? null]);
+}
+
+const ENV_CONFIG: AiConfig = { ...serverDefaults().ai, apiKey: '' };
 
 /** Async queue feeding user turns to one long-lived Claude Code session. */
 class Inbox implements AsyncIterable<SDKUserMessage> {
@@ -156,14 +182,41 @@ export class Jarvis {
     private buffer = '';
     private quality: Quality = process.env.JARVIS_QUALITY === 'best' ? 'best' : 'fast';
 
+    /** The settings the running session was started with, and whether they have changed since. */
+    private started = '';
+    private stale = false;
+
     constructor(
         private store: ProjectStore,
         private tools: AnyTool[],
         private events: JarvisEvents,
+        /** Options > AI assistant, read afresh for every new session. */
+        private config: () => AiConfig = () => ENV_CONFIG,
     ) {}
 
     getQuality(): Quality {
         return this.quality;
+    }
+
+    /** The model the next request goes to. */
+    getModel(): string {
+        return this.config()[this.quality].model;
+    }
+
+    /**
+     * The AI settings changed: a running session made with other settings is closed (the conversation starts afresh at
+     * the next request, the project is unaffected), so the new model, effort or credentials apply without a restart.
+     */
+    reconfigure(): void {
+        if (this.session && signature(sessionSetup(this.config(), this.quality)) !== this.started) {
+            // A turn in progress is left to finish; the next request starts the new session.
+            if (this.pending.length === 0) {
+                this.restart();
+            } else {
+                this.stale = true;
+            }
+        }
+        this.events.model(this.getModel());
     }
 
     /** Switches model and effort. The conversation starts afresh; the project is unaffected. */
@@ -172,12 +225,17 @@ export class Jarvis {
             return;
         }
         this.quality = quality;
+        this.restart();
+        this.events.model(this.getModel());
+    }
+
+    private restart(): void {
+        this.stale = false;
         this.stop();
         const session = this.session;
         this.session = null;
         this.pending = [];
         session?.close();
-        this.events.model(PRESETS[quality].model);
     }
 
     isCancelled(turn: number): boolean {
@@ -187,10 +245,22 @@ export class Jarvis {
     /** Sends a request to Jarvis and returns its turn number. */
     prompt(text: string, images: ImageAttachment[] = []): number {
         this.stop();
-        if (!this.session) {
-            this.start();
+        if (this.stale) {
+            this.restart();
         }
         const turn = this.nextTurn++;
+        if (!this.session) {
+            const setup = sessionSetup(this.config(), this.quality);
+            if ('error' in setup) {
+                // After the caller has logged the turn, so the activity list shows it as failed.
+                queueMicrotask(() => {
+                    this.events.error(setup.error);
+                    this.events.finished(turn, false);
+                });
+                return turn;
+            }
+            this.start(setup);
+        }
         this.pending.push(turn);
         const note = images.length ? `\n(The user attached ${images.length} picture(s) above: use them as the reference.)` : '';
         this.inbox.push(`[${sceneDigest(this.store.get())}]\n${text}${note}`, images);
@@ -212,7 +282,8 @@ export class Jarvis {
         this.events.status('idle');
     }
 
-    private start(): void {
+    private start(setup: Exclude<SessionSetup, { error: string }>): void {
+        this.started = signature(setup);
         this.inbox = new Inbox();
         const server = createSdkMcpServer({
             name: 'studio',
@@ -225,8 +296,9 @@ export class Jarvis {
             prompt: this.inbox,
             options: {
                 systemPrompt: PERSONA,
-                model: PRESETS[this.quality].model,
-                effort: PRESETS[this.quality].effort,
+                model: setup.model,
+                effort: setup.effort,
+                ...(setup.env ? { env: setup.env } : {}),
                 mcpServers: { studio: server },
                 tools: [],
                 allowedTools: ['mcp__studio'],

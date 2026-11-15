@@ -6,14 +6,16 @@ import { DEFAULT_PRINT, effectivePart, type Feature, type Part, type PrintSettin
 import { combineContext, type CombineContext } from './context.js';
 import { buildPartial, initOC, meshSolid, place, repeatCopies, errorMessage, type PartSpec } from './build.js';
 import { meshKey } from './key.js';
+import type { MeshQuality } from './meshQuality.js';
 import type { MeshData, PropsResult } from './kernel.js';
 import { massProperties } from './props.js';
 import { modelSketch } from './project.js';
 import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projection';
 import { freecadMacro, type FreecadExport } from '../export/freecadMacro.js';
+import type { BodyRecord } from './bodies.js';
 
 export type WorkerRequest =
-    | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext }
+    | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext; quality?: MeshQuality }
     | { id: number; type: 'step'; project: Project }
     | { id: number; type: 'props'; part: PartSpec; print: PrintSettings; context?: CombineContext }
     | { id: number; type: 'project'; part: PartSpec; print: PrintSettings; context?: CombineContext; frame: PlaneFrame3; query: ModelQuery }
@@ -39,6 +41,7 @@ interface Built {
     error: string | null;
     followed?: Record<string, Feature>;
     notes?: string[];
+    bodies?: BodyRecord[];
 }
 
 // Recently built solids, so a STEP export after meshing does not rebuild everything.
@@ -111,20 +114,22 @@ async function handle(request: WorkerRequest): Promise<void> {
     try {
         if (request.type === 'mesh') {
             const built = build(request.part, request.print, request.context);
-            // Where its reference steps found the model (for the view to draw them there), and what the build says about
-            // its steps (for an open tool form).
-            const followed = {
+            // Where its reference steps found the model, for the view to draw them there.
+            const extra = {
                 ...(built.followed && Object.keys(built.followed).length ? { followed: built.followed } : {}),
+                // The solid bodies, for the Solid Bodies folder of the tree.
+                ...(built.bodies ? { bodies: built.bodies } : {}),
+                // What the build says about its steps, for an open tool form (a thread cut to its hole's length).
                 ...(built.notes?.length ? { notes: built.notes } : {}),
             };
             if (built.error) {
-                const partial = built.shape ? { ...meshSolid(built.shape), ...followed } : undefined;
+                const partial = built.shape ? { ...meshSolid(built.shape, request.quality), ...extra } : undefined;
                 const response: WorkerResponse = { id: request.id, ok: false, error: built.error, partial };
                 port!.postMessage(response, partial ? meshTransfer(partial) : []);
                 return;
             }
             // A part with no body yet (an empty shape with only sketches) meshes as nothing.
-            const mesh = { ...(built.shape ? meshSolid(built.shape) : emptyMesh()), ...followed };
+            const mesh = { ...(built.shape ? meshSolid(built.shape, request.quality) : emptyMesh()), ...extra };
             port!.postMessage({ id: request.id, ok: true, mesh } satisfies WorkerResponse, meshTransfer(mesh));
         } else if (request.type === 'props') {
             // A failed history still reports the solid as far as it built, with the error alongside.

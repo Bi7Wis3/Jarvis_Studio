@@ -13,6 +13,8 @@ import { FileMenu } from './FileMenu';
 import { Toolbar } from './Toolbar';
 import { Hud } from './Hud';
 import { ViewMenu } from './viewMenu';
+import { OptionsPage } from './OptionsPage';
+import { useOptions } from './options';
 
 const QUICK_ACTIONS: { label: string; action: ViewAction }[] = [
     { label: 'Explode', action: 'explode' },
@@ -23,6 +25,8 @@ const QUICK_ACTIONS: { label: string; action: ViewAction }[] = [
 
 function StatusChip() {
     const { connected, model, voice, status, detail, quality } = useStudio();
+    // Options > AI assistant: the model and effort behind each choice.
+    const ai = useOptions((s) => s.settings.ai);
     const activity = status === 'working' && detail ? detail.replace(/_/g, ' ') : status;
     return (
         <div className="chip status">
@@ -37,7 +41,8 @@ function StatusChip() {
                         type="button"
                         className={quality === q ? 'on' : ''}
                         onClick={() => setQuality(q)}
-                        title={q === 'fast' ? 'Sonnet, quick' : 'Opus at high effort: slower, much better designs'}
+                        title={q === 'fast' ? `${ai.fast.model} at ${ai.fast.effort} effort: quick`
+                            : `${ai.best.model} at ${ai.best.effort} effort: slower, better designs`}
                     >
                         {q === 'fast' ? 'Fast' : 'Best'}
                     </button>
@@ -240,6 +245,7 @@ export function App() {
             {project && <Toolbar />}
             {project && <Hud />}
             <ViewMenu />
+            <OptionsPage />
             <footer>
                 {error && <div className="bubble error">{error}</div>}
                 {subtitle && !error && <div className="bubble">{subtitle}</div>}

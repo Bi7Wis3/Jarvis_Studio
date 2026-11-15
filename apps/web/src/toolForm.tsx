@@ -1,7 +1,8 @@
 // The form behind a tool: its values, apply and result, shared by the floating popup and the property manager.
 
-import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { stepText } from './numberText';
+import { useEffect, useRef, useState, type FormEvent, type InputHTMLAttributes } from 'react';
+import { formShownText, stepText } from './numberText';
+import { withSavedDefaults } from './options';
 import { fetchPreview, LatestOnly, toPreview, type PreviewResponse, type ToolCall } from './preview';
 import { useRegionPick } from './regionPick';
 import { captureToolCalls, clearPreview, setPreview } from './state';
@@ -123,7 +124,11 @@ function useToolSessionPublish(tool: ToolDef, ctx: Ctx, values: Values, setValue
 }
 
 export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
-    const [values, setValues] = useState<Values>(() => ({ ...(tool.defaults?.(ctx) ?? {}), ...(ctx.edit ? {} : toolPreset(tool.id)) }));
+    // A new form starts from the tool's defaults with the saved ones (Options > Defaults) over them; an edit from the step.
+    const [values, setValues] = useState<Values>(() => {
+        const base = tool.defaults?.(ctx) ?? {};
+        return ctx.edit ? base : { ...withSavedDefaults(tool.id, base), ...toolPreset(tool.id) };
+    });
     const [result, setResult] = useState<Result | null>(null);
     const [busy, setBusy] = useState(false);
     const form = useRef<HTMLFormElement>(null);
@@ -298,11 +303,12 @@ export function FieldInput(props: { field: Field; values: Values; change: (key: 
                 <label className="tb-field">
                     <span>{field.label}</span>
                     <span className="tb-input">
-                        <input
+                        <NumberInput
                             type={number ? 'number' : 'text'}
                             step={number ? 'any' : undefined}
                             min={field.min}
                             value={value as string}
+                            rounded={number}
                             onChange={(e) => change(field.key, e.target.value)}
                             onKeyDown={number ? (e) => {
                                 if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
@@ -327,4 +333,28 @@ export function FieldInput(props: { field: Field; values: Values; change: (key: 
             );
         }
     }
+}
+
+/**
+ * A field's input. A number shows the decimals set in Options (Units and precision) while it is not being edited, and
+ * its whole value while it is: the value itself is never rounded.
+ */
+function NumberInput(props: InputHTMLAttributes<HTMLInputElement> & { rounded: boolean }) {
+    const { rounded, value, onFocus, onBlur, ...rest } = props;
+    const [editing, setEditing] = useState(false);
+    const shown = rounded && !editing && typeof value === 'string' ? formShownText(value) : value;
+    return (
+        <input
+            {...rest}
+            value={shown}
+            onFocus={(e) => {
+                setEditing(true);
+                onFocus?.(e);
+            }}
+            onBlur={(e) => {
+                setEditing(false);
+                onBlur?.(e);
+            }}
+        />
+    );
 }

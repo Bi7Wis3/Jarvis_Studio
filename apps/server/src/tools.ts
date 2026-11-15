@@ -2,6 +2,7 @@ import { z, type ZodRawShape } from 'zod';
 import {
     DEFAULT_PRINT, explodeOffsets, THREAD_SIZES, timelineSteps, type Decal, type Feature, type Part, type Project, type Vec3,
 } from '@jarvis/core';
+import { hideConsumed } from '@jarvis/core/visibility';
 import { slug, type ProjectStore } from './store.js';
 
 export interface StudioTool {
@@ -198,11 +199,14 @@ const shape = z.discriminatedUnion('kind', [
         height: z.number(),
         bevel: z.number().min(0).optional().describe('Rim rounding in mm; a small one is applied by default'),
     }),
-    z.object({ kind: z.literal('tube'), outerRadius: z.number(), innerRadius: z.number(), height: z.number() }),
+    z.object({ kind: z.literal('tube'), outerRadius: z.number(), innerRadius: z.number(), height: z.number(),
+        bevel: z.number().min(0).optional().describe('Rim rounding in mm; a small one is applied by default') }),
     z.object({ kind: z.literal('sphere'), radius: z.number() }),
     z.object({ kind: z.literal('torus'), radius: z.number(), tube: z.number().describe('Radius of the ring wire') }),
     z.object({ kind: z.literal('cone'), radius: z.number(), height: z.number() }),
     z.object({ kind: z.literal('capsule'), radius: z.number(), length: z.number() }),
+    z.object({ kind: z.literal('wedge'), size: vec3 })
+        .describe('A ramp: base [x] by [z], full height [y] at -X sloping down to nothing at +X; centred, sharp edges'),
     z.object({
         kind: z.literal('lathe'),
         profile: z.array(z.tuple([z.number(), z.number()])).min(2)
@@ -956,6 +960,10 @@ export function createTools(store: ProjectStore): StudioTool[] {
                     const at = insertIndex(list.length, index, rollbackOf(draft, partId));
                     list.splice(at, 0, ...added);
                     part.features = list;
+                    // A sketch a new feature is built from is hidden (again), as SolidWorks does on OK.
+                    if (draft.view.shownSketches?.length) {
+                        draft.view.shownSketches = hideConsumed(draft.view.shownSketches, partId, added);
+                    }
                     shiftRollback(draft, partId, at, added.length);
                     checkHistory(part);
                     result = `Added ${added.length} feature(s) to ${partId}: ${added.map((f) => f.id).join(', ')}.`;
@@ -1009,6 +1017,12 @@ export function createTools(store: ProjectStore): StudioTool[] {
                         if (!part.features.some((f) => f.id === u.id)) {
                             missing.push(u.id);
                         }
+                    }
+                    // A feature given another sketch to build from hides that sketch, as a new one does.
+                    const resourced = new Set(updates.filter((u: Record<string, unknown>) => ['sketchRef', 'sections', 'profile', 'path'].some((k) => k in u))
+                        .map((u: { id: string }) => u.id));
+                    if (draft.view.shownSketches?.length) {
+                        draft.view.shownSketches = hideConsumed(draft.view.shownSketches, partId, part.features.filter((f) => resourced.has(f.id)));
                     }
                     checkHistory(part);
                 });

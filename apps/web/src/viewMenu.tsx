@@ -26,6 +26,8 @@ import { fitView, setView, VIEWS } from './toolDefs';
 import { presetToolValues, useToolSession } from './toolSession';
 import { runItemAction } from './sketchItemActions';
 import { toggleDimensionLock } from './sketchDimTools';
+import { hiddenStepsNow } from './stepVisibility';
+import { clearPieces, onPickedPiece } from './sketchPieces';
 
 /** A right-click that moves further than this (screen pixels) is a pan, not a click. */
 const CLICK_SLOP_PX = 4;
@@ -212,7 +214,7 @@ export function menuContext(): MenuContext {
         workspace: s.workspace,
         part: s.workspace === 'part' ? parts.find((p) => p.id === s.activePart) ?? null : null,
         parts,
-        hiddenSketches: s.history?.view.hiddenSketches ?? [],
+        hiddenSketches: [...hiddenStepsNow()],
         hiddenParts: s.history?.view.hidden ?? [],
         settings: {
             grid: s.grid,
@@ -255,10 +257,11 @@ function sketchItems(x: number, y: number): MenuEntry[] {
         const hit = sketchPointAt(x, y);
         const pick = hit ? pickAt(s.geometry, hit.p, hit.tolerance) : null;
         const own = pick && pick.id !== ORIGIN && pick.id !== AXIS_U && pick.id !== AXIS_V ? pick : null;
-        // On empty space the selection stays: its menu then still applies to it.
-        if (own && !selection.some((p) => p.id === own.id)) {
+        // On empty space the selection stays: its menu then still applies to it (so does a piece picked with Alt).
+        if (own && !selection.some((p) => p.id === own.id) && !onPickedPiece(hit!.p, hit!.tolerance)) {
             selection = [own];
             useSketcher.setState({ selection: [own] });
+            clearPieces();
         }
     }
     return sketchSpaceMenu({

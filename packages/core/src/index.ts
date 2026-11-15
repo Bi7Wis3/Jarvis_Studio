@@ -5,11 +5,13 @@ export type Vec3 = [number, number, number];
 export type Shape =
     | { kind: 'box'; size: Vec3; radius?: number }
     | { kind: 'cylinder'; radius: number; radiusTop?: number; height: number; bevel?: number }
-    | { kind: 'tube'; outerRadius: number; innerRadius: number; height: number }
+    | { kind: 'tube'; outerRadius: number; innerRadius: number; height: number; bevel?: number }
     | { kind: 'sphere'; radius: number }
     | { kind: 'torus'; radius: number; tube: number }
     | { kind: 'cone'; radius: number; height: number }
     | { kind: 'capsule'; radius: number; length: number }
+    /** A ramp: base size[0] (X) by size[2] (Z), full height size[1] at -X sloping down to nothing at +X; centred. */
+    | { kind: 'wedge'; size: Vec3 }
     | { kind: 'lathe'; profile: [number, number][]; smooth?: boolean }
     | { kind: 'extrude'; outline: [number, number][]; height: number; bevel?: number }
     | FastenerShape
@@ -930,6 +932,11 @@ export type Feature = FeatureBase & (
          * booleans, for a quick look while the form is open.
          */
         preview?: boolean;
+        /**
+         * Set only on the copy the view builds while the step is hidden (its eye in the tree), never saved: the hole or
+         * shaft stays plain and the kernel only marks where the thread runs, as a SolidWorks cosmetic thread.
+         */
+        cosmetic?: boolean;
     }
 );
 
@@ -1021,10 +1028,19 @@ export interface ViewState {
     timeline?: number | null;
     /** Parts hidden from the viewport (still part of the design and its exports). */
     hidden?: string[];
-    /** Sketch steps hidden in the viewport, as "partId/featureId". Sketches are shown otherwise. */
+    /**
+     * Sketch, reference and thread steps hidden in the viewport, as "partId/featureId" (a hidden thread is built plain
+     * for the view, see viewPart in visibility.ts). Absorbed sketches are hidden unless in shownSketches.
+     */
     hiddenSketches?: string[];
     /** Part-workspace rollback: only the first `count` features of `partId` are built and shown. */
     rollback?: { partId: string; count: number } | null;
+    /** Absorbed sketches (a later step is built from them, so hidden by default) shown one by one, as "partId/featureId". */
+    shownSketches?: string[];
+    /** Solid bodies hidden in the viewport, as "partId/bodyKey" (see BodyInfo in visibility.ts). */
+    hiddenBodies?: string[];
+    /** Solid bodies drawn see-through, as "partId/bodyKey". */
+    seeThroughBodies?: string[];
 }
 
 export interface Project {
@@ -1096,6 +1112,7 @@ export type ClientMessage =
     | { type: 'delete'; slug: string }
     | { type: 'hide'; partId: string; hidden: boolean }
     | { type: 'hideSketch'; partId: string; featureId: string; hidden: boolean }
+    | { type: 'bodyView'; partId: string; body: string; hidden?: boolean; seeThrough?: boolean }
     | { type: 'rollback'; partId: string; count: number | null }
     | { type: 'rename'; name: string }
     | { type: 'saveAs'; name: string }
@@ -1134,6 +1151,8 @@ export function shapeHalfExtents(shape: Shape): Vec3 {
             return [shape.radius, shape.height / 2, shape.radius];
         case 'capsule':
             return [shape.radius, shape.length / 2 + shape.radius, shape.radius];
+        case 'wedge':
+            return [shape.size[0] / 2, shape.size[1] / 2, shape.size[2] / 2];
         case 'extrude': {
             let x = 0;
             let z = 0;

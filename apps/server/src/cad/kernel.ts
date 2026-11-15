@@ -4,10 +4,12 @@
 import { Worker } from 'node:worker_threads';
 import type { Feature, Part, PrintSettings, Project } from '@jarvis/core';
 import { meshKey } from './key.js';
+import { qualityKey, type MeshQuality } from './meshQuality.js';
 import type { CombineContext } from './context.js';
 import type { WorkerRequest, WorkerResponse } from './worker.js';
 import type { MassProps } from './props.js';
 import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projection';
+import type { BodyInfo } from '@jarvis/core/visibility';
 import type { FreecadExport } from '../export/freecadMacro.js';
 
 export { meshKey } from './key.js';
@@ -35,6 +37,15 @@ export interface MeshData {
     followed?: Record<string, Feature>;
     /** What a tool form should say about the steps (a thread cut to the length of its hole). */
     notes?: string[];
+    /** Per face ordinal: the body (index into `bodies`) it belongs to; faces past the end are on body 0. */
+    faceBody?: Uint32Array;
+    /** Per edge ordinal: the body it belongs to. */
+    edgeBody?: Uint32Array;
+    /** The solid bodies, in order (see cad/bodies.ts). */
+    bodies?: BodyInfo[];
+    /** Line segment pairs marking where cosmetic (hidden) threads run, and per segment its body. */
+    cosmetic?: Float32Array;
+    cosmeticBody?: Uint32Array;
 }
 
 /** A part whose history failed; `partial` is the solid up to the failing step, when there is one. */
@@ -101,11 +112,11 @@ export class CadKernel {
     }
 
     /**
-     * Mesh of a part's solid. `context` supplies the parts its combine steps use (see combineContext). Results are
-     * shared between callers: do not modify them.
+     * Mesh of a part's solid at a display quality (see meshQuality.ts). `context` supplies the parts its combine steps
+     * use (see combineContext). Results are shared between callers: do not modify them.
      */
-    mesh(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, context?: CombineContext): Promise<MeshData> {
-        const key = meshKey(part, print, context);
+    mesh(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, context?: CombineContext, quality: MeshQuality = 'normal'): Promise<MeshData> {
+        const key = qualityKey(meshKey(part, print, context), quality);
         const names = featureNames(part);
         const hit = this.cache.get(key);
         if (hit && (hit.failedNames === undefined || hit.failedNames === names)) {
@@ -114,7 +125,7 @@ export class CadKernel {
             return hit.promise;
         }
         const entry: CacheEntry = {
-            promise: this.run({ type: 'mesh', part: { shape: part.shape, features: part.features }, print, context }) as Promise<MeshData>,
+            promise: this.run({ type: 'mesh', part: { shape: part.shape, features: part.features }, print, context, quality }) as Promise<MeshData>,
         };
         entry.promise.catch((error: unknown) => {
             if (error instanceof CadBuildError) {

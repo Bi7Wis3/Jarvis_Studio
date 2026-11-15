@@ -32,7 +32,11 @@ export function featureBaseName(feature: Nameable): string {
 
 /** The next free name of its kind in the part: the lowest number above every one already used. */
 export function nextFeatureName(features: readonly Pick<Feature, 'name'>[] | undefined, feature: Nameable): string {
-    const base = featureBaseName(feature);
+    return nextNumberedName(features, featureBaseName(feature));
+}
+
+/** `base` with the lowest number above every one the part already uses (Box1, Box2...). */
+export function nextNumberedName(features: readonly Pick<Feature, 'name'>[] | undefined, base: string): string {
     let n = 0;
     for (const f of features ?? []) {
         const match = f.name?.startsWith(base) ? /^(\d+)$/.exec(f.name.slice(base.length)) : null;

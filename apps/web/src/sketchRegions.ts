@@ -1,12 +1,16 @@
 // Closed regions of a sketch treated as a planar graph: sketch points are vertices, lines and arcs are edges.
 // Curves on no cycle (dangling chains, bridges) are open. Every 2-connected block that is a plain loop becomes a
 // profile exactly as the simple chaining in sketchMath makes it; a block with shared edges, T-junctions or
-// dividing lines becomes its outer boundary (the union of its regions). Curves that cross without a shared
-// point are not split: the graph only knows the points the curves end at.
+// dividing lines becomes its outer boundary (the union of its regions). For the profiles and open chains, curves
+// that cross without a shared point are not split: that graph only knows the points the curves end at. For the
+// regions they are (regionCrossings.ts): every area the curves bound is a region, wherever they cross or touch.
 
 import type { SketchProfile, SketchRegion, SketchSegment } from '@jarvis/core';
-import { reverseSegment, segmentPoints } from '@jarvis/core/curves';
+import { bsplineAt, reverseSegment, segmentPoints, segmentShape, splineBezier } from '@jarvis/core/curves';
+import { bezierPoint } from '@jarvis/core/curveIntersect';
+import { nurbsAt } from '@jarvis/core/splines';
 import { area, circleThrough, dist, entitiesToProfiles, inside, profilePoints, toSegment, type Entity, type Pt } from './sketchMath';
+import { clearCrossingStore, splitAtCrossings } from './regionCrossings';
 
 type Curve = Extract<Entity, { kind: 'line' | 'arc' | 'curve' }>;
 
@@ -133,6 +137,7 @@ export function clearRegionStore(): void {
     loopsKept.clear();
     pointsKept.clear();
     regionsKept.clear();
+    clearCrossingStore();
 }
 
 /** Values as text, every number exactly (-0 apart from 0). */
@@ -179,7 +184,9 @@ function loopInterior(outer: Loop, holes: Loop[]): Pt {
  * sharing an edge give two regions. Arguments as for regionProfiles.
  */
 export function sketchRegions(entities: Entity[], ends: Map<string, [string, string]> = new Map()): SketchRegion[] {
-    const { curves, vertex, others } = graphOf(entities, ends);
+    // Cut where curves cross or end on one another, so the areas on each side are regions of their own.
+    const split = splitAtCrossings(entities, ends);
+    const { curves, vertex, others } = graphOf(split.entities, split.ends);
     // Each block: its outline and the faces inside it (a plain loop is its own single face).
     const found: { first: number; outer: Loop; faces: Loop[] }[] = [];
     for (const block of blocks(vertex)) {
@@ -515,6 +522,24 @@ function isCycle(block: number[], vertex: [number, number][]): boolean {
     return [...degree.values()].every((d) => d === 2);
 }
 
+/** The first two points segmentPoints(from, seg, steps) gives, without working out the rest of them. */
+function firstSteps(from: Pt, seg: SketchSegment, steps: number): [Pt, Pt] {
+    if (seg.kind === 'bspline') {
+        const poles: Pt[] = [from, ...seg.poles, seg.to];
+        const n = Math.max(steps, poles.length * 12);
+        const at = (t: number) => (seg.weights ? nurbsAt(poles, seg.degree, t, seg.knots, seg.weights) : bsplineAt(poles, seg.degree, t, seg.knots)) as Pt;
+        return [at(1 / n), at(2 / n)];
+    }
+    if (seg.kind === 'spline') {
+        const closed = dist(from, seg.to) < 1e-9;
+        const per = Math.max(8, Math.ceil(steps / 2));
+        const first = splineBezier([from, ...seg.through, ...(closed ? [] : [seg.to])], closed, segmentShape(seg)).slice(0, 4);
+        return [bezierPoint(first, 1 / per).p as Pt, bezierPoint(first, 2 / per).p as Pt];
+    }
+    const pts = segmentPoints(from, seg, steps);
+    return [pts[0], pts[1]];
+}
+
 /** Direction (angle) a curve leaves its start (or end, when reversed) and its signed curvature (left turn > 0). */
 function leaving(c: Curve, reversed: boolean): { angle: number; bend: number } {
     const from = reversed ? c.b : c.a;
@@ -522,7 +547,7 @@ function leaving(c: Curve, reversed: boolean): { angle: number; bend: number } {
     if (c.kind === 'curve') {
         // Measured just off the end: the direction and the turn of the first tiny steps.
         const seg = reversed ? reverseSegment(c.a, c.seg) : c.seg;
-        const [p1, p2] = segmentPoints(from, seg, 4000);
+        const [p1, p2] = firstSteps(from, seg, 4000);
         const d1: Pt = [p1[0] - from[0], p1[1] - from[1]];
         const d2: Pt = [p2[0] - p1[0], p2[1] - p1[1]];
         const turn = d1[0] * d2[1] - d1[1] * d2[0];

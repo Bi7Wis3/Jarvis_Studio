@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { create } from 'zustand';
 import { Canvas, events as pointerEvents, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import {
-    CameraControls, CameraControlsImpl, ContactShadows, Environment, GizmoHelper, GizmoViewport, Grid, Lightformer, Line,
+    CameraControls, CameraControlsImpl, ContactShadows, GizmoHelper, GizmoViewport, Grid, Line,
 } from '@react-three/drei';
 import { Bloom, EffectComposer } from '@react-three/postprocessing';
 import {
@@ -29,11 +29,13 @@ import { pickKey, useSketchModel, type ModelPick } from './sketchModel';
 import { sketchPlaneAt, sketchPointAt } from './SketchDrawing';
 import { drawFlat, drawPerspective, flatHeight, liveView, rayFromCamera } from './viewProjection';
 import { offerTarget, RightClickGate } from './viewMenu';
-import { SketchViewMode, sketchCanvas, useSketchView } from './sketchViewMode';
+import { SketchViewMode, sketchCanvas, usePlainSketchView, useSketchView } from './sketchViewMode';
+import { CosmeticMarks, SEE_THROUGH, useBodyDisplay } from './bodyView';
+import { easeOnce, SceneLook, transitionTimes, useDisplay } from './sceneLook';
+import { useOptions } from './options';
 
 export { anim };
 
-const FIT_MS = 1800;
 const DEFAULT_AZIMUTH = 28;
 const DEFAULT_ELEVATION = 16;
 const SELECT_COLOR = '#c48bff';
@@ -479,7 +481,9 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
     const group = useRef<Group>(null);
     const preview = useMemo(() => buildGeometry(part.shape), [JSON.stringify(part.shape)]);
     const kernel = useKernelMesh(part.id);
-    const geometry = kernel?.surface ?? preview;
+    // Bodies hidden or see-through, the body picked in the tree, cosmetic threads (bodyView.tsx).
+    const bodyDisplay = useBodyDisplay(part, kernel);
+    const geometry = bodyDisplay.surface ?? kernel?.surface ?? preview;
     const instances = useMemo(() => instanceTransforms(part), [JSON.stringify(part.repeat)]);
     // The part workspace shows only the part being edited at full strength, so it needs no selection glow.
     const selected = useStudio((s) => s.selected === part.id && s.workspace !== 'part');
@@ -575,7 +579,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
     const previewEdges = useMemo(
         () => (selected && !kernel && preview.getAttribute('position') ? new EdgesGeometry(preview, 30) : null), [selected, kernel, preview],
     );
-    const edges = kernel?.edges ?? previewEdges;
+    const edges = bodyDisplay.edges ?? kernel?.edges ?? previewEdges;
     useEffect(() => () => preview.dispose(), [preview]);
     useEffect(() => () => previewEdges?.dispose(), [previewEdges]);
     useEffect(() => {
@@ -606,6 +610,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
     // While sketching every part turns see-through, so a sketch on the ground or inside a part stays visible.
     const opacity = dimmed ? 0.08 : sketching ? Math.min(m.opacity ?? 1, 0.25) : m.opacity ?? 1;
     const plain = dimmed || sketching;
+    const edgeLook = useDisplay();
     const rotation = part.rotation.map(MathUtils.degToRad) as Vec3;
     // While picking faces and edges the overlay shows what is under the pointer instead of a whole-part glow.
     const highlight = selected ? 0.16 : hovered && !dimmed && !pickable ? 0.07 : 0;
@@ -677,12 +682,29 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                             thickness={m.transmission ? 2 : 0}
                         />
                     </mesh>
+                    {bodyDisplay.seeThrough && (
+                        <mesh geometry={bodyDisplay.seeThrough} position={part.position} rotation={rotation} raycast={noRaycast} renderOrder={1}>
+                            <meshPhysicalMaterial
+                                color={m.color}
+                                metalness={m.metalness}
+                                roughness={m.roughness}
+                                transparent
+                                opacity={Math.min(opacity, SEE_THROUGH)}
+                                depthWrite={false}
+                                side={DoubleSide}
+                            />
+                        </mesh>
+                    )}
+                    <group position={part.position} rotation={rotation}>
+                        <CosmeticMarks geometry={bodyDisplay.marks} dimmed={dimmed} />
+                        {bodyDisplay.highlight && <PickOverlay faces={bodyDisplay.highlight} edges={null} strong={false} />}
+                    </group>
                     {edges && !dimmed && (selected || (kernel && (showEdges || sketching))) && (
                         <lineSegments geometry={edges} position={part.position} rotation={rotation} raycast={noRaycast}>
                             <lineBasicMaterial
-                                color={selected ? SELECT_COLOR : sketching ? '#9fb4d0' : '#000000'}
+                                color={selected ? SELECT_COLOR : sketching ? '#9fb4d0' : edgeLook.edgeColor}
                                 transparent
-                                opacity={selected ? 1 : sketching ? 0.45 : 0.35}
+                                opacity={selected ? 1 : sketching ? 0.45 : edgeLook.edgeOpacity}
                                 depthWrite={!sketching}
                             />
                         </lineSegments>
@@ -781,13 +803,19 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
     const asked = JSON.stringify([refit, project.name, view.focus, view.explode, view.explodeSpacing, view.azimuth, view.elevation, view.labels]);
     const ids = useStudio((s) => (s.history?.parts ?? []).map((p) => p.id).join());
 
-    const moveTo = (position: Vector3, target: Vector3, smooth: boolean) => {
+    // Options > Display > View transition: how quickly the view moves to a new framing (off: at once).
+    const transition = transitionTimes(useDisplay().transition);
+    const moveTo = (position: Vector3, target: Vector3, eased: boolean) => {
         if (!controls) {
             return;
         }
+        const smooth = eased && transition.smooth;
+        if (smooth) {
+            easeOnce(controls, transition.smoothTime);
+        }
         void controls.setLookAt(position.x, position.y, position.z, target.x, target.y, target.z, smooth);
         void controls.setFocalOffset(0, 0, 0, smooth);
-        anim.settleAt = performance.now() + FIT_MS;
+        anim.settleAt = performance.now() + (smooth ? transition.settleMs : 0);
     };
 
     useEffect(() => {
@@ -1068,8 +1096,11 @@ export function Scene({ project }: { project: Project }) {
     const partView = useStudio((s) => s.partView);
     const sketchPart = useSketcher((s) => s.partId);
     const placingDecal = useStudio((s) => !!s.placingDecal);
-    // While a sketch is drawn the view is drawn plainly and only on change (sketchViewMode.tsx).
-    const plain = useSketchView();
+    // While a sketch is drawn the view is drawn plainly and only on change (sketchViewMode.tsx), unless Options say Full.
+    const plain = usePlainSketchView();
+    const display = useDisplay();
+    // Shown decimals and angle units (Options): the sketch's labels are drawn again when they change.
+    const units = useOptions((s) => JSON.stringify(s.settings.units));
     const activeShown = activePart !== null && project.parts.some((p) => p.id === activePart);
     // The open tool form's preview: changed parts drawn as they would be, new ones added.
     const preview = useStudio((s) => s.preview);
@@ -1111,21 +1142,15 @@ export function Scene({ project }: { project: Project }) {
                 },
             })}
             shadows
-            {...sketchCanvas(plain)}
+            {...sketchCanvas(plain, display.pixelRatio)}
             camera={{ fov: 32, near: 1, far: 20000, position: [200, 150, 400] }}
-            // The drawing buffer is kept so view_screenshot can read the canvas at any time.
-            gl={{ antialias: true, preserveDrawingBuffer: true }}
+            // The drawing buffer is kept so view_screenshot can read the canvas at any time. Anti-aliasing is fixed
+            // when the canvas is made, so changing it (Options > Display) makes the canvas again.
+            key={display.antialias ? 'antialias' : 'aliased'}
+            gl={{ antialias: display.antialias, preserveDrawingBuffer: true }}
         >
-            <color attach="background" args={['#04060b']} />
-            <ambientLight intensity={0.25} />
-            <directionalLight position={[300, 600, 400]} intensity={2.2} castShadow shadow-mapSize={[2048, 2048]} />
-            <directionalLight position={[-400, 200, -300]} intensity={0.8} color="#6aa8ff" />
-            <Environment resolution={256}>
-                <Lightformer form="rect" intensity={5} position={[0, 8, 2]} rotation={[Math.PI / 2, 0, 0]} scale={[12, 6, 1]} />
-                <Lightformer form="rect" intensity={2.5} position={[-8, 2, 3]} rotation={[0, Math.PI / 2, 0]} scale={[8, 5, 1]} color="#8fb8ff" />
-                <Lightformer form="rect" intensity={2} position={[8, 3, -2]} rotation={[0, -Math.PI / 2, 0]} scale={[8, 5, 1]} color="#ffd9b0" />
-                <Lightformer form="ring" intensity={1.5} position={[0, 1, 10]} scale={4} />
-            </Environment>
+            {/* Background, lights and environment: Options > Display and Lighting. */}
+            <SceneLook />
 
             {parts.map((part) => {
                 const look = partLook(part.id, { workspace, activePart: activeShown ? activePart : null, partView, focus });
@@ -1141,18 +1166,23 @@ export function Scene({ project }: { project: Project }) {
                 part={(workspace === 'part' && project.parts.find((p) => p.id === activePart)) || null}
                 offset={(activePart && offsets[activePart]) || [0, 0, 0]}
             />
+            {/* In the assembly every shown part draws its shown sketches, in its own placement. */}
+            {workspace === 'assembly' && parts.map((part) => <SketchSteps key={`sketches-${part.id}`} part={part} offset={offsets[part.id] ?? NO_OFFSET} />)}
             <ReferenceGeometry
                 part={(workspace === 'part' && project.parts.find((p) => p.id === activePart)) || null}
                 offset={(activePart && offsets[activePart]) || [0, 0, 0]}
             />
             <SketchLayer
+                key={units}
                 part={project.parts.find((p) => p.id === sketchPart) ?? null}
                 offset={(sketchPart && offsets[sketchPart]) || [0, 0, 0]}
             />
 
             <Manipulators offsets={offsets} />
 
-            <ContactShadows position={[0, -0.5, 0]} scale={900} far={400} blur={2.4} opacity={0.55} resolution={1024} frames={plain ? 0 : Infinity} />
+            {display.groundShadow && (
+                <ContactShadows position={[0, -0.5, 0]} scale={900} far={400} blur={2.4} opacity={display.groundShadowOpacity} resolution={1024} frames={plain ? 0 : Infinity} />
+            )}
             <CameraControls makeDefault dollyToCursor minDistance={1} maxDistance={20000} smoothTime={0.22} draggingSmoothTime={0.08} />
             <Pivot project={project} offsets={offsets} />
             <Projection />
@@ -1162,8 +1192,8 @@ export function Scene({ project }: { project: Project }) {
             <LabelDriver project={project} offsets={offsets} />
             <CursorTracker />
             <GroundGrid />
-            <EffectComposer enabled={!plain}>
-                <Bloom mipmapBlur luminanceThreshold={1} intensity={0.8} radius={0.7} />
+            <EffectComposer enabled={!plain} multisampling={display.antialias ? 8 : 0}>
+                {display.bloom ? <Bloom mipmapBlur luminanceThreshold={1} intensity={display.bloomIntensity} radius={0.7} /> : <></>}
             </EffectComposer>
             {/* After the composer, so the triad is drawn on top of the post-processed frame. */}
             <GizmoHelper alignment="bottom-left" margin={[TRIAD_PX / 2, TRIAD_PX / 2 - 2]} renderPriority={2}>

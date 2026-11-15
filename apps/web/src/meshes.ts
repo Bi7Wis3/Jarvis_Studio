@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { BufferAttribute, BufferGeometry } from 'three';
+import type { BodyInfo } from '@jarvis/core/visibility';
 import { useStudio } from './state';
 
 export interface KernelMesh {
@@ -12,18 +13,26 @@ export interface KernelMesh {
     triFace: Uint32Array;
     /** Per segment of `edges`: the ordinal of its B-rep edge. */
     segEdge: Uint32Array;
+    /** The solid bodies (Solid Bodies folder), and per face and per edge ordinal its body (past the end: body 0). */
+    bodies: BodyInfo[];
+    faceBody: Uint32Array;
+    edgeBody: Uint32Array;
+    /** Line segments marking cosmetic (hidden) threads, in the part frame, and per segment its body. */
+    cosmetic: Float32Array;
+    cosmeticBody: Uint32Array;
 }
 
 const cache = new Map<string, Promise<KernelMesh | null>>();
 const MAX_CACHED = 400;
 
 /**
- * Wire format of /api/mesh2/:key: uint32 counts [positions, indices, edges], then positions, normals, indices, edges,
- * triFace (indices / 3 entries) and segEdge (edges / 6 entries).
+ * Wire format of /api/mesh3/:key (encodeMesh3 in the server's meshes.ts): uint32 counts [positions, indices, edges,
+ * faces, edge ordinals, cosmetic, json bytes], then positions, normals, indices, edges, triFace (indices / 3 entries),
+ * segEdge (edges / 6 entries), faceBody, edgeBody, cosmetic, cosmeticBody (cosmetic / 6) and JSON { bodies }.
  */
-function decode(buffer: ArrayBuffer): KernelMesh {
-    const [positions, indices, edges] = new Uint32Array(buffer, 0, 3);
-    let at = 12;
+export function decode(buffer: ArrayBuffer): KernelMesh {
+    const [positions, indices, edges, faces, edgeCount, cosmeticCount, jsonBytes] = new Uint32Array(buffer, 0, 7);
+    let at = 28;
     const take = <T>(make: (b: ArrayBuffer, o: number, n: number) => T, n: number): T => {
         const out = make(buffer, at, n);
         at += n * 4;
@@ -38,13 +47,23 @@ function decode(buffer: ArrayBuffer): KernelMesh {
     lines.setAttribute('position', new BufferAttribute(take((b, o, n) => new Float32Array(b, o, n), edges), 3));
     const triFace = take((b, o, n) => new Uint32Array(b, o, n), indices / 3);
     const segEdge = take((b, o, n) => new Uint32Array(b, o, n), edges / 6);
-    return { surface, edges: lines, triFace, segEdge };
+    const faceBody = take((b, o, n) => new Uint32Array(b, o, n), faces);
+    const edgeBody = take((b, o, n) => new Uint32Array(b, o, n), edgeCount);
+    const cosmetic = take((b, o, n) => new Float32Array(b, o, n), cosmeticCount);
+    const cosmeticBody = take((b, o, n) => new Uint32Array(b, o, n), cosmeticCount / 6);
+    let bodies: BodyInfo[] = [];
+    try {
+        bodies = (JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, at, jsonBytes))) as { bodies?: BodyInfo[] }).bodies ?? [];
+    } catch {
+        bodies = [];
+    }
+    return { surface, edges: lines, triFace, segEdge, bodies, faceBody, edgeBody, cosmetic, cosmeticBody };
 }
 
 function load(key: string): Promise<KernelMesh | null> {
     let entry = cache.get(key);
     if (!entry) {
-        entry = fetch(`/api/mesh2/${key}`)
+        entry = fetch(`/api/mesh3/${key}`)
             .then((response) => (response.ok ? response.arrayBuffer() : null))
             .then((buffer) => (buffer ? decode(buffer) : null))
             .catch(() => null);

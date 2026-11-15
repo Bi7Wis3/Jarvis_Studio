@@ -3,7 +3,8 @@ import websocket from '@fastify/websocket';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ActivityEntry, ClientMessage, ServerMessage } from '@jarvis/core';
+import type { ActivityEntry, ClientMessage, Part, ServerMessage } from '@jarvis/core';
+import { setBodyView, setStepHidden } from '@jarvis/core/visibility';
 import { Jarvis } from './agent.js';
 import { z } from 'zod';
 import { MAX_ASSET_BYTES, readAsset, saveAsset } from './assets.js';
@@ -18,6 +19,8 @@ import { registerMcpHttp } from './mcpHttp.js';
 import { EXPORTS_DIR } from './paths.js';
 import { PreviewRejected, runPreview } from './preview.js';
 import { ProjectStore, slug } from './store.js';
+import { SettingsStore } from './settings.js';
+import { registerSettingsRoutes } from './settingsRoutes.js';
 import { Ears } from './stt.js';
 import { callTool, createTools } from './tools.js';
 import { Voice } from './tts.js';
@@ -30,6 +33,8 @@ const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 type Socket = { send: (data: string) => void };
 
 const store = new ProjectStore();
+// Options page settings: one owner-only file in the data folder (the API key is kept there, masked to browsers).
+const settings = new SettingsStore();
 // Real geometry: OpenCascade in a worker thread builds every part; browsers fetch the meshes by key.
 const kernel = CadKernel.start();
 const meshes = new MeshService(kernel, (status) => broadcast({ type: 'meshes', ...status }));
@@ -164,6 +169,17 @@ const jarvis = new Jarvis(store, tools, {
             }
         });
     },
+}, () => settings.ai());
+model = jarvis.getModel();
+
+// Changed settings apply at once: the view's mesh quality, and the model and credentials of Jarvis's next session.
+let lastKey = settings.ai().apiKey;
+settings.subscribe((next, previous) => {
+    meshes.setQuality(next.display.meshQuality, store.get());
+    if (JSON.stringify(next.ai) !== JSON.stringify(previous.ai) || settings.ai().apiKey !== lastKey) {
+        lastKey = settings.ai().apiKey;
+        jarvis.reconfigure();
+    }
 });
 
 const catalog = (): ServerMessage => ({
@@ -181,6 +197,7 @@ function broadcastCatalog(): void {
     }
 }
 
+meshes.setQuality(settings.get().display.meshQuality, store.get());
 meshes.update(store.get());
 
 store.subscribe((project) => {
@@ -278,15 +295,18 @@ app.get('/ws', { websocket: true }, (socket) => {
                 draft.view.rollback = count === null ? null : { partId: message.partId, count };
             }, { undoable: false });
         } else if (message.type === 'hideSketch' && typeof message.partId === 'string' && typeof message.featureId === 'string') {
-            const key = `${message.partId}/${message.featureId}`;
+            // An absorbed sketch is hidden unless shown by name (visibility.ts).
             store.mutate((draft) => {
-                const hidden = new Set(draft.view.hiddenSketches ?? []);
-                if (message.hidden) {
-                    hidden.add(key);
-                } else {
-                    hidden.delete(key);
-                }
-                draft.view.hiddenSketches = [...hidden];
+                const part = draft.parts.find((p) => p.id === message.partId) ?? { id: message.partId, features: [] } as unknown as Part;
+                Object.assign(draft.view, setStepHidden(draft.view, part, message.featureId, message.hidden === true));
+            }, { undoable: false });
+        } else if (message.type === 'bodyView' && typeof message.partId === 'string' && typeof message.body === 'string') {
+            const change = {
+                ...(typeof message.hidden === 'boolean' ? { hidden: message.hidden } : {}),
+                ...(typeof message.seeThrough === 'boolean' ? { seeThrough: message.seeThrough } : {}),
+            };
+            store.mutate((draft) => {
+                Object.assign(draft.view, setBodyView(draft.view, message.partId, message.body, change));
             }, { undoable: false });
         } else if (message.type === 'hide' && typeof message.partId === 'string') {
             store.mutate((draft) => {
@@ -356,6 +376,15 @@ app.get<{ Params: { key: string } }>('/api/mesh2/:key', async (request, reply) =
         return reply.code(404).send();
     }
     // A key is a hash of the geometry, so its mesh never changes.
+    return reply.type('application/octet-stream').header('cache-control', 'public, max-age=31536000, immutable').send(mesh);
+});
+
+// mesh3: mesh2 with the solid bodies (which faces and edges each has) and cosmetic thread marks.
+app.get<{ Params: { key: string } }>('/api/mesh3/:key', async (request, reply) => {
+    const mesh = /^[a-f0-9]{24}$/.test(request.params.key) ? meshes.get3(request.params.key) : null;
+    if (!mesh) {
+        return reply.code(404).send();
+    }
     return reply.type('application/octet-stream').header('cache-control', 'public, max-age=31536000, immutable').send(mesh);
 });
 
@@ -451,6 +480,7 @@ app.get('/api/health', async () => ({
 }));
 
 registerMcpHttp(app, tools);
+registerSettingsRoutes(app, settings);
 
 await app.listen({ host: '127.0.0.1', port: PORT });
 console.log(`[server] Jarvis Studio listening on http://127.0.0.1:${PORT} (voice: ${voice.name ?? 'browser'})`);

@@ -84,6 +84,8 @@ export function shapeIcon(shape: Shape): string {
             return shape.kind;
         case 'capsule':
             return 'cylinder';
+        case 'wedge':
+            return 'wedge';
         case 'lathe':
             return 'revolve';
         case 'script':
@@ -302,6 +304,8 @@ export function shapeSummary(shape: Shape): string {
             return `Cone ⌀${mm(shape.radius * 2)} × ${mm(shape.height)}`;
         case 'capsule':
             return `Capsule ⌀${mm(shape.radius * 2)} × ${mm(shape.length)}`;
+        case 'wedge':
+            return `Wedge ${shape.size.map(mm).join(' × ')}`;
         case 'lathe':
             return `Lathe · ${shape.profile.length} points`;
         case 'extrude':

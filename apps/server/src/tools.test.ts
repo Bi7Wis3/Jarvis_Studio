@@ -248,6 +248,8 @@ describe('tool schemas', () => {
             { kind: 'cone', radius: 5, height: 10 },
             { kind: 'capsule', radius: 5, length: 10 },
             { kind: 'lathe', profile: [[0, 0], [5, 2], [3, 8]] },
+            { kind: 'wedge', size: [10, 5, 8] },
+            { kind: 'tube', outerRadius: 5, innerRadius: 4, height: 10, bevel: 0 },
         ];
         const parts = shapes.map((shape, i) => ({
             name: `Part ${i}`,

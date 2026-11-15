@@ -13,6 +13,7 @@ import {
 } from './sketchModel';
 import { setModelPicking } from './sketchModelPick';
 import { useStudio } from './state';
+import { hiddenStepsNow } from './stepVisibility';
 import { pierceCurves } from './sketchPierce';
 
 type Mode = 'convert' | 'section' | 'silhouette' | 'pierce';
@@ -32,8 +33,8 @@ function sketchCurves(): SourcedCurve[] {
     if (!target) {
         return [];
     }
-    const hidden = (useStudio.getState().project?.view.hiddenSketches ?? []).filter((key) => key.startsWith(`${target.partId}/`));
-    return otherSketchCurves(s.context, target.frame, (id) => hidden.includes(`${target.partId}/${id}`));
+    const hidden = hiddenStepsNow();
+    return otherSketchCurves(s.context, target.frame, (id) => hidden.has(`${target.partId}/${id}`));
 }
 
 /** Asks the kernel when the picks or options change; the latest answer wins. */

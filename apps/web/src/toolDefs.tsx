@@ -59,6 +59,8 @@ import {
 import { derivedSketchTool, rapidSketchTool, sketchToggleTools, wholeModifyTools } from './sketchWholeTools';
 import { twoDToThreeDTools } from './sketch2d3dForms';
 import { askDiscard } from './sketchBar';
+import { primitiveEditor, primitiveFeatureTools } from './primitiveToolDefs';
+import { hiddenStepsNow } from './stepVisibility';
 
 export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
@@ -1597,7 +1599,7 @@ const sketchModeTools: ToolDef[] = [
         id: 'sk-select',
         label: 'Select',
         icon: 'select',
-        hint: 'select, drag, edit dimensions',
+        hint: 'select, drag, edit dimensions; Alt + click picks the piece of a curve between crossings',
         shortcut: 'V',
         instant: () => setTool('select'),
         active: (_, s) => s.sketchTool === 'select',
@@ -2482,7 +2484,7 @@ const sketchVisibilityTool: ToolDef = {
     width: 280,
     top: (_, ctx) => {
         const part = ctx.part!;
-        const hidden = new Set(useStudio.getState().history?.view.hiddenSketches ?? []);
+        const hidden = hiddenStepsNow();
         const steps = sketchSteps(part);
         if (!steps.length) {
             return <p className="tb-note">This part has no sketches.</p>;
@@ -2614,8 +2616,8 @@ export const noEditTool: ToolDef = {
 };
 
 export const PART_GROUPS: ToolGroup[] = [
-    { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: [...sketchStartTools, derivedSketchTool, rapidSketchTool] },
-    { id: 'solid', label: 'Solid', icon: 'extrude', collapse: 4, tools: solidTools },
+    { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: [...sketchStartTools, ...primitiveFeatureTools, derivedSketchTool, rapidSketchTool] },
+    { id: 'solid', label: 'Features', icon: 'extrude', collapse: 4, tools: solidTools },
     { id: 'reference', label: 'Reference geometry', short: 'Planes', icon: 'ref-plane', collapse: 2, tools: referenceTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [linearPatternTool, circularPatternTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
@@ -2629,13 +2631,16 @@ export const PART_GROUPS: ToolGroup[] = [
 const SKETCH_ALWAYS = ['sk-select', 'sk-finish', 'sk-cancel'];
 const SKETCH_SETUP = ['sk-options', 'sk-snaps'];
 const sketchTools = (ids: string[]) => ids.flatMap((id) => sketchModeTools.filter((t) => t.id === id));
+/** The Dimensions toolbar takes the dimension tools (Tools > Dimensions in SolidWorks); the rest are on Relations. */
+const isDimensionTool = (t: ToolDef): boolean => t.id === 'sk-dimension' || t.id.startsWith('sk-dim-') || t.id === 'sk-fully-define';
 
 export const SKETCH_GROUPS: ToolGroup[] = [
     { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchTools(SKETCH_ALWAYS) },
     { id: 'draw', label: 'Draw', icon: 'line', collapse: 4,
         tools: sketchModeTools.filter((t) => !SKETCH_ALWAYS.includes(t.id) && !SKETCH_SETUP.includes(t.id)) },
     { id: 'modify', label: 'Modify', icon: 'trim', collapse: 2, tools: modifyTools },
-    { id: 'constrain', label: 'Dimensions and relations', short: 'Relations', icon: 'dimension', collapse: 3, tools: constrainTools },
+    { id: 'dimensions', label: 'Dimensions', icon: 'dimension', collapse: 3.5, tools: constrainTools.filter(isDimensionTool) },
+    { id: 'relations', label: 'Relations', icon: 'c-coincident', collapse: 3, tools: constrainTools.filter((t) => !isDimensionTool(t)) },
     { id: 'view', label: 'View and snaps', short: 'View', icon: 'views', collapse: 1,
         tools: [viewsTool, fitTool, perspectiveTool, othersTool, ...sketchTools(SKETCH_SETUP), ...sketchToggleTools, rapidSketchTool] },
     { id: '2d-to-3d', label: '2D to 3D', short: '2D to 3D', icon: 'add-front', collapse: 0, tools: twoDToThreeDTools },
@@ -2643,7 +2648,7 @@ export const SKETCH_GROUPS: ToolGroup[] = [
 ];
 
 export const ASSEMBLY_GROUPS: ToolGroup[] = [
-    { id: 'insert', label: 'Insert', icon: 'box', collapse: 3, tools: [...primitiveTools, fastener, newPartTool] },
+    { id: 'insert', label: 'Insert', icon: 'box', collapse: 3, tools: [fastener, newPartTool] },
     { id: 'transform', label: 'Transform', icon: 'move', collapse: 4, tools: transformTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool, explodeTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
@@ -2688,6 +2693,10 @@ export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketc
     }
     if (feature ? feature.op === 'extrude' || feature.op === 'revolve' || feature.op === 'sketch' : part.shape.kind === 'sketch') {
         return 'sketch';
+    }
+    const primitive = primitiveEditor(feature);
+    if (primitive) {
+        return primitive;
     }
     if (feature) {
         const tool = Object.values(featureTools).find((t) => t.op === feature.op);

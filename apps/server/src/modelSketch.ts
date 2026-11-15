@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import { DEFAULT_PRINT, effectivePart, type Project } from '@jarvis/core';
 import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projection';
+import { viewPart } from '@jarvis/core/visibility';
 import { combineContext, type CadKernel } from './cad/kernel.js';
 
 const vec = z.tuple([z.number(), z.number(), z.number()]);
@@ -35,7 +36,8 @@ export async function modelSketchRequest(project: Project, input: unknown, kerne
     if (!part) {
         return { error: `No part "${partId}".`, status: 404 };
     }
-    const design = effectivePart(part, project.parts);
+    // As the view shows it: a thread hidden there is plain (visibility.ts), quick to build and what the sketch is drawn on.
+    const design = viewPart(effectivePart(part, project.parts), part.instanceOf ?? part.id, project.view);
     const before = { shape: design.shape, features: (design.features ?? []).slice(0, steps) };
     try {
         const model = await kernel.project(before, project.print ?? DEFAULT_PRINT, frame as PlaneFrame3, query as ModelQuery,

@@ -13,26 +13,39 @@ function sketchOf(f: Feature): Sketch | null {
     return sketch ?? null;
 }
 
+/** Another part's sketches, seen from the part being sketched (in the assembly). */
+export interface PartSketches {
+    /** Put before the ids, to keep them apart from this part's own. */
+    prefix: string;
+    features: Feature[];
+    /** A point of that part's frame in the frame of the part being sketched. */
+    place: (p: V3) => V3;
+    skip: (id: string) => boolean;
+}
+
 /**
  * The points and curves of the sketches in `features`, projected straight onto the plane being sketched on, in its
  * (u, v). Nothing here belongs to the sketch: it is only snapped to. A line projects to a line on any plane; a
  * circle or arc keeps its shape only on a parallel plane (on a tilted one it would be an ellipse), so there only
- * its centre and end points are kept. `skip` leaves a step out (a hidden sketch).
+ * its centre and end points are kept. `skip` leaves a step out (a hidden sketch). `others`: other parts' sketches
+ * too (the assembly's shown ones).
  */
-export function otherSketches(features: Feature[], plane: SketchPlane, offset: number, skip: (id: string) => boolean = () => false): SketchGeometry {
+export function otherSketches(features: Feature[], plane: SketchPlane, offset: number, skip: (id: string) => boolean = () => false,
+    others: PartSketches[] = []): SketchGeometry {
     const here = planeFrame(plane, offset, features);
     const points: SketchPoint[] = [];
     const curves: SketchCurve[] = [];
-    features.forEach((f, index) => {
-        const sketch = f.suppressed || skip(f.id) ? null : sketchOf(f);
+    const add = (steps: Feature[], leave: (id: string) => boolean, prefix: string, place: ((p: V3) => V3) | null) => steps.forEach((f, index) => {
+        const sketch = f.suppressed || leave(f.id) ? null : sketchOf(f);
         if (!sketch) {
             return;
         }
-        const there = planeFrame(sketch.plane, sketch.offset ?? 0, features.slice(0, index));
+        const own = planeFrame(sketch.plane, sketch.offset ?? 0, steps.slice(0, index));
+        const there = place ? placedFrame(own, place) : own;
         const facing = dot(here.n, there.n);
         const parallel = Math.abs(facing) > 1 - 1e-9;
         const g = sketch.geometry ?? profilesToGeometry(sketch.profiles);
-        const id = (local: string) => `${f.id}/${local}`;
+        const id = (local: string) => `${prefix}${f.id}/${local}`;
         const project = (u: number, v: number): [number, number] => {
             const rel: V3 = [0, 1, 2].map((i) => there.origin[i] + there.u[i] * u + there.v[i] * v - here.origin[i]) as V3;
             return [dot(rel, here.u), dot(rel, here.v)];
@@ -60,5 +73,21 @@ export function otherSketches(features: Feature[], plane: SketchPlane, offset: n
             }
         }
     });
+    add(features, skip, '', null);
+    for (const o of others) {
+        add(o.features, o.skip, o.prefix, o.place);
+    }
     return { points, curves, constraints: [] };
+}
+
+type Frame = { origin: V3; u: V3; v: V3; n: V3 };
+
+/** A plane frame of another part, moved into the frame of the part being sketched (a rigid move). */
+function placedFrame(frame: Frame, place: (p: V3) => V3): Frame {
+    const origin = place(frame.origin);
+    const along = (d: V3): V3 => {
+        const q = place([frame.origin[0] + d[0], frame.origin[1] + d[1], frame.origin[2] + d[2]]);
+        return [q[0] - origin[0], q[1] - origin[1], q[2] - origin[2]];
+    };
+    return { origin, u: along(frame.u), v: along(frame.v), n: along(frame.n) };
 }

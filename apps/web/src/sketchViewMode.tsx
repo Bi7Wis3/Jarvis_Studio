@@ -7,13 +7,21 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { anim } from './anim';
 import { useSketcher } from './sketcher';
 import { useStudio } from './state';
+import { useOptions } from './options';
 
 /** True while a sketch is open on its plane (not while its plane is being picked). */
 export const useSketchView = (): boolean => useSketcher((s) => s.active && s.stage === 'draw');
 
-/** The canvas settings that change with it. */
-export function sketchCanvas(plain: boolean): { frameloop: 'always' | 'demand'; dpr: number | [number, number] } {
-    return plain ? { frameloop: 'demand', dpr: 1 } : { frameloop: 'always', dpr: [1, 2] };
+/** True while the view is drawn plainly: a sketch is open and Options > Display > Sketch view quality is Fast. */
+export const usePlainSketchView = (): boolean => {
+    const sketching = useSketchView();
+    const fast = useOptions((s) => s.settings.display.sketchQuality === 'fast');
+    return sketching && fast;
+};
+
+/** The canvas settings that change with it; `pixelRatio` is the largest the full view draws at (Options > Display). */
+export function sketchCanvas(plain: boolean, pixelRatio = 2): { frameloop: 'always' | 'demand'; dpr: number | [number, number] } {
+    return plain ? { frameloop: 'demand', dpr: 1 } : { frameloop: 'always', dpr: [Math.min(1, pixelRatio), pixelRatio] };
 }
 
 /**

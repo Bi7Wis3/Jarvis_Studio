@@ -8,10 +8,11 @@ import type { Feature, Part, SketchPlaneName } from '@jarvis/core';
 import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { Icon } from './icons';
 import { ContextMenu, InlineInput, showError, tool, type MenuEntry } from './menus';
-import { editItem, runTool, setRollback, setSketchHidden, setWorkspace, useStudio } from './state';
+import { editItem, runTool, setBodyView, setRollback, setSketchHidden, setWorkspace, useStudio } from './state';
 import { editSketchPlane } from './sketchPlaneEdit';
 import { derivedEntries } from './sketchWholeTools';
 import { deletionIds, dependants, suppressUpdates, unsuppressUpdates } from './historyOps';
+import { confirmDeletes } from './options';
 import {
     errorText, failingFeature, featureIcon, featureName, featureSummary, shapeIcon, shapeSummary, sketchEdits, REFERENCE_OPS, stepRefs,
     stepUsers,
@@ -29,6 +30,9 @@ import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil
 import { basePlaneEntries, featureStepExtras, referenceStepEntries, sketchStepEntries } from './contextMenus';
 import { appActions, menuContext } from './viewMenu';
 import { treeClipboardKey } from './sketchPasteSketch';
+import { useHiddenSteps } from './stepVisibility';
+import { bodiesLabel, bodyRows, pickBody, type BodyRow } from './bodyView';
+import { useKernelMesh } from './meshes';
 
 /** Stands for "no expand state saved yet" for a part. */
 const UNSAVED = '\u0000';
@@ -39,6 +43,8 @@ const MATERIAL = '__material';
 const ORIGIN = '__origin';
 const HISTORY = '__history';
 const RECENT = '__recent:';
+const BODIES = '__bodies';
+const SOLID = '__solid:';
 
 
 /** Tree geometry in px: left padding, width of one indent column; the box and lines sit at a column's centre. */
@@ -123,6 +129,8 @@ type Entry =
     | { kind: 'recent'; key: string; depth: 2; stepId: string | null }
     | { kind: 'fixed'; key: string; depth: 1; label: string; icon: ReactNode; plane?: SketchPlaneName; title?: string }
     | { kind: 'body'; key: string; depth: 1 }
+    | { kind: 'bodies'; key: string; depth: 1 }
+    | { kind: 'solid'; key: string; depth: 2; row: BodyRow }
     | { kind: 'node'; key: string; depth: number; node: TreeNode }
     | { kind: 'gap'; key: string; gap: number };
 
@@ -131,7 +139,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     const rollback = useStudio((s) => s.history?.view.rollback ?? null);
     const error = useStudio((s) => s.meshes.errors[part.id]);
     const editing = useStudio((s) => s.editing);
-    const hiddenRefs = useStudio((s) => s.history?.view.hiddenSketches ?? NONE);
+    // Steps hidden in the view: one by one, and absorbed sketches not shown (stepVisibility.ts).
+    const hiddenSteps = useHiddenSteps();
     const features = useMemo(() => part.features ?? [], [part.features]);
     const tree = useMemo(() => buildFeatureTree(features), [features]);
     const byId = useMemo(() => new Map(features.map((f) => [f.id, f])), [features]);
@@ -176,6 +185,14 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     const solverLoaded = useSolverLoaded();
     const recent = useMemo(() => recentSteps(part.id, features), [part.id, features]).filter((id) => byId.has(id));
     const sketchEdit = useSketcher((s) => (s.active ? s.edit : null));
+    // The Solid Bodies folder: the bodies of the part's mesh as the kernel reports them (bodyView.tsx).
+    const kernel = useKernelMesh(part.id);
+    const hiddenBodies = useStudio((s) => s.history?.view.hiddenBodies);
+    const seeThroughBodies = useStudio((s) => s.history?.view.seeThroughBodies);
+    const bodies = useMemo(() => bodyRows(kernel?.bodies ?? [], features, part.id, { hiddenBodies, seeThroughBodies }),
+        [kernel, features, part.id, hiddenBodies, seeThroughBodies]);
+    const bodiesKey = `${STORAGE_KEY}.bodies.${part.id}`;
+    const [bodiesOpen, setBodiesOpen] = useState(() => load(bodiesKey, 'open') !== 'closed');
 
     useEffect(() => {
         if (scrollTo.current) {
@@ -189,6 +206,11 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             setPreview(null);
         }
     }, [count]);
+
+    useEffect(() => {
+        pickBody(current?.startsWith(SOLID) ? part.id : null, current?.startsWith(SOLID) ? current.slice(SOLID.length) : null);
+    }, [current, part.id]);
+    useEffect(() => () => pickBody(null, null), []);
 
     const shownCount = preview ?? count;
     // While a step (or its sketch) is edited, the steps after it are greyed like rolled-back ones.
@@ -211,6 +233,9 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         if (key === ROOT) {
             setRootOpen(open);
             store(rootKey, open ? 'open' : 'closed');
+        } else if (key === BODIES) {
+            setBodiesOpen(open);
+            store(bodiesKey, open ? 'open' : 'closed');
         } else if (expanded.has(key) !== open) {
             const next = new Set(expanded);
             if (open) {
@@ -221,7 +246,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             saveExpanded(next);
         }
     };
-    const isOpen = (key: string) => filtering || (key === ROOT ? rootOpen : expanded.has(key));
+    const isOpen = (key: string) => filtering || (key === ROOT ? rootOpen : key === BODIES ? bodiesOpen : expanded.has(key));
 
     // ---- Visible lines ----
 
@@ -232,6 +257,15 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             if (isOpen(HISTORY)) {
                 entries.push(...(recent.length ? recent : [null])
                     .map((id): Entry => ({ kind: 'recent', key: `${RECENT}${id ?? ''}`, depth: 2, stepId: id })));
+            }
+        }
+        // Solid Bodies (SolidWorks lists it above Material): each body, named after the step that changed it last.
+        const bodyMatches = bodies.filter((b) => !query || b.name.toLowerCase().includes(query));
+        if (bodies.length && (!query || bodyMatches.length || 'solid bodies'.includes(query))) {
+            entries.push({ kind: 'bodies', key: BODIES, depth: 1 });
+            if (isOpen(BODIES)) {
+                entries.push(...(query && bodyMatches.length ? bodyMatches : bodies)
+                    .map((row): Entry => ({ kind: 'solid', key: `${SOLID}${row.key}`, depth: 2, row })));
             }
         }
         const material = materialText(part);
@@ -307,7 +341,12 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     // The confirm row lists the steps built on it, which go with it (SolidWorks: Delete child features).
     const askDelete = (node: TreeNode) => {
         if (node.stepId && byId.has(node.stepId)) {
-            setConfirming(node.key);
+            // Options > General > Confirmations: without asking, Delete does what the confirm row's Delete does.
+            if (confirmDeletes()) {
+                setConfirming(node.key);
+            } else {
+                remove(deletionIds(features, node.stepId, false));
+            }
         }
     };
     /** Suppress cascades to the steps built on it; unsuppress brings back the steps it needs, and on request its children. */
@@ -345,7 +384,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     /** Opens the Material form for this part (the toolbar owns the form). */
     const editMaterial = () => window.dispatchEvent(new CustomEvent('jarvis:open-tool', { detail: 'material' }));
     const activate = (key: string) => {
-        if (key === ROOT || key === HISTORY) {
+        if (key === ROOT || key === HISTORY || key === BODIES) {
             setOpen(key, !isOpen(key));
         } else if (key.startsWith(RECENT)) {
             if (key !== RECENT) {
@@ -378,6 +417,15 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                 : featureStepExtras(appActions);
         return more.length ? ['separator', ...more] : [];
     };
+    /** A thread hidden in the view is shown plain with a cosmetic thread; exports keep the modelled thread. */
+    const threadEntry = (feature: Feature): MenuEntry => {
+        const hidden = hiddenSteps.has(`${part.id}/${feature.id}`);
+        return {
+            label: hidden ? 'Show modelled thread' : 'Show as cosmetic thread',
+            title: hidden ? undefined : 'The hole or shaft is shown plain with thread marks and is quicker to rebuild; exports keep the thread',
+            onSelect: () => setSketchHidden(part.id, feature.id, !hidden),
+        };
+    };
     const nodeMenu = (node: TreeNode): MenuEntry[] => {
         const feature = node.stepId ? byId.get(node.stepId) : undefined;
         if (!feature) {
@@ -408,6 +456,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     disabled: !dependants(features, feature.id).some((f) => f.suppressed),
                 },
             ] : [{ label: 'Suppress', onSelect: () => suppress(feature, true) }]),
+            ...(feature.op === 'thread' ? [threadEntry(feature)] : []),
             ...sharedEntries(feature),
             'separator',
             ...rollEntries(node.index),
@@ -432,6 +481,16 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                 return rootMenu;
             case 'body':
                 return [{ label: 'Edit body', onSelect: () => editItem(part.id, null) }];
+            case 'bodies':
+                return [
+                    { label: 'Show all bodies', onSelect: () => bodies.filter((b) => b.hidden).forEach((b) => setBodyView(part.id, b.key, { hidden: false })), disabled: !bodies.some((b) => b.hidden) },
+                    { label: 'Make all opaque', onSelect: () => bodies.filter((b) => b.seeThrough).forEach((b) => setBodyView(part.id, b.key, { seeThrough: false })), disabled: !bodies.some((b) => b.seeThrough) },
+                ];
+            case 'solid':
+                return [
+                    { label: entry.row.hidden ? 'Show body' : 'Hide body', onSelect: () => setBodyView(part.id, entry.row.key, { hidden: !entry.row.hidden }) },
+                    { label: entry.row.seeThrough ? 'Make opaque' : 'Make see-through', onSelect: () => setBodyView(part.id, entry.row.key, { seeThrough: !entry.row.seeThrough }) },
+                ];
             case 'fixed':
                 return entry.plane ? [{ label: 'Sketch on this plane', onSelect: () => sketchOn(entry.plane!) }, ...basePlaneEntries(part, entry.plane, appActions)]
                     : entry.key === MATERIAL ? [{ label: 'Edit material', hint: 'double-click', onSelect: editMaterial }] : [];
@@ -464,7 +523,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         }
         const at = current ? keys.indexOf(current) : -1;
         const node = nodeOf(current);
-        const hasChildren = current === ROOT || current === HISTORY || !!node?.children.length;
+        const hasChildren = current === ROOT || current === HISTORY || current === BODIES || !!node?.children.length;
         switch (event.key) {
             case 'ArrowDown':
                 choose(keys[at < 0 ? 0 : Math.min(at + 1, keys.length - 1)]);
@@ -490,6 +549,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     setOpen(current, false);
                 } else if (current?.startsWith(RECENT)) {
                     choose(HISTORY);
+                } else if (current?.startsWith(SOLID)) {
+                    choose(BODIES);
                 } else if (node?.parentId) {
                     choose(node.parentId);
                 } else if (current && current !== ROOT) {
@@ -819,6 +880,65 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                         <span className="ft-name">{entry.label}</span>
                     </li>
                 );
+            case 'bodies':
+                return (
+                    <li
+                        key={entry.key}
+                        {...rowProps(entry)}
+                        className={`ft-row folder ${current === BODIES ? 'current' : ''}`}
+                        aria-expanded={isOpen(BODIES)}
+                        title="The part's solid bodies, each named after the step that changed it last"
+                    >
+                        {lead(i, entry, true)}
+                        <span className="ft-icon"><StepIcon name="bodies" /></span>
+                        <span className="ft-name">{bodiesLabel(bodies.length)}</span>
+                    </li>
+                );
+            case 'solid': {
+                const { row } = entry;
+                return (
+                    <li
+                        key={entry.key}
+                        {...rowProps(entry)}
+                        className={`ft-row solid ${current === entry.key ? 'current' : ''} ${row.hidden ? 'hidden' : ''}`}
+                        title={`${row.name}${row.hidden ? ' · hidden' : ''}${row.seeThrough ? ' · see-through' : ''}: click to highlight it in the view`}
+                    >
+                        {lead(i, entry, false)}
+                        <span className="ft-icon"><StepIcon name="solid-body" /></span>
+                        <span className="ft-name">{row.name}</span>
+                        <button
+                            type="button"
+                            className={`ft-see ${row.seeThrough ? 'on' : ''}`}
+                            onClick={(e) => { e.stopPropagation(); setBodyView(part.id, row.key, { seeThrough: !row.seeThrough }); }}
+                            onDoubleClick={(e) => e.stopPropagation()}
+                            title={row.seeThrough ? 'Make opaque' : 'Make see-through'}
+                            aria-label={`${row.seeThrough ? 'Make opaque' : 'Make see-through'}: ${row.name}`}
+                            aria-pressed={row.seeThrough}
+                            tabIndex={-1}
+                        >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                                <rect x="3" y="3" width="18" height="18" rx="2" />
+                                <path d="M3 21L21 3V21z" fill="currentColor" fillOpacity={row.seeThrough ? 0.15 : 0.6} stroke="none" />
+                            </svg>
+                        </button>
+                        <button
+                            type="button"
+                            className={`ft-eye ${row.hidden ? 'off' : ''}`}
+                            onClick={(e) => { e.stopPropagation(); setBodyView(part.id, row.key, { hidden: !row.hidden }); }}
+                            onDoubleClick={(e) => e.stopPropagation()}
+                            title={row.hidden ? 'Show the body' : 'Hide the body'}
+                            aria-label={`${row.hidden ? 'Show' : 'Hide'} ${row.name}`}
+                            tabIndex={-1}
+                        >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                                <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
+                                <circle cx="12" cy="12" r="3" />
+                                {row.hidden && <path d="M3 3l18 18" />}
+                            </svg>
+                        </button>
+                    </li>
+                );
+            }
             case 'body':
                 return (
                     <li
@@ -887,8 +1007,9 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                         </li>
                     );
                 }
-                const hideable = feature && (feature.op === 'sketch' || REFERENCE_OPS.has(feature.op));
-                const visible = !hiddenRefs.includes(`${part.id}/${node.stepId}`);
+                // A hidden thread is drawn plainly with cosmetic marks, and is not modelled for the view.
+                const hideable = feature && (feature.op === 'sketch' || feature.op === 'thread' || REFERENCE_OPS.has(feature.op));
+                const visible = !hiddenSteps.has(`${part.id}/${node.stepId}`);
                 const draggable = !nested && !filtering && renaming !== node.key;
                 const classes = [
                     'ft-row',
@@ -898,6 +1019,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     suppressed ? 'suppressed' : '',
                     isRolled(node, greyCount) ? 'rolled' : '',
                     current === node.key ? 'current' : '',
+                    hideable && !visible ? 'hidden' : '',
                     node.stepId && editTarget === node.stepId ? 'editing' : '',
                     failed ? 'failed' : '',
                     dragKey === node.key ? 'dragged' : '',
@@ -940,7 +1062,9 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                                 className={`ft-eye ${visible ? '' : 'off'}`}
                                 onClick={(e) => { e.stopPropagation(); setSketchHidden(part.id, feature.id, visible); }}
                                 onDoubleClick={(e) => e.stopPropagation()}
-                                title={visible ? 'Hide in the viewport' : 'Show in the viewport'}
+                                title={feature.op === 'thread'
+                                    ? (visible ? 'Hide the thread: show the hole or shaft plain with a cosmetic thread (exports keep the thread)' : 'Show the modelled thread')
+                                    : visible ? 'Hide in the viewport' : 'Show in the viewport'}
                                 aria-label={`${visible ? 'Hide' : 'Show'} ${featureName(feature)}`}
                                 tabIndex={-1}
                             >

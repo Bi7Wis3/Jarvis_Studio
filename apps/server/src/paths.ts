@@ -8,3 +8,5 @@ export const PIPER_PYTHON = join(ROOT, '.venv', 'bin', 'python');
 export const EXPORTS_DIR = join(PROJECTS_DIR, 'exports');
 /** Images used by decals and reference pictures, named by a hash of their content. */
 export const ASSETS_DIR = join(PROJECTS_DIR, 'assets');
+/** The studio's settings (the Options page), API key included: one file, readable by the owner only. */
+export const SETTINGS_FILE = process.env.JARVIS_SETTINGS_FILE ?? join(PROJECTS_DIR, '.studio', 'settings.json');

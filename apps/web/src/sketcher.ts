@@ -35,6 +35,8 @@ import { collapsedCurves, unmetConstraints } from './sketchCheck';
 import { dist, mid, PICKED, planeForFace, planeFrame, round, type NewEntity, type Pt } from './sketchMath';
 import { snapCursor, type QuickSnap, type Snap, type SnapKind } from './snapping';
 import { otherSketches } from './sketchOthers';
+import { hiddenStepsNow } from './stepVisibility';
+import { assemblySketches } from './sketchAssemblySnaps';
 import { bringModelRef, loadedModel, mergeSnapGeometry, modelRefAt, modelRefEntity, modelSnapGeometry, modelTarget, useSketchModel, type ModelRef } from './sketchModel';
 import {
     DEFAULT_DRAW_OPTIONS, LINE_ARC_IDLE, finishDrawn, lineArcMove, placeVariant, type DrawOptions, type LineArc,
@@ -45,6 +47,7 @@ import { overDefines, setDriven } from './sketchDimensions';
 import { moreDimensionAnchor } from './sketchDimDraw';
 import { replaceEntity } from './sketchRelationEdit';
 import { loadSketchSettings, saveSketchSettings, type SketchSettings } from './sketchSettings';
+import { savedFinishOptions } from './options';
 import { fullyDefineWith, type FullyDefineOptions } from './sketchFullyDefine';
 import { finishSpline, finishStyleSpline, insertControlVertex, insertSplinePoint, placeConic, type ConicTool, type PlaceResult } from './sketchConics';
 import { afterDrawn, boxStart, dragCopyStart, moreClick, moreDown, moreEscape, moreMove, moreUp, useSketchMore, zonedTangentArc, type MoreTool } from './sketchMoreTools';
@@ -64,6 +67,7 @@ import { blockDrag, grabbedTarget } from './sketchBlocks';
 import { pathSelection } from './sketchPathModel';
 import { formForCurve } from './sketchDrawCommands';
 import { openEntityForm } from './sketchEntityOpen';
+import { deletePieces, withPieces } from './sketchPieces';
 
 export type { SnapKind } from './snapping';
 
@@ -738,6 +742,10 @@ export function redoSketch(): void {
 }
 
 export function deleteSelected(): void {
+    // Pieces of curves selected with Alt go as Trim to closest takes them (sketchPieces.ts).
+    if (deletePieces()) {
+        return;
+    }
     const { selection, geometry } = get();
     if (selection.length) {
         // A split point joins its two pieces again (sketchJoin.ts) instead of taking them with it.
@@ -759,6 +767,9 @@ export function setViewPicker(picker: typeof viewPicker): void {
 }
 
 export function toggleConstructionSelected(): void {
+    if (withPieces(toggleConstructionSelected)) {
+        return;
+    }
     const { selection, geometry } = get();
     const curves = selection.filter((s) => s.type === 'curve').map((s) => s.id);
     if (curves.length) {
@@ -771,7 +782,7 @@ export function toggleConstructionSelected(): void {
 // ---- Snapping -----------------------------------------------------------------------------------------
 
 /** The part's other sketches seen from the plane being sketched on, worked out once per sketch plane and history. */
-let othersMemo: { context: Feature[]; plane: SketchPlane; offset: number; hidden: string; g: SketchGeometry } | null = null;
+let othersMemo: { context: Feature[]; plane: SketchPlane; offset: number; hidden: ReadonlySet<string>; scene: unknown; g: SketchGeometry } | null = null;
 
 function othersToSnap(s: SketcherState): SketchGeometry | undefined {
     // The model's edges and vertices too, when the sketch setting "Snap to model geometry" is on (sketchModel.ts).
@@ -781,15 +792,19 @@ function othersToSnap(s: SketcherState): SketchGeometry | undefined {
 
 function sketchesToSnap(s: SketcherState): SketchGeometry | undefined {
     // Only what is on screen can be aimed for: the sketches shown, without the ones hidden one by one.
-    if (!s.showSketches || !s.context.length) {
+    // In the assembly, the other parts' shown sketches too (sketchAssemblySnaps.ts).
+    const studio = useStudio.getState();
+    const scene = studio.workspace === 'assembly' ? studio.project : null;
+    if (!s.showSketches || (!s.context.length && !scene)) {
         return undefined;
     }
     const partId = s.edit?.partId ?? s.partId;
-    const hidden = (useStudio.getState().project?.view.hiddenSketches ?? []).filter((key) => key.startsWith(`${partId}/`));
-    const key = hidden.join(' ');
-    if (!othersMemo || othersMemo.context !== s.context || othersMemo.plane !== s.plane || othersMemo.offset !== s.offset || othersMemo.hidden !== key) {
-        const g = otherSketches(s.context, s.plane, s.offset, (id) => hidden.includes(`${partId}/${id}`));
-        othersMemo = { context: s.context, plane: s.plane, offset: s.offset, hidden: key, g };
+    const hidden = hiddenStepsNow();
+    if (!othersMemo || othersMemo.context !== s.context || othersMemo.plane !== s.plane || othersMemo.offset !== s.offset || othersMemo.hidden !== hidden
+        || othersMemo.scene !== scene) {
+        const others = scene && partId ? assemblySketches(scene, studio.history?.parts ?? scene.parts, partId, hidden) : [];
+        const g = otherSketches(s.context, s.plane, s.offset, (id) => hidden.has(`${partId}/${id}`), others);
+        othersMemo = { context: s.context, plane: s.plane, offset: s.offset, hidden, scene, g };
     }
     return othersMemo.g;
 }
@@ -2242,6 +2257,9 @@ function bringModelUnder(raw: Pt, tolerance: number, use: 'line' | 'curve' | nul
 
 /** The constraint tool button: applies to the selection when it fits, else waits for picks in the view. */
 export function constraintTool(tool: ConstraintTool): void {
+    if (withPieces(() => constraintTool(tool))) {
+        return;
+    }
     const s = get();
     const picks = s.selection.filter((x): x is Pick => x.type !== 'constraint');
     if (tool === 'fix' && picks.length) {
@@ -2275,6 +2293,10 @@ export function setRelationPicking(on: boolean): void {
  * (Lock toggles the lock). Returns what the selection still needs when it does not fit, or null.
  */
 export function addRelationToSelection(tool: ConstraintTool): string | null {
+    const viaPieces = withPieces(() => addRelationToSelection(tool));
+    if (viaPieces) {
+        return viaPieces.result;
+    }
     const s = get();
     const picks = s.selection.filter((x): x is Pick => x.type !== 'constraint');
     if (tool === 'fix') {
@@ -3289,5 +3311,6 @@ export function finishDefaults(feature: Feature | null, base: { extrude?: { dist
     if (base?.revolve) {
         return { ...op, op: 'revolve', mode: 'new', axis: base.revolve.axis, angle: base.revolve.angle ?? 360 };
     }
-    return op;
+    // A new feature's depth, angle and end condition: the saved defaults of Extrude, Cut and Revolve (Options).
+    return { ...op, ...savedFinishOptions(s.intent) };
 }

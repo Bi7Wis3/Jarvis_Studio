@@ -64,13 +64,16 @@ function dimension(picks: [number, number][], place: [number, number], value: st
     applyDimension();
 }
 
-describe('the Dimensions and relations group', () => {
-    it('lists the relation and dimension tools', () => {
-        expect(groupTools('constrain').map((t) => t.id)).toEqual([
-            'sk-dimension', 'sk-c-coincident', 'sk-c-merge', 'sk-c-horizontal', 'sk-c-vertical', 'sk-c-collinear', 'sk-c-parallel',
+describe('the Dimensions and Relations toolbars', () => {
+    it('list the dimension tools and the relation tools', () => {
+        expect(groupTools('dimensions').map((t) => t.id)).toEqual([
+            'sk-dimension', 'sk-dim-horizontal', 'sk-dim-vertical', 'sk-dim-ordinate', 'sk-dim-ordinate-v', 'sk-dim-path',
+            'sk-dim-ordinate-auto', 'sk-dim-running', 'sk-fully-define',
+        ]);
+        expect(groupTools('relations').map((t) => t.id)).toEqual([
+            'sk-c-coincident', 'sk-c-merge', 'sk-c-horizontal', 'sk-c-vertical', 'sk-c-collinear', 'sk-c-parallel',
             'sk-c-perpendicular', 'sk-c-tangent', 'sk-c-concentric', 'sk-c-coradial', 'sk-c-equal', 'sk-c-midpoint', 'sk-c-symmetric',
-            'sk-c-fix', 'sk-construction', 'sk-dim-horizontal', 'sk-dim-vertical', 'sk-dim-ordinate', 'sk-dim-ordinate-v', 'sk-dim-path',
-            'sk-dim-ordinate-auto', 'sk-dim-running', 'sk-c-intersection', 'sk-c-equalSlots', 'sk-c-fixSlot', 'sk-add-relation', 'sk-sketchxpert', 'sk-relations', 'sk-fully-define',
+            'sk-c-fix', 'sk-construction', 'sk-c-intersection', 'sk-c-equalSlots', 'sk-c-fixSlot', 'sk-add-relation', 'sk-sketchxpert', 'sk-relations',
         ]);
     });
 });

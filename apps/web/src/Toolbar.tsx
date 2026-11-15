@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import type { Feature } from '@jarvis/core';
 import { Icon } from './icons';
-import { showError } from './menus';
-import { familyOf, toolbarItems, type ToolFamily } from './toolFamilies';
+import { ContextMenu, showError } from './menus';
+import { familyOf, type ToolFamily } from './toolFamilies';
 import { clearEditing, clearPicked, runTool, select, setRollback, setWorkspace, useStudio } from './state';
 import {
     closeSketch, deleteSelected, enterKey, fitSketch, redoSketch, setTool, toggleConstructionSelected, sketchEscape, startSketch, toggleLineArc, typeKey,
@@ -13,7 +13,7 @@ import {
     type SketchTool,
 } from './sketcher';
 import {
-    ALL_TOOLS, ASSEMBLY_GROUPS, PART_GROUPS, SKETCH_GROUPS, VIEWS, discardSketch, editorFor, finishNeedsPanel, finishTool, fitView, setView,
+    ALL_TOOLS, VIEWS, discardSketch, editorFor, finishNeedsPanel, finishTool, fitView, setView,
     sketchPlaneTool,
     type Ctx, type ToolDef, type ToolGroup, type UiSettings,
 } from './toolDefs';
@@ -25,14 +25,13 @@ import { openSketchXpert } from './sketchXpertAuto';
 import { useSketchToggles } from './sketchToggles';
 import { lastSketchCommand, noteSketchCommand } from './sketchRepeat';
 import { confirmDiscard, isSketchForm, keepSketch, sketchPlaneText, sketchStatusText, useDiscardAsk } from './sketchBar';
+import { arrangedItems, arrangeToolbars, ICON_SIZES, toolbarWidth, withOption, type ArrangedToolbar } from './toolbarLayout';
+import { setToolbarPrefs, useToolbarArrangement } from './toolbarStore';
+import { modeGroups, toolbarOptionsTool } from './toolbarOptions';
 
-// Estimated widths matching the CSS, used to decide which groups collapse into menus.
-const BUTTON_W = 28;
-const BUTTON_GAP = 2;
+// Estimated widths matching the CSS, used to decide which groups collapse into menus (buttons: toolbarLayout.ts).
 const GROUP_PAD = 9;
 const MENU_W = 38;
-/** A family button: the tool in use plus the narrow arrow that opens its variants. */
-const FAMILY_W = 40;
 const FAMILY_KEY = 'jarvis.toolbar.families';
 // A collapsed group's name beside its icon: gap, then about this much per letter.
 const LABEL_GAP = 5;
@@ -67,12 +66,8 @@ function tip(tool: ToolDef, part: boolean): string {
     return `${tool.label}${tool.hint ? ` · ${tool.hint}` : ''}${tool.shortcut ? ` (${tool.shortcut})` : ''}`;
 }
 
-function groupWidth(group: ToolGroup, collapsed: boolean): number {
-    if (collapsed) {
-        return MENU_W + GROUP_PAD;
-    }
-    const items = toolbarItems(group.tools);
-    return items.reduce((sum, item) => sum + ('family' in item ? FAMILY_W : BUTTON_W), 0) + (items.length - 1) * BUTTON_GAP + GROUP_PAD;
+function groupWidth(group: ArrangedToolbar, collapsed: boolean): number {
+    return collapsed ? MENU_W + GROUP_PAD : toolbarWidth(group);
 }
 
 /** The free band for the toolbar between the title and the activity panel. */
@@ -95,7 +90,7 @@ function measureRoom(): { room: number; centre: number } {
 }
 
 /** Collapses groups into menus, lowest priority first, until the toolbar fits. */
-function computeLayout(groups: ToolGroup[], room: number, reserved = 0): Layout {
+function computeLayout(groups: ArrangedToolbar[], room: number, reserved = 0): Layout {
     if (window.innerWidth < 760) {
         return { kind: 'hidden' };
     }
@@ -232,7 +227,7 @@ function WorkspaceSwitch() {
 }
 
 /** One line under the toolbar while sketching: what the tool expects, the plane and the profile status, and the way out. */
-function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void }) {
+function SketchBar({ centre, top, onFinish }: { centre: number; top: number; onFinish: () => void }) {
     // What the bar shows (the trim hint follows the trim mode), not the whole sketcher: pointer moves do not redraw it.
     const { active, stage, tool, plane, offset, edit, dof, message, notice, geometry, redundant, conflicting } = useSketcher(useShallow((s) => ({
         active: s.active, stage: s.stage, tool: s.tool, plane: s.plane, offset: s.offset, edit: s.edit, dof: s.dof, message: s.message,
@@ -245,7 +240,7 @@ function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void 
     }
     if (stage === 'plane') {
         return (
-            <div className="sk-bar" style={{ left: centre }}>
+            <div className="sk-bar" style={{ left: centre, top }}>
                 Choose a sketch plane, or click a flat face of the part
                 <button type="button" className="sk-exit" onClick={() => discardSketch()} title="Leave without a sketch (Esc)">Cancel</button>
             </div>
@@ -253,7 +248,7 @@ function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void 
     }
     if (asking) {
         return (
-            <div className="sk-bar" style={{ left: centre }} role="alertdialog" aria-label="Discard this sketch?">
+            <div className="sk-bar" style={{ left: centre, top }} role="alertdialog" aria-label="Discard this sketch?">
                 <b>Discard this sketch?</b>
                 <span className="sk-ask" title="What you drew or changed in it will be lost.">What you drew or changed in it will be lost.</span>
                 <button type="button" className="sk-exit" onClick={confirmDiscard} title="Leave the sketch without saving it">Discard</button>
@@ -263,7 +258,7 @@ function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void 
     }
     const hint = message ?? notice ?? sketchHint(tool);
     return (
-        <div className="sk-bar" style={{ left: centre }}>
+        <div className="sk-bar" style={{ left: centre, top }}>
             <b>{edit ? 'Editing sketch' : 'Sketch'}</b>
             <span className="sk-plane">{sketchPlaneText(plane, offset)}</span>
             <span className={message ? 'sk-message' : notice ? 'sk-notice' : ''} title={hint}>{hint}</span>
@@ -301,7 +296,12 @@ export function Toolbar() {
     // Dynamic mirror is a switch outside the sketcher's tool: its button follows it.
     useSketchMore((m) => !!m.dynamicMirror);
     const showOthers = useStudio((s) => s.partView === 'inContext');
-    const groups = sketchActive ? SKETCH_GROUPS : workspace === 'part' ? PART_GROUPS : ASSEMBLY_GROUPS;
+    // The mode's toolbars as the user arranged them (toolbarLayout.ts); hidden and emptied ones are not drawn.
+    const mode = sketchActive ? 'sketch' : workspace;
+    const arrangement = useToolbarArrangement((s) => s.arrangement);
+    const toolbars = useMemo(() => arrangeToolbars(mode, modeGroups(mode), arrangement), [mode, arrangement]);
+    const groups = useMemo(() => toolbars.filter((t) => !t.hidden && t.tools.length > 0), [toolbars]);
+    const [barMenu, setBarMenu] = useState<{ x: number; y: number } | null>(null);
     const [band, setBand] = useState(() => measureRoom());
     // The name of the part being edited sits at the end of the bar (see .tb-active).
     const activeNameWidth = workspace === 'part' && !sketchActive && ctx.part ? Math.min(140, ctx.part.name.length * 7) + 24 : 0;
@@ -319,7 +319,20 @@ export function Toolbar() {
     // Feature forms open in the property manager in the left panel, the rest in a popup under their button.
     const slot = usePropertyManager((s) => s.slot);
     const inPanel = !!popup && usesPanel(popup.tool, workspace, sketchActive);
-    const bar = useRef<HTMLDivElement>(null);
+    const bar = useRef<HTMLDivElement | null>(null);
+    // The sketch bar sits under the toolbar, which grows with large icons or text under them.
+    const [barBottom, setBarBottom] = useState(BAND_BOTTOM);
+    const barObserver = useRef<ResizeObserver | null>(null);
+    const setBar = useCallback((element: HTMLDivElement | null) => {
+        bar.current = element;
+        barObserver.current?.disconnect();
+        if (element) {
+            const measure = () => setBarBottom(Math.round(element.getBoundingClientRect().bottom));
+            barObserver.current = new ResizeObserver(measure);
+            barObserver.current.observe(element);
+            measure();
+        }
+    }, []);
     const latest = useRef({ popup, menu, ctx });
     latest.current = { popup, menu, ctx };
 
@@ -627,7 +640,7 @@ export function Toolbar() {
     }
 
     const settings: UiSettings = { grid, edges, perspective: sketchActive && sketchStage === 'draw' ? perspective.sketch : perspective.model, showOthers, sketchTool: sketchActive ? sketchTool : null };
-    const button = (tool: ToolDef) => {
+    const button = (tool: ToolDef, toolbar: ArrangedToolbar) => {
         const disabled = !!tool.soon || (!!tool.needsPart && !ctx.part);
         const on = tool.active?.(ctx, settings) ?? false;
         const openNow = popup?.tool.id === tool.id;
@@ -637,23 +650,25 @@ export function Toolbar() {
                 type="button"
                 className={`tb-btn ${on ? 'on' : ''} ${openNow ? 'open' : ''} ${tool.danger ? 'danger' : ''}`}
                 data-tool={tool.id}
-                data-tip={openNow ? undefined : tip(tool, !!ctx.part)}
+                data-tip={openNow || toolbar.tips === 'off' ? undefined
+                    : toolbar.tips === 'name' && !disabled ? tool.label : tip(tool, !!ctx.part)}
                 aria-label={tool.label}
                 aria-pressed={tool.active ? on : undefined}
                 aria-disabled={disabled}
                 onClick={(event) => open(tool, anchorOf(event.currentTarget))}
             >
-                <Icon name={tool.icon} />
+                <Icon name={tool.icon} size={ICON_SIZES[toolbar.size].icon} />
+                {toolbar.labels && <span className="tb-btn-label">{tool.label}</span>}
             </button>
         );
     };
     /** One button for a family: the variant in use (active, else last used), and an arrow that lists them all. */
-    const familyButton = (family: ToolFamily, tools: ToolDef[]) => {
+    const familyButton = (family: ToolFamily, tools: ToolDef[], toolbar: ArrangedToolbar) => {
         const key = `family:${family.id}`;
         const shown = tools.find((t) => t.active?.(ctx, settings)) ?? tools.find((t) => t.id === lastUsed[family.id]) ?? tools[0];
         return (
             <span key={key} className={`tb-family ${menu?.group === key ? 'open' : ''}`} data-family={family.id}>
-                {button(shown)}
+                {button(shown, toolbar)}
                 <button
                     type="button"
                     className="tb-more"
@@ -672,8 +687,8 @@ export function Toolbar() {
             </span>
         );
     };
-    const items = (group: ToolGroup) => toolbarItems(group.tools)
-        .map((item) => ('family' in item ? familyButton(item.family, item.tools) : button(item.tool)));
+    const items = (group: ArrangedToolbar) => arrangedItems(group)
+        .map((item) => ('family' in item ? familyButton(item.family, item.tools, group) : button(item.tool, group)));
     /** What an open menu lists: every group, one group, or the variants of one family. */
     const menuGroups = (id: string): ToolGroup[] => {
         if (id === 'all') {
@@ -683,7 +698,7 @@ export function Toolbar() {
             return groups.filter((g) => g.id === id);
         }
         for (const group of groups) {
-            for (const item of toolbarItems(group.tools)) {
+            for (const item of arrangedItems(group)) {
                 if ('family' in item && `family:${item.family.id}` === id) {
                     return [{ id, label: item.family.label, icon: item.tools[0].icon, tools: item.tools }];
                 }
@@ -722,16 +737,27 @@ export function Toolbar() {
         <>
             <div
                 className={`toolbar ${sketchActive ? 'sketching' : ''}`}
-                ref={bar}
+                ref={setBar}
                 role="toolbar"
                 aria-label="CAD tools"
                 style={{ left: band.centre }}
+                onContextMenu={(event) => {
+                    // Right-click on the toolbars: show or hide them, or customise them (as on SolidWorks' window border).
+                    event.preventDefault();
+                    setMenu(null);
+                    setBarMenu({ x: event.clientX, y: event.clientY });
+                }}
             >
                 <WorkspaceSwitch />
                 {layout.kind === 'all'
                     ? <div className="tb-group">{menuButton(null)}</div>
                     : groups.map((group) => (
-                        <div key={group.id} className={`tb-group g-${group.id}`} role="group" aria-label={group.label}>
+                        <div
+                            key={group.id}
+                            className={`tb-group g-${group.id} tb-${group.size} ${group.labels ? 'tb-labels' : ''}`}
+                            role="group"
+                            aria-label={group.label}
+                        >
                             {layout.collapsed.has(group.id) ? menuButton(group) : items(group)}
                         </div>
                     ))}
@@ -739,7 +765,27 @@ export function Toolbar() {
                     <span className="tb-active" title="Part being edited">{ctx.part.name}</span>
                 )}
             </div>
-            <SketchBar centre={band.centre} onFinish={() => openById(finishTool.id)} />
+            <SketchBar centre={band.centre} top={barBottom + 6} onFinish={() => openById(finishTool.id)} />
+            {barMenu && (
+                <ContextMenu
+                    x={barMenu.x}
+                    y={barMenu.y}
+                    onClose={() => setBarMenu(null)}
+                    items={[
+                        { header: mode === 'sketch' ? 'Sketch toolbars' : mode === 'part' ? 'Part toolbars' : 'Assembly toolbars' },
+                        ...toolbars.map((t) => ({
+                            label: t.label,
+                            checked: !t.hidden,
+                            onSelect: () => setToolbarPrefs(t.key, withOption(useToolbarArrangement.getState().arrangement[t.key], 'hidden', !t.hidden)),
+                        })),
+                        'separator',
+                        {
+                            label: 'Customize toolbars…', icon: 'toolbars', title: 'Tools, order, icon size and text of each toolbar, in the left panel',
+                            onSelect: () => open(toolbarOptionsTool, anchorOf(bar.current)),
+                        },
+                    ]}
+                />
+            )}
             {menu && (
                 <ToolMenu
                     groups={menuGroups(menu.group)}

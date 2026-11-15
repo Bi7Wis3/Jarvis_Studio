@@ -3,6 +3,7 @@ import { effectivePart, type Part } from '@jarvis/core';
 import { labelInsets } from './Labels';
 import { ContextMenu, InlineInput, showError, tool, type MenuEntry } from './menus';
 import { runTool, select, setHidden, setWorkspace, useStudio } from './state';
+import { confirmDeletes } from './options';
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
 import { PartHistory } from './FeatureTree';
 import { usePropertyManager } from './PropertyManager';
@@ -121,6 +122,15 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
     };
 
     const instancesOf = (id: string) => parts.filter((p) => p.instanceOf === id);
+    // Options > General > Confirmations: ask first, or delete at once (a design with its instances, as the row would).
+    const askRemove = (id: string) => {
+        const part = parts.find((p) => p.id === id);
+        if (confirmDeletes() || !part) {
+            setConfirming(id);
+        } else {
+            void removeParts(part.instanceOf ? [id] : [id, ...instancesOf(id).map((p) => p.id)]);
+        }
+    };
     // The view's menu asks for these by part (viewMenu.tsx).
     const request = usePartRequest();
     useEffect(() => {
@@ -128,7 +138,7 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
             setRenaming(request.rename);
         }
         if (request.remove) {
-            setConfirming(request.remove);
+            askRemove(request.remove);
         }
         if (request.rename || request.remove) {
             usePartRequest.setState({ rename: null, remove: null });
@@ -138,7 +148,7 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
     // The same menu as a right-click on the part in the view (contextMenus.tsx).
     const listActions: PartListActions = {
         rename: (part) => setRenaming(part.id),
-        remove: (part) => setConfirming(part.id),
+        remove: (part) => askRemove(part.id),
         insertInstance: (part) => {
             insertInstance(part, parts);
             setExpanded((e) => new Set(e).add(part.id));

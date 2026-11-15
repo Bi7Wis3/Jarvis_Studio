@@ -30,21 +30,21 @@ import {
 } from './thread.js';
 
 export { threadEdge } from './thread.js';
+import { toleranceFor, type MeshQuality } from './meshQuality.js';
 import {
     extrudeRange, extrudeSketch, extrudeTool, isPlainExtrude, loftSketches, pathWire, revolveSketch, sweepProfile, throughRange,
     type SketchFrame,
 } from './sketch.js';
+import {
+    baseBodies, bodyOrdinals, cosmeticMarks, isCosmetic, markCosmetic, release, solidsOf, trackBodies, type BodyRecord,
+} from './bodies.js';
 
 type P2 = [number, number];
 
-/** Angular mesh deflection in radians; the linear one scales with the part (see meshTolerance). */
-const ANGULAR_TOLERANCE = 0.2;
-
-/** Mesh tolerances for a solid: linear deflection ~0.02% of its diagonal, 0.01 to 0.2 mm. */
-export function meshTolerance(shape: Shape3D): { tolerance: number; angularTolerance: number } {
+/** Mesh tolerances for a solid at a display quality (see meshQuality.ts; normal: ~0.02% of its diagonal, 0.01 to 0.2 mm). */
+export function meshTolerance(shape: Shape3D, quality: MeshQuality = 'normal'): { tolerance: number; angularTolerance: number } {
     const [lo, hi] = shapeBounds(shape);
-    const diagonal = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]);
-    return { tolerance: Math.min(0.2, Math.max(0.01, diagonal * 0.0002)), angularTolerance: ANGULAR_TOLERANCE };
+    return toleranceFor(Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), quality);
 }
 
 const EPS = 1e-3;
@@ -574,7 +574,7 @@ export function buildShape(shape: Shape, softEdges = true): Shape3D {
             const solid = ri > 0
                 ? revolve([[ri, -h / 2], [ro, -h / 2], [ro, h / 2], [ri, h / 2]])
                 : cylinderY(ro, -h / 2, h / 2);
-            const bevel = softEdges ? Math.min(0.5, (ro - Math.max(ri, 0)) / 4, h / 4) : 0;
+            const bevel = Math.min(shape.bevel ?? (softEdges ? 0.5 : 0), (ro - Math.max(ri, 0)) / 4, h / 4);
             return soften(solid, bevel, (e) => e.geomType === 'CIRCLE');
         }
         case 'sphere':
@@ -616,6 +616,14 @@ export function buildShape(shape: Shape, softEdges = true): Shape3D {
         }
         case 'lathe':
             return lathe(shape.profile, !!shape.smooth);
+        case 'wedge': {
+            const [w, h, d] = shape.size;
+            if (!(w > 0 && h > 0 && d > 0)) {
+                throw new Error('wedge size must be positive');
+            }
+            const side = makePolygon([[-w / 2, -h / 2, -d / 2], [w / 2, -h / 2, -d / 2], [-w / 2, h / 2, -d / 2]]);
+            return asSolid(basicFaceExtrusion(side, new Vector([0, 0, d])), 'wedge');
+        }
         case 'extrude': {
             const h = shape.height;
             const outline = dedupe(shape.outline);
@@ -1098,7 +1106,8 @@ function stepTool(shape: Shape3D | null, f: Feature, state: BuildState, index: n
     switch (f.op) {
         case 'add':
         case 'cut': {
-            needBody(shape);
+            // An added shape may start the body (a primitive as the first step of an empty part).
+            if (f.op === 'cut') needBody(shape);
             // Added bodies keep the preview's soft edges; cutting tools are sharp so pockets get crisp corners.
             const tool = fuseAll(repeatCopies(place(buildShape(f.shape, f.op === 'add'), f.position, f.rotation), f.repeat));
             return { tool, mode: f.op, what: f.op };
@@ -1407,8 +1416,12 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
         case 'shell':
             return applyToBody(needBody(shape), f, state.print);
         case 'thread': {
-            const made = threadFeature(needBody(shape), f, state.print);
+            // A thread hidden in the view is only placed (as a preview places it) and marked, not built (bodies.ts).
+            const made = threadFeature(needBody(shape), f.cosmetic ? { ...f, preview: true } : f, state.print);
             made.axes.forEach((axis, i) => state.threads.set(threadKey(f.id, i), axis));
+            if (f.cosmetic) {
+                markCosmetic(made.ghosts);
+            }
             state.ghosts.push(...made.ghosts);
             state.notes.push(...made.notes.map((n) => `${f.name ?? f.id}: ${n}`));
             return made.shape;
@@ -1439,6 +1452,8 @@ export interface PartialBuild {
     followed?: Record<string, Feature>;
     /** What a tool form should say about the steps, named (a thread cut to the length of its hole). */
     notes?: string[];
+    /** The solids of `shape`, in order, as bodies (bodies.ts). */
+    bodies?: BodyRecord[];
 }
 
 // The body after each step, kept so that a build which shares its first steps with an earlier one (editing a later
@@ -1450,6 +1465,7 @@ interface Prefix {
     notes: string[];
     /** The reference steps followed so far (by index), as found. */
     followed: [number, Feature][];
+    bodies: BodyRecord[];
 }
 
 const PREFIX_LIMIT = 48;
@@ -1467,12 +1483,12 @@ function prefixKeys(part: PartSpec, print: PrintSettings, history: boolean, cont
 }
 
 function remember(key: string, shape: Shape3D | null, threads: Map<string, ThreadAxis>, ghosts: ThreadGhost[],
-    followed: Map<number, Feature>, notes: string[]): void {
+    followed: Map<number, Feature>, notes: string[], bodies: BodyRecord[]): void {
     if (prefixes.has(key)) {
         return;
     }
     // A copy of the handle: steps may dispose of the body they are given.
-    prefixes.set(key, { shape: shape ? shape.clone() : null, threads: [...threads], ghosts: [...ghosts], followed: [...followed], notes: [...notes] });
+    prefixes.set(key, { shape: shape ? shape.clone() : null, threads: [...threads], ghosts: [...ghosts], followed: [...followed], notes: [...notes], bodies });
     while (prefixes.size > PREFIX_LIMIT) {
         const oldest = prefixes.keys().next().value as string;
         prefixes.get(oldest)?.shape?.delete();
@@ -1486,6 +1502,7 @@ function remember(key: string, shape: Shape3D | null, threads: Map<string, Threa
  */
 export function buildPartial(part: PartSpec, print: PrintSettings, context?: CombineContext, stack?: string[]): PartialBuild {
     let shape: Shape3D | null = null;
+    let bodies: BodyRecord[] = [];
     // A copy: reference steps are replaced by themselves as found on the body (followRefs.ts) for the steps after them.
     const features = [...(part.features ?? [])];
     const followed = new Map<number, Feature>();
@@ -1509,6 +1526,7 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
             state.threads = new Map(hit.threads);
             state.ghosts = [...hit.ghosts];
             state.notes = [...hit.notes];
+            bodies = hit.bodies;
             for (const [i, step] of hit.followed) {
                 features[i] = step;
                 followed.set(i, step);
@@ -1519,6 +1537,7 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
     if (start === 0 && part.shape.kind !== 'empty') {
         try {
             shape = buildShape(part.shape, !history);
+            bodies = baseBodies(shape);
         } catch (e) {
             const message = errorMessage(e);
             return { shape: null, error: part.shape.kind === 'script' ? message : `shape (${part.shape.kind}): ${message}` };
@@ -1558,15 +1577,20 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
         if (feature.suppressed || index < start) {
             continue;
         }
+        const was = solidsOf(shape);
+        const marks = state.ghosts.length;
         try {
             const next = applyFeature(shape, features[index], state);
             shape = next && normalizeSolid(next, 'the result');
         } catch (e) {
-            return { shape: withGhosts(shape, state.ghosts), error: `${label}: ${errorMessage(e)}`, followed: found(), ...said() };
+            release(was);
+            return { shape: withGhosts(shape, state.ghosts), error: `${label}: ${errorMessage(e)}`, followed: found(), bodies, ...said() };
         }
-        remember(keys[index], shape, state.threads, state.ghosts, followed, state.notes);
+        bodies = trackBodies(bodies, was, shape, feature.id, state.ghosts.slice(marks).filter(isCosmetic).map((g) => g.origin));
+        release(was);
+        remember(keys[index], shape, state.threads, state.ghosts, followed, state.notes, bodies);
     }
-    return { shape: withGhosts(shape, state.ghosts), error: null, followed: found(), ...said() };
+    return { shape: withGhosts(shape, state.ghosts), error: null, followed: found(), bodies, ...said() };
 }
 
 /** Solids of preview builds and the threads shown on them without being built, meshed by meshSolid. */
@@ -1635,11 +1659,11 @@ function triangleFaces(mesh: { triangles: number[]; faceGroups: { start: number;
     return faces;
 }
 
-function meshWithOpenCascade(shape: Shape3D): MeshData {
+function meshWithOpenCascade(shape: Shape3D, quality: MeshQuality): MeshData {
     // Faces shared with an earlier (already meshed) solid keep stale triangulations that no longer match the
     // edges of new neighbouring faces; drop them so the whole solid is meshed in one consistent pass.
     getOC().BRepTools.Clean(shape.wrapped, true);
-    const tolerance = meshTolerance(shape);
+    const tolerance = meshTolerance(shape, quality);
     const mesh = shape.mesh(tolerance);
     const lines = shape.meshEdges(tolerance);
     const seams = seamEdges(shape);
@@ -1673,11 +1697,13 @@ function meshWithOpenCascade(shape: Shape3D): MeshData {
     }
     const positions = Float32Array.from(mesh.vertices);
     const { indices, triFace } = dropDegenerate(positions, mesh.triangles, triangleFaces(mesh));
-    return { positions, normals: Float32Array.from(mesh.normals), indices, edges, triFace, segEdge };
+    // Which solid each face and edge belongs to, by the hash codes the ordinals were given for (in that order).
+    const { faceBody, edgeBody } = bodyOrdinals(shape, [...new Set(mesh.faceGroups.map((g) => g.faceId))], [...ordinals.keys()]);
+    return { positions, normals: Float32Array.from(mesh.normals), indices, edges, triFace, segEdge, faceBody, edgeBody };
 }
 
 function mergeMeshes(meshes: MeshData[]): MeshData {
-    const total = (key: Exclude<keyof MeshData, 'followed' | 'notes'>): number => meshes.reduce((n, m) => n + m[key].length, 0);
+    const total = (key: 'positions' | 'normals' | 'indices' | 'edges' | 'triFace' | 'segEdge'): number => meshes.reduce((n, m) => n + m[key].length, 0);
     const out: MeshData = {
         positions: new Float32Array(total('positions')),
         normals: new Float32Array(total('normals')),
@@ -1685,6 +1711,8 @@ function mergeMeshes(meshes: MeshData[]): MeshData {
         edges: new Float32Array(total('edges')),
         triFace: new Uint32Array(total('triFace')),
         segEdge: new Uint32Array(total('segEdge')),
+        // Faces and edges past these (thread ridges) are on the first body.
+        ...(meshes[0]?.faceBody ? { faceBody: meshes[0].faceBody, edgeBody: meshes[0].edgeBody } : {}),
     };
     let p = 0;
     let i = 0;
@@ -1723,12 +1751,18 @@ function mergeMeshes(meshes: MeshData[]): MeshData {
     return out;
 }
 
-/** Triangles (per-face vertices: smooth within a face, sharp across edges) and B-rep edge outlines. */
-export function meshSolid(shape: Shape3D): MeshData {
+/** Triangles (per-face vertices: smooth within a face, sharp across edges) and B-rep edge outlines, at a display quality. */
+export function meshSolid(shape: Shape3D, quality: MeshQuality = 'normal'): MeshData {
+    const angular = toleranceFor(0, quality).angularTolerance;
     const thread = threaded.get(shape);
     if (thread) {
-        return mergeMeshes([meshWithOpenCascade(thread.body), ...thread.ridges.map(ridgeMesh)]);
+        return mergeMeshes([meshWithOpenCascade(thread.body, quality), ...thread.ridges.map((r) => ridgeMesh(r, angular))]);
     }
-    const ghosts = ghosted.get(shape);
-    return ghosts ? mergeMeshes([meshWithOpenCascade(shape), ...ghosts.map(ghostMesh)]) : meshWithOpenCascade(shape);
+    const all = ghosted.get(shape) ?? [];
+    // Cosmetic threads (hidden in the view) leave only marks; preview ghosts show their ridges.
+    const ghosts = all.filter((g) => !isCosmetic(g));
+    const mesh = ghosts.length ? mergeMeshes([meshWithOpenCascade(shape, quality), ...ghosts.map((g) => ghostMesh(g, angular))])
+        : meshWithOpenCascade(shape, quality);
+    const marks = cosmeticMarks(shape, all);
+    return marks ? { ...mesh, cosmetic: marks.lines, cosmeticBody: marks.body } : mesh;
 }

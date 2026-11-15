@@ -9,6 +9,7 @@ import {
     addModelCurves, fetchModelSketch, loadedModel, modelTarget, otherSketchCurves, pickKey, snapGeometryOf, useSketchModel, type ModelPick,
 } from './sketchModel';
 import { useStudio } from './state';
+import { hiddenStepsNow } from './stepVisibility';
 import type { Pt } from './sketchMath';
 
 export type PickKind = 'edge' | 'face';
@@ -121,8 +122,8 @@ export function modelPlaneClick(p: Pt, tolerance: number): boolean {
     if (!target) {
         return false;
     }
-    const hidden = (useStudio.getState().project?.view.hiddenSketches ?? []).filter((key) => key.startsWith(`${target.partId}/`));
-    const curves = otherSketchCurves(s.context, target.frame, (id) => hidden.includes(`${target.partId}/${id}`));
+    const hidden = hiddenStepsNow();
+    const curves = otherSketchCurves(s.context, target.frame, (id) => hidden.has(`${target.partId}/${id}`));
     const made = addModelCurves({ points: [], curves: [], constraints: [] }, curves.map((c) => c.curve));
     const hit = curveAt(made.g, p, tolerance);
     const index = hit ? made.ids.indexOf(hit.id) : -1;

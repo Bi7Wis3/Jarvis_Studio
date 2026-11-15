@@ -18,7 +18,8 @@ Status key: [x] done, [~] partial or in progress, [ ] not started.
   vertex position) and resolved by the kernel against the body as it is at that step: nearest entity within a
   tolerance, else a clear "pick it again" error. Same idea as sketch region picks. Optional tangent propagation
   for edges and faces.
-- [x] Selected contours (sketch regions) for extrude, cut, revolve.
+- [x] Selected contours (sketch regions) for extrude, cut, revolve; areas bounded where curves cross or end on one
+  another without a shared point are regions too.
 - [ ] Pick to fill: any option that is a place or a reference (a position, an axis, a direction, a size taken from
   the model) can be set with the mouse. Click into the field, then click in the view: a circle or arc gives its
   centre (and axis and radius), a straight line its midpoint or the clicked spot on it, a point or corner itself,
@@ -131,6 +132,9 @@ Thread
   the hole (or the shaft) does, and a thread asked longer stops there and the form says so; the preview while the form is open shows the ridges the build keeps as a
   ghost and the real cut is made on OK. Not yet mirror profile, rotation angle, preview options.
 - [ ] Cosmetic thread: standard, type, size, minor/major diameter, end condition (blind, through, up to next).
+- [x] Hide the thread in the view (its eye in the tree): the hole or shaft is drawn plain with cosmetic thread marks
+  (dashed circles at both ends and lines along it, at a hole's major or a shaft's minor diameter), and the thread is
+  not modelled for the view, so rebuilds are quick; STL, STEP, FreeCAD and mass properties keep the modelled thread.
 
 Mirror (feature)
 - [x] Whole body across a base plane.
@@ -152,7 +156,11 @@ Patterns (feature)
 
 Combine, split, move/copy, scale
 - [x] Combine with another part (join, cut, intersect); split by plane.
-- [ ] Multi-body parts: bodies folders; combine (add, subtract, common) by picked bodies; split (trimming tools,
+- [~] Solid Bodies folder in the tree: each body the kernel's result holds, named as SolidWorks names it (after the
+  step that changed it last, Feature[1], Feature[2] when one step changed several), with an eye (hide/show) and a
+  see-through toggle, kept with the view settings; a body picked in the tree is highlighted in the view (a hidden one
+  too). Not yet: renaming bodies, sub-folders, Show Feature History, colour per body, Show Hidden Bodies, Isolate.
+- [ ] Multi-body parts: combine (add, subtract, common) by picked bodies; split (trimming tools,
   cut bodies, resulting bodies, target bodies); move/copy bodies (translate by deltas or reference, rotate,
   copies); scale (about centroid, origin or coordinate system; uniform or per-axis factors); delete/keep body;
   intersect (regions to exclude, merge result, consume surfaces); indent (target and tool body, keep/remove,
@@ -215,7 +223,8 @@ Reference geometry
   splines, fit spline edit chaining and its preview options, style spline inference clicks, combs after the
   sketch is closed.
 - [x] Modify and selection: box selection with the Select tool (left to right inside, right to left crossing,
-  Shift adds, Ctrl inverts); copy, cut and paste, Ctrl-drag copies and Shift-drag moves, whole sketches copied and
+  Shift adds, Ctrl inverts); one piece of a crossed curve picked with Alt + click (Delete trims it away; construction,
+  relations and Lock split it out first); Trim with each mode from a curve's right-click menu; copy, cut and paste, Ctrl-drag copies and Shift-drag moves, whole sketches copied and
   pasted on a face or plane (or into an open sketch); dynamic mirror; jog line; segment (deleting a point re-spaces
   the rest, the count can be changed later); replace entity; modify sketch (translate, rotate, scale, flip; dragged
   and turned in the view); check sketch for feature; tangent or normal arc by the direction the pointer leaves; edit
@@ -296,6 +305,12 @@ Reference geometry
 ## Parts and assembly
 
 - [x] Pattern of a part (linear, radial), move, rotate, duplicate, mirror copy, material.
+- [x] Primitives as part steps (pulldown next to Sketch; SolidWorks has no primitive features, so this follows the
+  owner's brief): box, cylinder (taper), sphere, cone, torus, tube, wedge, capsule; sizes (edge round or bevel 0 for
+  sharp), placed by a click on a flat face, a plane or a circular edge or by numbers (base centre or centre), axis
+  direction, reverse, rotation about the axis; Join, Cut or New body (a new part); drag handles for the position and
+  the height; edited in the same form. Not there: intersect; the placement does not follow the face it was put on
+  (the click sets numbers); join or cut of an existing step cannot be changed.
 - [~] Drag handles for move and rotate (triad: centre ball free, arms along X/Y/Z, wings in plane, rings rotate,
   Ctrl+drag copies).
 - [ ] Mirror copy that stays linked to its source (editable as a mirror); mirror components with opposite-hand
@@ -333,15 +348,35 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
   select loop or chain, appearance per face, context toolbars, mouse gestures.
 - [x] Toolbar: a group that collapses into a menu shows its name beside the icon while there is room; variants of
   one tool share a button with a flyout (line, rectangle, slot, circle, arc, trim, fillet, patterns, move,
-  relations); the sketch toolbar has Draw, Modify, Relations and View groups.
+  relations, primitives); the sketch toolbar has Draw, Modify, Dimensions, Relations and View toolbars.
+- [~] Customize toolbars (reference E5b): every toolbar of each mode can be shown or hidden (right-click on the
+  toolbar); per toolbar its tools and order (add any tool of the mode, remove, drag or arrow to reorder), icon size
+  small / medium / large, text under the icons, tooltips (name with what it does and its key, name only, none),
+  variants as one flyout or a button each, reset per toolbar and for all; kept in this browser (local storage). Not
+  there: moving, floating or locking toolbars (they share one band at the top), toolbars of the no-document state,
+  context toolbars, shortcut bars; tooltips with images.
 - [x] Number fields take any value: a field's step is only its spin increment (arrows and Up/Down keys; Ctrl ten
   times, Alt a tenth). Worked-out values (drags, picks, dimensions) are kept to 0.000001 mm; labels in the view
   show up to four decimals. Drag handles step finer as the view zooms in (Shift coarser, Alt to a pixel's worth).
-- [ ] Still fixed, not yet a setting: the number of decimals shown (SolidWorks: 0 to 8 per document, Units), and
-  the spin increments (System Options). Sketch end points closer than 0.001 mm still count as one point.
-- [ ] Document properties: unit system (MKS, CGS, MMGS, IPS, custom), length units with decimals or fractions,
+- [x] Options page (File > Options, gear beside File): categories in a tree, OK / Cancel / Apply and Reset to
+  defaults for the page shown; kept in one owner-only settings file on the server (`GET`/`PUT /api/settings`) and
+  applied at once. Pages: General (delete confirmations), Sketch, Relations/Snaps, Grid/Snap, Defaults (the values new
+  Extrude, Cut, Revolve, Fillet, Chamfer, Shell, Draft, Hole, Thread, pattern and sketch tool forms start with), Units
+  and precision, Display, Lighting, AI assistant, Toolbars (placeholder).
+- [~] Decimals shown: 0 to 8 for lengths and angles in the view's dimensions, and for number fields while not being
+  edited (values keep full precision). Still fixed: the spin increments (System Options). Sketch end points closer
+  than 0.001 mm still count as one point.
+- [x] AI assistant settings: Claude Code login on this computer or an Anthropic API key (kept masked, owner-only
+  file), model and effort for Fast and Best, Test connection; changes reach Jarvis's next request without a restart.
+- [x] Lighting (SolidWorks: Lights folder): ambient light (on, colour, intensity), up to eight directional lights
+  (on, colour, intensity, azimuth, elevation, cast shadows; add and delete), the environment (on, strength) and its
+  light panels (shape, colour, intensity, direction, size; add and delete); presets Studio, Bright, Dark. Not built:
+  point and spot lights, lights locked to the model or camera, specularity per light.
+- [~] Document properties: unit system (MKS, CGS, MMGS, IPS, custom), length units with decimals or fractions,
   angle units; dimension standard and precision; grid and snap (display grid, major spacing, minor lines per
   major, snap points per minor: done, in Sketch settings); image quality (tessellation deviation); material density.
+  Done: decimals and angle display (degrees, deg/min, deg/min/sec, radians) in Options > Units and precision; image
+  quality as Options > Display > Display quality (coarse, normal, fine; exports always fine), for all projects.
 - [~] Sketch options: auto-rotate normal to sketch, use fully defined sketches, show entity points with status
   colours, prompt to close sketch, create sketch on new part, override dimensions on drag/move, ghost image on
   drag, on-screen numeric input on entity creation, over-defining dimension prompt, display plane when shaded.
@@ -349,13 +384,14 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
   the automatic solve and undo limit.
 - [x] Relations/snaps options: enable snapping, snap to model geometry, automatic relations, per-snap toggles,
   snap angle.
-- [ ] Display and selection options: hidden edges solid/dashed, tangent edge display (visible, phantom, removed),
+- [~] Display and selection options: hidden edges solid/dashed, tangent edge display (visible, phantom, removed),
   anti-aliasing; selection of hidden edges, selection through transparency, default bulk selection method (box or
-  lasso).
-- [ ] View options: reverse wheel zoom, zoom to fit on standard view, arrow-key rotation increment, mouse speed,
-  view transitions.
+  lasso). Done in Options > Display: anti-aliasing, pixel ratio, bloom, ground shadow, edge colour and opacity,
+  ground grid, background colour (plain), perspective, sketch view quality.
+- [~] View options: reverse wheel zoom, zoom to fit on standard view, arrow-key rotation increment, mouse speed,
+  view transitions. Done: view transition off, fast, normal, slow (Options > Display).
 - [ ] Default templates and backup/auto-recover: default part/assembly template, auto-save interval and backup
-  copy.
+  copy. (Projects are saved at every change, so there is no auto-save interval.)
 - [x] Navigation, built: middle-drag rotate (about the point under the pointer), Ctrl+middle pan, Shift+middle zoom,
   wheel zoom at the pointer, zoom to fit. The app's own habits stay: a left drag turns the 3D view and a right drag
   pans it. In an open sketch a left drag belongs to the sketch: it drags the point or curve under it (with any draw
@@ -372,6 +408,10 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
   their own choice; sketching is flat unless turned on, the 3D view has perspective unless turned off.
 - [ ] Display styles: shaded with edges, shaded, hidden lines removed, hidden lines visible, wireframe; hide/show
   items (planes, axes, sketches, bodies, components).
+- [x] Sketch visibility: a sketch a feature is built from is hidden when the feature is confirmed (its eye shows it
+  again; a further feature from it hides it again); an unused sketch stays shown. A shown sketch draws all of its
+  curves, construction lines dashed and its points, in the part workspace and in the assembly (in its part's
+  placement), and an open sketch snaps to them (in the assembly also to the other parts' shown sketches).
 - [ ] Selection behaviour: Ctrl add/remove, box select (left to right inside only; right to left crossing),
   lasso, selection filters (vertices, edges, faces, bodies, axes, planes, sketches; F5/F6, E, X, V hotkeys),
   select other, select tangency / loop, select all, invert, previous selection.

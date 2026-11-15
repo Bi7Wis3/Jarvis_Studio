@@ -265,6 +265,25 @@ const ICONS: Record<string, { color: string; body: ReactNode }> = {
             </>
         ),
     },
+    // The Solid Bodies folder and one solid body in it.
+    bodies: {
+        color: '#b9c7dc',
+        body: (
+            <>
+                <path d="M2 6h7l2 2h11v13H2z" {...FILL} />
+                <path d="M9 12.5l3.5-2 3.5 2v4l-3.5 2-3.5-2zM9 12.5l3.5 2 3.5-2M12.5 14.5v4" />
+            </>
+        ),
+    },
+    'solid-body': {
+        color: '#b9c7dc',
+        body: (
+            <>
+                <path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" {...FILL} />
+                <path d="M4 7.5L12 12l8-4.5M12 12v9" />
+            </>
+        ),
+    },
 };
 
 /** A history step icon: the tree's own coloured drawing, else the toolbar icon of that name. */

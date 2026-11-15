@@ -431,7 +431,15 @@ export function saveProjectAs(name: string): void {
     send({ type: 'saveAs', name });
 }
 
-/** Shows or hides one sketch step's curves in the viewport (shared via the server). */
+/**
+ * Shows or hides one sketch, reference or thread step in the viewport (shared via the server). A hidden thread is drawn
+ * plainly with cosmetic marks; an absorbed sketch is hidden until shown (see @jarvis/core/visibility).
+ */
 export function setSketchHidden(partId: string, featureId: string, hidden: boolean): void {
     send({ type: 'hideSketch', partId, featureId, hidden });
+}
+
+/** Hides or shows a solid body, or makes it see-through or opaque (stored with the view, shared via the server). */
+export function setBodyView(partId: string, body: string, change: { hidden?: boolean; seeThrough?: boolean }): void {
+    send({ type: 'bodyView', partId, body, ...change });
 }

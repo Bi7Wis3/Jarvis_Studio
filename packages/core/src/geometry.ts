@@ -57,14 +57,14 @@ function extrude(outline: [number, number][], height: number, bevelWanted: numbe
     return geometry;
 }
 
-function tube(outerRadius: number, innerRadius: number, height: number): BufferGeometry {
+function tube(outerRadius: number, innerRadius: number, height: number, bevelWanted?: number): BufferGeometry {
     const ring = new Shape2D().absarc(0, 0, outerRadius, 0, Math.PI * 2, false);
     ring.holes.push(new Path().absarc(0, 0, Math.min(innerRadius, outerRadius - 0.01), 0, Math.PI * 2, true));
-    const bevel = Math.min(0.5, (outerRadius - innerRadius) / 4, height / 4);
+    const bevel = Math.min(bevelWanted ?? 0.5, (outerRadius - innerRadius) / 4, height / 4);
     const geometry = new ExtrudeGeometry(ring, {
         depth: height - bevel * 2,
         curveSegments: 64,
-        bevelEnabled: true,
+        bevelEnabled: bevel > 0,
         bevelSize: bevel,
         bevelThickness: bevel,
         bevelSegments: 2,
@@ -94,7 +94,7 @@ export function buildGeometry(shape: Shape): BufferGeometry {
         case 'extrude':
             return extrude(shape.outline, shape.height, shape.bevel);
         case 'tube':
-            return tube(shape.outerRadius, shape.innerRadius, shape.height);
+            return tube(shape.outerRadius, shape.innerRadius, shape.height, shape.bevel);
         case 'sphere':
             return new SphereGeometry(shape.radius, 48, 32);
         case 'torus':
@@ -103,6 +103,11 @@ export function buildGeometry(shape: Shape): BufferGeometry {
             return new ConeGeometry(shape.radius, shape.height, 72);
         case 'capsule':
             return new CapsuleGeometry(shape.radius, shape.length, 8, 32);
+        case 'wedge': {
+            const [w, h, d] = shape.size;
+            const side = new Shape2D([new Vector2(-w / 2, -h / 2), new Vector2(w / 2, -h / 2), new Vector2(-w / 2, h / 2)]);
+            return new ExtrudeGeometry(side, { depth: d, bevelEnabled: false }).translate(0, 0, -d / 2);
+        }
         case 'lathe': {
             const points = shape.profile.map(([r, y]) => new Vector2(Math.max(0, r), y));
             if (shape.smooth && points.length > 2) {

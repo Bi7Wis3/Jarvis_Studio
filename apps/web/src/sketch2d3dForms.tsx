@@ -18,6 +18,7 @@ import { PickBoxes } from './sketchMoreForms';
 import { setModelPicking } from './sketchModelPick';
 import { useSketchModel } from './sketchModel';
 import { nextFeatureName } from './featureNames';
+import { hiddenStepsNow } from './stepVisibility';
 import {
     VIEW_NAMES, alignMotion, alignRef, auxiliaryPlane, boundsOf, extractCurves, frontBounds, sketchOfGeometry, sketchStepId, viewDepth,
     viewName, viewPlane,
@@ -113,7 +114,7 @@ type OtherKind = 'line' | 'point' | 'any';
 function othersHere(): SketchGeometry {
     const s = useSketcher.getState();
     const { partId, features } = partNow();
-    const hidden = new Set(useStudio.getState().project?.view.hiddenSketches ?? []);
+    const hidden = hiddenStepsNow();
     return otherSketches(features, s.plane, s.offset, (id) => hidden.has(`${partId}/${id}`));
 }
 

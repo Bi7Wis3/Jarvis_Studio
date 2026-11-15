@@ -18,6 +18,7 @@ import { quickSnapMenu } from './sketchQuickSnaps';
 import { hasCopiedSketch, type PasteTarget } from './sketchPasteSketch';
 import { drawCommandEntries } from './sketchDrawCommands';
 import { splineMenuEntries } from './sketchSplineForms';
+import { pieceMenuEntries, trimMenuEntry } from './sketchPiecesMenu';
 
 // ---- What was clicked -------------------------------------------------------------------------------------------
 
@@ -547,6 +548,11 @@ export function sketchSpaceMenu(s: SketchMenuState, a: SketchMenuActions): MenuE
     const g = s.geometry;
     const picks = s.selection;
     const releaseTool = s.tool !== 'select' && select;
+    // Pieces of curves picked with Alt + click (sketchPieces.ts).
+    const pieces = picks.length ? null : pieceMenuEntries(g, a);
+    if (pieces) {
+        return tidy([...pieces, SEP, ...history]);
+    }
     if (picks.length) {
         const curves = picks.filter((p) => p.type === 'curve').map((p) => g.curves.find((c) => c.id === p.id)).filter((c) => !!c);
         const construction = curves.length > 0 && curves.every((c) => c!.construction);
@@ -568,6 +574,7 @@ export function sketchSpaceMenu(s: SketchMenuState, a: SketchMenuActions): MenuE
             SEP,
             // Select chain, paths, reverse endpoint tangent, infinite length (sketchDrawCommands.ts).
             ...drawCommandEntries(g, picks, a),
+            curves.length ? trimMenuEntry(a) : null,
             SEP,
             ...relations.map((r) => ({ label: r.label, icon: `c-${r.id}`, title: r.hint, onSelect: () => a.openTool(`sk-c-${r.id}`) })),
             { label: locked ? 'Unlock' : 'Lock', icon: 'c-fix', title: locked ? 'Free it to move again' : 'Keep it where it is', onSelect: () => a.openTool('sk-c-fix') },

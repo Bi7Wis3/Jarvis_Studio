@@ -1,0 +1,271 @@
+/* Customize toolbars (toolbarOptions.tsx): in the left panel or on the options page. */
+
+.tbo {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    color: #c6cedb;
+    font-size: 12px;
+}
+
+.tbo-modes,
+.tbo-choice {
+    display: flex;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.tbo-modes button,
+.tbo-choice button {
+    flex: 1;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 5px;
+    background: none;
+    color: var(--muted);
+    font: 600 11.5px Inter, 'Segoe UI', system-ui, sans-serif;
+    cursor: pointer;
+}
+
+.tbo-modes button:hover:not(.on),
+.tbo-choice button:hover:not(.on) {
+    color: var(--text);
+}
+
+.tbo-modes button.on,
+.tbo-choice button.on {
+    background: rgba(180, 107, 255, 0.28);
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px rgba(180, 107, 255, 0.5);
+}
+
+.tbo-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px 5px 8px;
+}
+
+.tbo-show {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    color: #d5dbe5;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.tbo-show span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tbo input[type='checkbox'] {
+    accent-color: var(--accent);
+}
+
+.tbo-changed {
+    color: #d9b8ff;
+    font-size: 10.5px;
+    font-style: normal;
+}
+
+.tbo-expand {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.tbo-expand:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text);
+}
+
+.tbo-expand svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    transform: rotate(-90deg);
+    transition: transform 0.12s ease;
+}
+
+.tbo-bar.open .tbo-expand svg {
+    transform: none;
+}
+
+.tbo-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 2px 9px 9px;
+}
+
+.tbo .tb-field {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px;
+}
+
+.tbo .tb-field > span:first-child {
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.tbo .tb-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 0;
+    color: #c6cedb;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.tbo .tb-input {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.28);
+}
+
+.tbo select {
+    width: 100%;
+    min-width: 0;
+    padding: 5px 6px;
+    border: 0;
+    outline: 0;
+    background: none;
+    color: var(--text);
+    font: 12px Inter, 'Segoe UI', system-ui, sans-serif;
+    cursor: pointer;
+}
+
+.tbo select option,
+.tbo select optgroup {
+    background: #10141c;
+}
+
+.tbo-tools {
+    display: flex;
+    flex-direction: column;
+    max-height: 260px;
+    margin: 0;
+    padding: 3px;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.28);
+    list-style: none;
+}
+
+.tbo-tool {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 3px 2px 4px;
+    border-top: 2px solid transparent;
+    border-radius: 4px;
+    cursor: grab;
+}
+
+.tbo-tool:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.tbo-tool.dragging {
+    opacity: 0.4;
+}
+
+.tbo-tool.over {
+    border-top-color: var(--accent-2);
+}
+
+.tbo-grip {
+    color: #59627a;
+    font-size: 9px;
+    letter-spacing: -2px;
+}
+
+.tbo-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tbo-tool button {
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: none;
+    color: var(--muted);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.tbo-tool button svg {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+}
+
+.tbo-tool button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text);
+}
+
+.tbo-tool button:disabled {
+    opacity: 0.3;
+    cursor: default;
+}
+
+.tbo-tool .tbo-remove:hover {
+    color: #ff8a8a;
+}
+
+.tbo-empty {
+    padding: 4px 6px;
+    color: var(--muted);
+}
+
+.tbo-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+
+.tbo-actions button {
+    padding: 4px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+    font: 600 11.5px Inter, 'Segoe UI', system-ui, sans-serif;
+    cursor: pointer;
+}
+
+.tbo-actions button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.tbo-actions button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}

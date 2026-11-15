@@ -6,7 +6,7 @@
 import { SKETCH_GROUPS, type Ctx, type ToolDef, type UiSettings } from './toolDefs';
 import { useSketcher, type SketchTool } from './sketcher';
 
-const REPEATABLE_GROUPS = ['draw', 'modify', 'constrain', '2d-to-3d'];
+const REPEATABLE_GROUPS = ['draw', 'modify', 'dimensions', 'relations', '2d-to-3d'];
 
 let repeatable: ToolDef[] | null = null;
 const tools = (): ToolDef[] => (repeatable ??= SKETCH_GROUPS.filter((g) => REPEATABLE_GROUPS.includes(g.id)).flatMap((g) => g.tools));

@@ -32,7 +32,11 @@ import { resolvedSketch } from '@jarvis/core/derived';
 import { SketchGridView } from './sketchGridView';
 import { StepLines } from './sketchStepLines';
 import { useSketchView } from './sketchViewMode';
-import { LineBatch } from './sketchBatch';
+import { LineBatch, PointBatch } from './sketchBatch';
+import { shownSketchSteps, stepDrawing } from './sketchStepView';
+import { useHiddenSteps } from './stepVisibility';
+import { designId } from './bodyView';
+import { effectivePart } from '@jarvis/core';
 
 export { regionsOf, useRegionPick } from './regionPick';
 
@@ -272,9 +276,16 @@ export function sketchView(part: Part | null): { centre: Vector3; normal: Vector
 function SketchStep({ partId, id, sketch, used, before }: { partId: string; id: string; sketch: Sketch; used: boolean; before: Feature[] }) {
     const picked = useSketcher((s) => s.picked?.id === id);
     const [hover, setHover] = useState(false);
-    const lines = useMemo(() => sketchToEntities(sketch).map((e) => entityPoints(e).map((p) => v3(p))), [sketch]);
+    // The whole sketch: its curves, construction curves dashed, its points (sketchStepView.ts).
+    const drawing = useMemo(() => stepDrawing(sketch), [sketch]);
+    const lines = drawing.curves;
     const matrix = useMemo(() => planeMatrix(sketch.plane, sketch.offset ?? 0, before), [sketch.plane, sketch.offset, before]);
     const color = picked || hover ? '#c48bff' : used ? '#5d6b80' : '#35e0ff';
+    const dimmed = used && !picked && !hover;
+    const construction = useMemo(() => drawing.construction.map((points) => ({
+        points, color, width: 1, dashed: true, dashSize: drawing.dash, gapSize: drawing.dash * 0.75, opacity: dimmed ? 0.55 : 0.9, renderOrder: 18,
+    })), [drawing, color, dimmed]);
+    const points = useMemo(() => drawing.points.map((at) => ({ at, color, size: 5 })), [drawing, color]);
     // Picking regions of this step (Extrude, Cut, Revolve on part of a sketch): its regions become clickable fills.
     const picking = useRegionPick((s) => s.active && s.sketchKey === `${partId}/${id}`);
     const picks = useRegionPick((s) => s.picked);
@@ -312,27 +323,35 @@ function SketchStep({ partId, id, sketch, used, before }: { partId: string; id: 
                     onContextMenu: () => offerTarget({ kind: 'sketch', partId, featureId: id }, 2),
                 }}
             />
+            {construction.length > 0 && <LineBatch lines={construction} />}
+            {points.length > 0 && <PointBatch points={points} renderOrder={19} />}
         </group>
     );
 }
 
-/** The active part's sketch steps (part workspace, "Show sketches"), dimmed when a later step uses them. */
+/**
+ * A part's shown sketch steps ("Show sketches"), dimmed when a later step uses them: the edited part's in the part
+ * workspace, and each part's in the assembly (Scene draws one per part there).
+ */
 export function SketchSteps({ part, offset }: { part: Part | null; offset: Vec3 }) {
     const show = useSketcher((s) => s.showSketches);
     const editing = useSketcher((s) => (s.active ? s.edit?.featureId ?? '' : null));
-    const workspace = useStudio((s) => s.workspace);
-    const hidden = useStudio((s) => s.history?.view.hiddenSketches);
+    const hidden = useHiddenSteps();
+    const allParts = useStudio((s) => s.history?.parts);
+    // A hidden sketch still shows while a form picks its regions (an Extrude or Cut of part of it).
+    const regionKey = useRegionPick((s) => (s.active ? s.sketchKey : null));
     const outer = useRef<Group>(null);
     const matrix = useMemo(() => partMatrix(part), [part?.position.join(), part?.rotation.join()]);
     useFrame(() => {
         outer.current?.position.set(offset[0] * anim.explode, offset[1] * anim.explode, offset[2] * anim.explode);
     });
-    if (!part || !show || workspace !== 'part') {
+    if (!part || !show) {
         return null;
     }
-    const features = part.features ?? [];
-    const hiddenSet = new Set(hidden ?? []);
-    const steps = features.filter((f) => f.op === 'sketch' && !f.suppressed && f.id !== editing && !hiddenSet.has(`${part.id}/${f.id}`));
+    // An instance shows its source's steps, which also own the hidden list's keys.
+    const design = designId(part);
+    const features = effectivePart(part, allParts ?? []).features ?? [];
+    const steps = shownSketchSteps(features, design, hidden, editing, (id) => regionKey === `${design}/${id}`);
     if (!steps.length) {
         return null;
     }
@@ -341,7 +360,7 @@ export function SketchSteps({ part, offset }: { part: Part | null; offset: Vec3 
     return (
         <group ref={outer}>
             <group matrixAutoUpdate={false} matrix={matrix}>
-                {steps.map((f) => f.op === 'sketch' && <SketchStep key={f.id} partId={part.id} id={f.id} sketch={resolvedSketch(features, features.indexOf(f)) ?? f.sketch} used={usedBy.has(f.id)} before={features.slice(0, features.indexOf(f))} />)}
+                {steps.map((f) => <SketchStep key={f.id} partId={design} id={f.id} sketch={resolvedSketch(features, features.indexOf(f)) ?? f.sketch} used={usedBy.has(f.id)} before={features.slice(0, features.indexOf(f))} />)}
             </group>
         </group>
     );

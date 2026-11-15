@@ -19,7 +19,9 @@
     "./curveSplit": "./src/curveSplit.ts",
     "./derived": "./src/derived.ts",
     "./curveOffset": "./src/curveOffset.ts",
-    "./splines": "./src/splines.ts"
+    "./splines": "./src/splines.ts",
+    "./visibility": "./src/visibility.ts",
+    "./settings": "./src/settings.ts"
   },
   "dependencies": {
     "three": "^0.187.0"

@@ -222,12 +222,13 @@ export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
             },
             run: async ({ partIds, combined }) => {
                 const project = store.get();
-                await host.meshes.ready(project);
+                // Exports are always meshed at fine, whatever display quality the view uses.
+                await host.meshes.ready(project, 'fine');
                 const ids: string[] = partIds ?? project.parts.map((p) => p.id);
                 if (ids.length === 0) {
                     throw new Error('Nothing to export: the project has no parts');
                 }
-                const meshFor = (part: (typeof project.parts)[number]) => host.meshes.meshFor(part, project);
+                const meshFor = (part: (typeof project.parts)[number]) => host.meshes.meshFor(part, project, 'fine');
                 const files: [string, Buffer][] = combined || ids.length === 1
                     ? [[`${slug(project.name)}${ids.length === 1 && !combined ? `-${ids[0]}` : ''}.stl`, exportStl(project, meshFor, ids)]]
                     : ids.map((id) => [`${slug(project.name)}-${id}.stl`, exportStl(project, meshFor, [id])]);
@@ -238,7 +239,7 @@ export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
                 }
                 const missing = ids.filter((id) => {
                     const part = project.parts.find((p) => p.id === id);
-                    return part && !host.meshes.meshFor(part, project);
+                    return part && !host.meshes.meshFor(part, project, 'fine');
                 });
                 return {
                     text: `Saved ${files.map(([f]) => f).join(', ')} to ${EXPORTS_DIR} and sent to the browser.`

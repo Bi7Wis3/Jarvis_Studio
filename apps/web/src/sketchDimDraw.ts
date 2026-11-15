@@ -5,7 +5,7 @@
 import type { SketchConstraint, SketchGeometry } from '@jarvis/core';
 import { AXIS_U, AXIS_V, curveOf, distancePoints, handleEnd, pointOf } from './solver';
 import { ordinateFoot, ordinateFrame } from './sketchDimGroups';
-import { shownText } from './numberText';
+import { angleText, shownText } from './numberText';
 import { arcMiddle } from './sketchGeometry';
 import { dist, type Pt } from './sketchMath';
 import { conicAt } from '@jarvis/core/curves';
@@ -209,7 +209,7 @@ export function moreDimensionText(c: SketchConstraint): string | null {
         return `⌒${shownText(c.value)}`;
     }
     if (c.kind === 'pointAngle') {
-        return `${shownText(c.value)}°`;
+        return angleText(c.value);
     }
     if (c.kind === 'distance' && c.doubled) {
         return `Ø${shownText(c.value)}`;
