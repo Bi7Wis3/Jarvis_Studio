@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { Grid, Html, Line } from '@react-three/drei';
+import { Grid, Line } from '@react-three/drei';
 import {
     DoubleSide, Euler, MathUtils, Matrix4, Path, Quaternion, Shape, ShapeGeometry, Vector2,
     Vector3, type Group, type Material, type Mesh, type PerspectiveCamera,
@@ -21,11 +21,18 @@ import {
 } from './sketchMath';
 import { choosePlane, pickSketch, useSketcher } from './sketcher';
 import { Catcher, Drawing, Label, v3 } from './SketchDrawing';
-import { geometryProfiles } from './sketchGeometry';
 import { sketchToEntities } from './sketchMath';
-import { editItem, setSketchHidden, useStudio } from './state';
-import { ContextMenu } from './menus';
-import { pickedRegions, regionsOf, toggleRegion, useRegionPick } from './regionPick';
+import { useStudio } from './state';
+import { offerTarget } from './viewMenu';
+import { pickedRegions, toggleRegion, useRegionPick } from './regionPick';
+import { ModelPreview } from './sketchModelView';
+import { ShadedContours } from './sketchContoursDrawing';
+import { openSketchRegions, usePlaneFaces } from './sketchModelContours';
+import { resolvedSketch } from '@jarvis/core/derived';
+import { SketchGridView } from './sketchGridView';
+import { StepLines } from './sketchStepLines';
+import { useSketchView } from './sketchViewMode';
+import { LineBatch } from './sketchBatch';
 
 export { regionsOf, useRegionPick } from './regionPick';
 
@@ -136,17 +143,15 @@ function Profiles() {
     const ownPicks = useRegionPick((s) => s.sketchKey === null);
     const picks = useRegionPick((s) => s.picked);
     const open = !!finishing;
-    const nested = useMemo(() => nestProfiles(geometryProfiles(geometry).profiles), [geometry]);
-    const regions = useMemo(() => (open ? regionsOf(geometry) : []), [open, geometry]);
+    // With the model's faces in the sketch plane loaded, the areas their edges close count too.
+    const faces = usePlaneFaces((f) => f.known);
+    const regions = useMemo(() => (open ? openSketchRegions(geometry) : []), [open, geometry, faces]);
     const picked = useMemo(() => (ownPicks ? pickedRegions(regions, picks) : []), [ownPicks, regions, picks]);
-    const fill = useMemo(() => new ShapeGeometry(shapesFor(nested)), [nested]);
-    useEffect(() => () => fill.dispose(), [fill]);
+    // While drawing, the closed areas are shaded when Shaded sketch contours is on.
     return open ? (
         <RegionFills regions={regions} picked={picked} onToggle={(at) => toggleRegion(at, regions)} />
     ) : (
-        <mesh geometry={fill} renderOrder={15} raycast={() => null}>
-            <meshBasicMaterial color="#b46bff" transparent opacity={0.2} depthTest={false} depthWrite={false} side={DoubleSide} />
-        </mesh>
+        <ShadedContours />
     );
 }
 
@@ -167,6 +172,8 @@ function PlanePicker({ part }: { part: Part | null }) {
                 <group key={plane} matrixAutoUpdate={false} matrix={planeMatrix(plane, 0)}>
                     <mesh
                         renderOrder={12}
+                        // Kept (with its shader) for the next sketch; one pass, as for any flat fill (sketchContoursDrawing.tsx).
+                        dispose={null}
                         onPointerOver={(e) => {
                             e.stopPropagation();
                             setHover(plane);
@@ -187,62 +194,16 @@ function PlanePicker({ part }: { part: Part | null }) {
                             depthWrite={false}
                             depthTest={false}
                             side={DoubleSide}
+                            forceSinglePass
                         />
                     </mesh>
-                    <Line
-                        points={rectCorners([-size / 2, -size / 2], [size / 2, size / 2]).concat([[-size / 2, -size / 2]]).map((p) => v3(p))}
-                        color={hover === plane ? '#c48bff' : '#35e0ff'}
-                        lineWidth={1}
-                        transparent
-                        opacity={0.7}
-                        depthTest={false}
-                    />
+                    <LineBatch lines={[{
+                        points: rectCorners([-size / 2, -size / 2], [size / 2, size / 2]).concat([[-size / 2, -size / 2]]).map((p) => v3(p)),
+                        color: hover === plane ? '#c48bff' : '#35e0ff', width: 1, opacity: 0.7, renderOrder: 0,
+                    }]} />
                     <Label at={[-size / 2, size / 2]} className="plane">{plane[0].toUpperCase() + plane.slice(1)}</Label>
                 </group>
             ))}
-        </>
-    );
-}
-
-/** Sketch grid in the plane, with the sketch axes through the origin. */
-function SketchGrid() {
-    const step = useSketcher((s) => s.grid);
-    const grid = useRef<Mesh>(null);
-    // Drawn over the parts, like the rest of the sketch.
-    useEffect(() => {
-        const material = grid.current?.material as Material | undefined;
-        if (material) {
-            material.depthTest = false;
-            material.depthWrite = false;
-        }
-    });
-    // The drawn cells are the snap step, so points land on lines you can see.
-    const cell = step > 0 ? step : 1;
-    return (
-        <>
-            <Grid
-                ref={grid}
-                rotation={[Math.PI / 2, 0, 0]}
-                infiniteGrid
-                cellSize={cell}
-                sectionSize={cell * 10}
-                cellThickness={0.5}
-                sectionThickness={1}
-                cellColor="#243247"
-                sectionColor="#3b5277"
-                fadeDistance={1400}
-                fadeStrength={1.4}
-                side={DoubleSide}
-                renderOrder={11}
-            />
-            <Line points={[[-1e4, 0, 0], [1e4, 0, 0]]} color="#ff6b78" lineWidth={1} transparent opacity={0.45} depthTest={false} />
-            <Line points={[[0, -1e4, 0], [0, 1e4, 0]]} color="#4fe08f" lineWidth={1} transparent opacity={0.45} depthTest={false} />
-            {/* The plane's own axes, small, at its origin: u red, v green, normal blue. */}
-            <Line points={[[0, 0, 0], [8, 0, 0]]} color="#ff6b78" lineWidth={2.5} depthTest={false} renderOrder={22} />
-            <Line points={[[0, 0, 0], [0, 8, 0]]} color="#4fe08f" lineWidth={2.5} depthTest={false} renderOrder={22} />
-            <Line points={[[0, 0, 0], [0, 0, 8]]} color="#4d8dff" lineWidth={2.5} depthTest={false} renderOrder={22} />
-            <Label at={[9.5, 0]} className="axis u">u</Label>
-            <Label at={[0, 9.5]} className="axis v">v</Label>
         </>
     );
 }
@@ -274,10 +235,11 @@ export function SketchLayer({ part, offset }: { part: Part | null; offset: Vec3 
                 </group>
             ) : (
                 <group ref={frame} matrixAutoUpdate={false} matrix={onPlane}>
-                    <SketchGrid />
+                    <SketchGridView part={part} frame={frame} />
                     <Catcher frame={frame} />
                     <Profiles />
                     <Drawing />
+                    <ModelPreview />
                 </group>
             )}
         </group>
@@ -310,7 +272,6 @@ export function sketchView(part: Part | null): { centre: Vector3; normal: Vector
 function SketchStep({ partId, id, sketch, used, before }: { partId: string; id: string; sketch: Sketch; used: boolean; before: Feature[] }) {
     const picked = useSketcher((s) => s.picked?.id === id);
     const [hover, setHover] = useState(false);
-    const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
     const lines = useMemo(() => sketchToEntities(sketch).map((e) => entityPoints(e).map((p) => v3(p))), [sketch]);
     const matrix = useMemo(() => planeMatrix(sketch.plane, sketch.offset ?? 0, before), [sketch.plane, sketch.offset, before]);
     const color = picked || hover ? '#c48bff' : used ? '#5d6b80' : '#35e0ff';
@@ -319,52 +280,38 @@ function SketchStep({ partId, id, sketch, used, before }: { partId: string; id: 
     const picks = useRegionPick((s) => s.picked);
     const regions = sketch.regions;
     const chosen = useMemo(() => (picking && regions ? pickedRegions(regions, picks) : []), [picking, regions, picks]);
+    // In an open sketch the pointer goes on to it: its tools pick this sketch's entities themselves (sketchModelPick.ts).
+    const sketching = useSketchView();
+    useEffect(() => {
+        if (sketching) {
+            setHover(false);
+        }
+    }, [sketching]);
     return (
         <group matrixAutoUpdate={false} matrix={matrix}>
             {picking && regions && <RegionFills regions={regions} picked={chosen} onToggle={(at) => toggleRegion(at, regions)} />}
-            {lines.map((points, i) => (
-                <Line
-                    key={i}
-                    points={points}
-                    color={color}
-                    lineWidth={picked || hover ? 2.4 : 1.3}
-                    transparent
-                    opacity={used && !picked && !hover ? 0.55 : 1}
-                    depthTest={false}
-                    renderOrder={18}
-                    onPointerOver={(e) => {
+            <StepLines
+                lines={lines}
+                color={color}
+                width={picked || hover ? 2.4 : 1.3}
+                opacity={used && !picked && !hover ? 0.55 : 1}
+                renderOrder={18}
+                events={sketching ? null : {
+                    onPointerOver: (e) => {
                         e.stopPropagation();
                         setHover(true);
-                    }}
-                    onPointerOut={() => setHover(false)}
-                    onClick={(e) => {
+                    },
+                    onPointerOut: () => setHover(false),
+                    onClick: (e) => {
                         if (e.delta <= CLICK_SLOP_PX) {
                             e.stopPropagation();
                             pickSketch(id);
                         }
-                    }}
-                    onContextMenu={(e) => {
-                        // Right-click opens a small menu, as everywhere in SolidWorks (hiding at once was too easy to do by accident).
-                        e.stopPropagation();
-                        e.nativeEvent.preventDefault();
-                        setMenu({ x: e.nativeEvent.clientX, y: e.nativeEvent.clientY });
-                    }}
-                />
-            ))}
-            {menu && (
-                // The menu itself is drawn on the page (a portal); Html only hosts it from inside the 3D view.
-                <Html>
-                    <ContextMenu
-                        x={menu.x}
-                        y={menu.y}
-                        onClose={() => setMenu(null)}
-                        items={[
-                            { label: 'Edit sketch', onSelect: () => editItem(partId, id) },
-                            { label: 'Hide', onSelect: () => setSketchHidden(partId, id, true) },
-                        ]}
-                    />
-                </Html>
-            )}
+                    },
+                    // The view's right-click menu (viewMenu.tsx); a sketch curve wins over the faces it lies on.
+                    onContextMenu: () => offerTarget({ kind: 'sketch', partId, featureId: id }, 2),
+                }}
+            />
         </group>
     );
 }
@@ -394,7 +341,7 @@ export function SketchSteps({ part, offset }: { part: Part | null; offset: Vec3 
     return (
         <group ref={outer}>
             <group matrixAutoUpdate={false} matrix={matrix}>
-                {steps.map((f) => f.op === 'sketch' && <SketchStep key={f.id} partId={part.id} id={f.id} sketch={f.sketch} used={usedBy.has(f.id)} before={features.slice(0, features.indexOf(f))} />)}
+                {steps.map((f) => f.op === 'sketch' && <SketchStep key={f.id} partId={part.id} id={f.id} sketch={resolvedSketch(features, features.indexOf(f)) ?? f.sketch} used={usedBy.has(f.id)} before={features.slice(0, features.indexOf(f))} />)}
             </group>
         </group>
     );

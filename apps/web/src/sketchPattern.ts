@@ -4,9 +4,12 @@
 // defined original gives a fully defined pattern.
 
 import type { SketchCurve, SketchGeometry } from '@jarvis/core';
-import { AXIS_U, ORIGIN, curveOf, pointOf } from './solver';
+import { AXIS_U, ORIGIN, curveOf, pointOf, solveGeometry, solverReady } from './solver';
 import { addConstraint, newId, type NewConstraint } from './sketchGeometry';
 import { curvePoints, type EditResult } from './sketchEdit';
+import { mapCurvePoints } from './sketchCurves';
+import { withRecord } from './sketchPatternRecord';
+
 import { dist, type Pt } from './sketchMath';
 
 const SAME = 1e-6;
@@ -15,6 +18,34 @@ const P = (g: SketchGeometry, id: string): Pt => {
     const p = pointOf(g, id);
     return p ? [p.u, p.v] : [0, 0];
 };
+
+/**
+ * The pattern without the relations that repeat what an instance's curves hold already: a point of an ellipse or a
+ * parabola sits on its curve, so one more relation places it, not two (the solver would call the sketch over
+ * defined). Each repeat the solver finds goes, an equal length before a direction.
+ */
+function withoutRepeats(before: SketchGeometry, after: SketchGeometry, curves: SketchCurve[]): SketchGeometry {
+    if (!solverReady() || !curves.some((c) => c.kind === 'ellipse' || c.kind === 'ellipseArc' || c.kind === 'parabola')) {
+        return after;
+    }
+    const old = new Set(before.constraints.map((c) => c.id));
+    const known = new Set(solveGeometry(before).redundant);
+    let out = after;
+    for (let round = 0; round < out.constraints.length; round++) {
+        const r = solveGeometry(out);
+        const repeated = [...r.redundant, ...(r.ok ? [] : r.conflicting)].filter((id) => !old.has(id) && !known.has(id));
+        if (!repeated.length) {
+            break;
+        }
+        const at = repeated.map((id) => out.constraints.findIndex((c) => c.id === id)).filter((i) => i >= 0).sort((x, y) => y - x);
+        if (!at.length) {
+            break;
+        }
+        const drop = at.find((i) => out.constraints[i].kind === 'equal') ?? at[0];
+        out = { ...out, constraints: out.constraints.filter((_, i) => i !== drop) };
+    }
+    return out;
+}
 
 /** Builds up the new geometry: points, curves and relations. */
 class Builder {
@@ -72,9 +103,7 @@ function instance(b: Builder, seed: SketchGeometry, curves: SketchCurve[], ancho
     const copyOf = new Map<string, string>();
     for (const c of curves) {
         const id = newId('c', b.g);
-        const copy: SketchCurve = c.kind === 'line' ? { ...c, id, a: image(c.a), b: image(c.b) }
-            : c.kind === 'circle' ? { ...c, id, center: image(c.center) }
-                : { ...c, id, center: image(c.center), start: image(c.start), end: image(c.end) };
+        const copy: SketchCurve = { ...mapCurvePoints(c, image), id };
         b.curve(copy);
         copyOf.set(c.id, id);
         created.push(id);
@@ -156,6 +185,11 @@ export interface LinearPatternOptions {
     dimensionAngle?: boolean;
     /** Instances to skip, as [i, j] (i along direction 1, j along direction 2; the original is [0, 0]). */
     skip?: [number, number][];
+    /** Direction 1 (and 2) taken from a line of the sketch: the rows stay parallel to it (`angle` is its direction). */
+    directionLine?: string;
+    directionLine2?: string;
+    /** Display instance count: the count is shown in the view (kept with the pattern's record). */
+    showCount?: boolean;
 }
 
 /** Holds a line of the skeleton at a fixed direction from the u axis: horizontal, vertical or an angle dimension. */
@@ -180,6 +214,14 @@ export function linearSketchPattern(g: SketchGeometry, curveIds: string[], o: Li
     const seed = seedOf(g, curveIds);
     if ('error' in seed) {
         return seed;
+    }
+    for (const line of [o.directionLine, o.directionLine2]) {
+        if (line && curveIds.includes(line)) {
+            return { error: 'The line that sets the direction cannot be patterned itself.' };
+        }
+        if (line && line !== AXIS_U && curveOf(g, line)?.kind !== 'line') {
+            return { error: 'The direction is taken from a line.' };
+        }
     }
     const n1 = Math.round(o.count);
     const n2 = Math.max(1, Math.round(o.count2 ?? 1));
@@ -214,7 +256,9 @@ export function linearSketchPattern(g: SketchGeometry, curveIds: string[], o: Li
         if (o.dimension !== false) {
             b.add({ kind: 'length', line: first1, value: Math.abs(o.spacing) });
         }
-        if (o.fixDirection !== false) {
+        if (o.directionLine) {
+            b.add({ kind: 'parallel', a: first1, b: o.directionLine });
+        } else if (o.fixDirection !== false) {
             holdDirection(b, first1, o.angle);
         }
     }
@@ -223,7 +267,9 @@ export function linearSketchPattern(g: SketchGeometry, curveIds: string[], o: Li
         if (o.dimension2 !== false) {
             b.add({ kind: 'length', line: first2, value: Math.abs(o.spacing2!) });
         }
-        if (first1 && o.dimensionAngle !== false) {
+        if (o.directionLine2) {
+            b.add({ kind: 'parallel', a: first2, b: o.directionLine2 });
+        } else if (first1 && o.dimensionAngle !== false) {
             const between = Math.abs((((o.angle2 ?? 90) - o.angle) % 180 + 180) % 180);
             b.add(Math.abs(between - 90) < 1e-9 ? { kind: 'perpendicular', a: first1, b: first2 } : { kind: 'angle', a: first1, b: first2, value: between });
         } else if (o.fixDirection !== false) {
@@ -273,7 +319,7 @@ export function linearSketchPattern(g: SketchGeometry, curveIds: string[], o: Li
             created.push(...instance(b, g, curves, anchor, anchors[j][i], (p) => [p[0] + by[0], p[1] + by[1]], ties(anchors[j][i])));
         }
     }
-    return { g: b.g, created };
+    return { g: withRecord(g, withoutRepeats(g, b.g, curves), 'linear', curveIds, o), created };
 }
 
 // ---- Circular -----------------------------------------------------------------------------------------
@@ -291,6 +337,8 @@ export interface CircularPatternOptions {
     dimensionAngle?: boolean;
     /** Instances to skip (1 .. count-1; the original is 0). */
     skip?: number[];
+    /** Display instance count. */
+    showCount?: boolean;
 }
 
 /**
@@ -425,5 +473,5 @@ export function circularSketchPattern(g: SketchGeometry, curveIds: string[], o: 
         };
         created.push(...instance(b, g, curves, anchor, anchors[k], turn(k), ties));
     }
-    return { g: b.g, created };
+    return { g: withRecord(g, withoutRepeats(g, b.g, curves), 'circular', curveIds, o), created };
 }

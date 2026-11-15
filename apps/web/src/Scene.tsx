@@ -14,16 +14,24 @@ import { layoutLabels } from './Labels';
 import { useKernelMesh, useMeshByKey, type KernelMesh } from './meshes';
 import { edgeSegments, faceSoup, nearestEdge, pixelSize, type P3, type PickedEntity } from './picking';
 import { clearPicked, pickEntity, select, setWorkspace, useStudio } from './state';
-import { chooseFace, useSketcher } from './sketcher';
+import { chooseFace, sketchWasDiscarded, useSketcher } from './sketcher';
 import { planePickerSize, SketchLayer, SketchSteps, sketchView } from './SketchLayer';
 import { ReferenceGeometry } from './ReferenceGeometry';
 import { PartDecals } from './Decals';
 import { Manipulators } from './Manipulators';
 import { usePartPicks } from './pickView';
 import { partLook } from './partView';
+import { EMPTY_PART_HALF, sketchExtent } from './partExtent';
+import { anim } from './anim';
+import { edgePick, facePick, modelPick } from './pickRefs';
+import { modelEntityClick, sketchUnder, useModelPickKinds } from './sketchModelPick';
+import { pickKey, useSketchModel, type ModelPick } from './sketchModel';
+import { sketchPlaneAt, sketchPointAt } from './SketchDrawing';
+import { drawFlat, drawPerspective, flatHeight, liveView, rayFromCamera } from './viewProjection';
+import { offerTarget, RightClickGate } from './viewMenu';
+import { SketchViewMode, sketchCanvas, useSketchView } from './sketchViewMode';
 
-/** Animated values shared between the scene and the label overlay. */
-export const anim = { explode: 0, settleAt: 0 };
+export { anim };
 
 const FIT_MS = 1800;
 const DEFAULT_AZIMUTH = 28;
@@ -227,6 +235,19 @@ type Entity = Pick<PickedEntity, 'kind' | 'index'>;
  * The face or edge of a kernel mesh under a pointer event: the edge nearest the hit point if it is within
  * EDGE_PICK_PX on screen, else the face of the hit triangle.
  */
+/** How far from the pointer (in the part's own frame) an edge is picked: EDGE_PICK_PX at the hit's depth. */
+function edgeReach(event: ThreeEvent<PointerEvent | MouseEvent>, viewportHeight: number): number {
+    const camera = event.camera as typeof event.camera & { isPerspectiveCamera?: boolean; isOrthographicCamera?: boolean;
+        fov: number; zoom: number; top: number; bottom: number };
+    const depth = -event.point.clone().applyMatrix4(camera.matrixWorldInverse).z;
+    const flat = flatHeight(camera);
+    const pixel = flat ? flat / Math.max(1, viewportHeight) : camera.isOrthographicCamera
+        ? pixelSize({ kind: 'orthographic', top: camera.top, bottom: camera.bottom, zoom: camera.zoom }, depth, viewportHeight)
+        : pixelSize({ kind: 'perspective', fov: camera.fov, zoom: camera.zoom }, depth, viewportHeight);
+    // Edges are in the mesh's own frame; the part transform is rigid, but divide out any scale to be safe.
+    return (EDGE_PICK_PX * pixel) / (event.object.matrixWorld.getMaxScaleOnAxis() || 1);
+}
+
 function entityAt(event: ThreeEvent<PointerEvent | MouseEvent>, kernel: KernelMesh, viewportHeight: number,
     allow: readonly string[] = ['edge', 'face']): Entity | null {
     if (event.faceIndex === undefined || event.faceIndex === null) {
@@ -236,14 +257,7 @@ function entityAt(event: ThreeEvent<PointerEvent | MouseEvent>, kernel: KernelMe
         const face = allow.includes('face') ? kernel.triFace[event.faceIndex] : undefined;
         return face === undefined ? null : { kind: 'face', index: face };
     }
-    const camera = event.camera as typeof event.camera & { isPerspectiveCamera?: boolean; isOrthographicCamera?: boolean;
-        fov: number; zoom: number; top: number; bottom: number };
-    const depth = -event.point.clone().applyMatrix4(camera.matrixWorldInverse).z;
-    const pixel = camera.isOrthographicCamera
-        ? pixelSize({ kind: 'orthographic', top: camera.top, bottom: camera.bottom, zoom: camera.zoom }, depth, viewportHeight)
-        : pixelSize({ kind: 'perspective', fov: camera.fov, zoom: camera.zoom }, depth, viewportHeight);
-    // Edges are in the mesh's own frame; the part transform is rigid, but divide out any scale to be safe.
-    const tolerance = (EDGE_PICK_PX * pixel) / (event.object.matrixWorld.getMaxScaleOnAxis() || 1);
+    const tolerance = edgeReach(event, viewportHeight);
     const local = event.object.worldToLocal(event.point.clone());
     const edge = nearestEdge(kernel.edges.getAttribute('position').array, kernel.segEdge, [local.x, local.y, local.z], tolerance);
     if (edge !== null) {
@@ -251,6 +265,80 @@ function entityAt(event: ThreeEvent<PointerEvent | MouseEvent>, kernel: KernelMe
     }
     const face = allow.includes('face') ? kernel.triFace[event.faceIndex] : undefined;
     return face === undefined ? null : { kind: 'face', index: face };
+}
+
+/** Tells the view's right-click menu which face or edge of the part is under the pointer (viewMenu.tsx). */
+function offerPartTarget(e: ThreeEvent<MouseEvent>, part: Part, kernel: KernelMesh | null, viewportHeight: number): void {
+    const surface = surfaceAt(e);
+    const entity = kernel && useStudio.getState().mode === 'select' ? entityAt(e, kernel, viewportHeight) : null;
+    if (!kernel || !surface || !entity) {
+        return;
+    }
+    const point: P3 = [surface.point.x, surface.point.y, surface.point.z];
+    const spot = { point, normal: [surface.smooth.x, surface.smooth.y, surface.smooth.z] as P3, curved: surface.curved };
+    const mesh = {
+        positions: kernel.surface.getAttribute('position').array, normals: kernel.surface.getAttribute('normal').array,
+        indices: kernel.surface.getIndex()!.array, triFace: kernel.triFace, edges: kernel.edges.getAttribute('position').array,
+        segEdge: kernel.segEdge,
+    };
+    const geom = modelPick(mesh, entity, point)?.geom;
+    const pick = { partId: part.id, ...entity };
+    const picked = useStudio.getState().picked;
+    const picks = picked.some((p) => p.partId === part.id && p.kind === entity.kind && p.index === entity.index)
+        ? picked.filter((p) => p.partId === part.id) : [pick];
+    if (entity.kind === 'face') {
+        const n = surface.flat.clone().transformDirection(e.object.matrixWorld);
+        const type = geom?.type === 'plane' || geom?.type === 'cylinder' || geom?.type === 'cone' ? geom.type : 'surface';
+        offerTarget({ kind: 'face', partId: part.id, picks, geom: type, spot, worldNormal: [n.x, n.y, n.z] });
+    } else {
+        const type = geom?.type === 'line' || geom?.type === 'circle' ? geom.type : 'curve';
+        offerTarget({ kind: 'edge', partId: part.id, picks, geom: type, full: geom?.type === 'circle' && geom.full, spot });
+    }
+}
+
+/**
+ * A click on the part being sketched while a sketch tool takes model faces or edges (sketchModelPick.ts). True when
+ * it took the click. Sketch geometry under the pointer keeps the click for the sketch.
+ */
+function sketchModelClick(e: ThreeEvent<MouseEvent>, kernel: KernelMesh, viewportHeight: number, allow: readonly string[]): boolean {
+    if (e.delta > CLICK_SLOP_PX) {
+        return false;
+    }
+    const entity = entityAt(e, kernel, viewportHeight, allow);
+    const at = sketchPointAt(e.nativeEvent.clientX, e.nativeEvent.clientY);
+    if (!entity || (sketchUnder(at?.p ?? null, at?.tolerance ?? 0) && !useSketchModel.getState().picking)) {
+        return false;
+    }
+    e.stopPropagation();
+    const lines = kernel.edges.getAttribute('position').array;
+    if (entity.kind === 'edge') {
+        const point = edgePick(lines, kernel.segEdge, entity.index);
+        if (point) {
+            modelEntityClick({ kind: 'edge', index: entity.index, at: point });
+        }
+    } else {
+        const ref = facePick(kernel.surface.getAttribute('position').array, kernel.surface.getAttribute('normal').array,
+            kernel.surface.getIndex()!.array, kernel.triFace, entity.index);
+        if (ref) {
+            modelEntityClick({ kind: 'face', index: entity.index, at: ref.at, normal: ref.normal });
+        }
+    }
+    return true;
+}
+
+/** The face or edge right-clicked in an open sketch, for a form opened from the sketch's menu (Convert entities). */
+function rememberSketchPick(e: ThreeEvent<MouseEvent>, kernel: KernelMesh, viewportHeight: number): void {
+    const entity = entityAt(e, kernel, viewportHeight);
+    let pick: ModelPick | null = null;
+    if (entity?.kind === 'edge') {
+        const at = edgePick(kernel.edges.getAttribute('position').array, kernel.segEdge, entity.index);
+        pick = at && { kind: 'edge', index: entity.index, at };
+    } else if (entity) {
+        const ref = facePick(kernel.surface.getAttribute('position').array, kernel.surface.getAttribute('normal').array,
+            kernel.surface.getIndex()!.array, kernel.triFace, entity.index);
+        pick = ref && { kind: 'face', index: entity.index, at: ref.at, normal: ref.normal };
+    }
+    useSketchModel.setState({ pendingPick: pick });
 }
 
 /** Overlay geometry of some faces (unindexed triangles), or null when there are none. */
@@ -334,7 +422,7 @@ function CursorTracker() {
             setCursor(hover.point, true);
             return;
         }
-        raycaster.setFromCamera(pointer, camera);
+        rayFromCamera(raycaster, pointer, camera);
         setCursor(raycaster.ray.intersectPlane(ground, hit), false);
     });
     return null;
@@ -399,8 +487,19 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
     const [hovered, setHovered] = useState(false);
     // Face and edge picking: the active part in the part workspace, in plain select mode (sketching and decal
     // placement use clicks on the part themselves). Hover stays local so a mouse move re-renders only this part.
-    const pickable = useStudio((s) => s.workspace === 'part' && s.mode === 'select' && s.activePart === part.id && !s.placingDecal)
-        && !dimmed && !!kernel;
+    // A sketch tool that takes model faces and edges (Convert entities, offset from the model...) picks them too.
+    const sketchPicks = useModelPickKinds(part.id);
+    // Drawing in a sketch the part takes no pointer moves (its triangles are not tested on every move) unless a
+    // sketch tool picks its faces or edges; clicks and the right-click menu still reach it.
+    const still = useSketchView() && !sketchPicks;
+    useEffect(() => {
+        if (still) {
+            setHovered(false);
+        }
+    }, [still]);
+    const modelPicked = useSketchModel((s) => s.picks);
+    const pickable = (useStudio((s) => s.workspace === 'part' && s.mode === 'select' && s.activePart === part.id && !s.placingDecal)
+        || (sketching && !!sketchPicks)) && !dimmed && !!kernel;
     const viewportHeight = useThree((s) => s.size.height);
     const allPicked = useStudio((s) => s.picked);
     // An open form with selection boxes takes the clicks on this part instead of the plain pick list.
@@ -440,6 +539,13 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
             : { faces: null, edges: edgesPoints(kernel, [hoverPick.index]) };
     }, [kernel, hoverPick]);
     const pickedOverlay = useMemo(() => {
+        if (kernel && sketching && sketchPicks) {
+            const unique = [...new Map(modelPicked.map((p) => [pickKey(p), p])).values()];
+            return {
+                faces: facesGeometry(kernel, unique.filter((p) => p.kind === 'face').map((p) => p.index)),
+                edges: edgesPoints(kernel, unique.filter((p) => p.kind === 'edge').map((p) => p.index)),
+            };
+        }
         if (kernel && boxes?.lists) {
             return { faces: facesGeometry(kernel, boxes.faces), edges: edgesPoints(kernel, boxes.edges) };
         }
@@ -451,7 +557,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
             faces: facesGeometry(kernel, mine.filter((p) => p.kind === 'face').map((p) => p.index)),
             edges: edgesPoints(kernel, mine.filter((p) => p.kind === 'edge').map((p) => p.index)),
         };
-    }, [kernel, allPicked, part.id, boxes?.lists, boxes?.faces, boxes?.edges]);
+    }, [kernel, allPicked, part.id, boxes?.lists, boxes?.faces, boxes?.edges, sketching, !!sketchPicks, modelPicked]);
     const rowOverlay = useMemo(() => {
         const row = boxes?.hover;
         if (!kernel || !row) {
@@ -465,7 +571,10 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
     useEffect(() => () => hoverOverlay.faces?.dispose(), [hoverOverlay]);
     useEffect(() => () => pickedOverlay.faces?.dispose(), [pickedOverlay]);
     // Outline for the selection highlight while the kernel mesh (with its real edges) is still building.
-    const previewEdges = useMemo(() => (selected && !kernel ? new EdgesGeometry(preview, 30) : null), [selected, kernel, preview]);
+    // A part built from sketches has no shape of its own to outline until its kernel mesh is there.
+    const previewEdges = useMemo(
+        () => (selected && !kernel && preview.getAttribute('position') ? new EdgesGeometry(preview, 30) : null), [selected, kernel, preview],
+    );
     const edges = kernel?.edges ?? previewEdges;
     useEffect(() => () => preview.dispose(), [preview]);
     useEffect(() => () => previewEdges?.dispose(), [previewEdges]);
@@ -502,31 +611,41 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
     const highlight = selected ? 0.16 : hovered && !dimmed && !pickable ? 0.07 : 0;
     const handlers = dimmed && !placingDecal ? { raycast: noRaycast } : {
         raycast: Mesh.prototype.raycast,
-        onPointerMove: (e: ThreeEvent<PointerEvent>) => {
+        onPointerMove: still ? undefined : (e: ThreeEvent<PointerEvent>) => {
             setHovered(onPartPointer('move', part, e));
             if (pickable && kernel) {
-                setHover(entityAt(e, kernel, viewportHeight, boxes?.allow.length ? boxes.allow : undefined));
+                setHover(entityAt(e, kernel, viewportHeight, sketching && sketchPicks ? sketchPicks : boxes?.allow.length ? boxes.allow : undefined));
             }
         },
-        onPointerOut: (e: ThreeEvent<PointerEvent>) => {
+        onPointerOut: still ? undefined : (e: ThreeEvent<PointerEvent>) => {
             onPartPointer('out', part, e);
             setHovered(false);
             setHover(null);
         },
         onClick: (e: ThreeEvent<MouseEvent>) => {
+            if (sketching && sketchPicks && kernel) {
+                sketchModelClick(e, kernel, viewportHeight, sketchPicks);
+                return;
+            }
             onPartPointer('click', part, e);
             if (pickable && kernel && e.delta <= CLICK_SLOP_PX) {
                 const entity = entityAt(e, kernel, viewportHeight, boxes?.allow.length ? boxes.allow : undefined);
                 if (entity && boxes?.allow.length) {
                     const n = e.face?.normal;
                     const local = e.object.worldToLocal(e.point.clone());
-                    boxes.click(entity, [local.x, local.y, local.z], n ? [n.x, n.y, n.z] : undefined);
+                    boxes.click(entity, [local.x, local.y, local.z], n ? [n.x, n.y, n.z] : undefined, edgeReach(e, viewportHeight));
                 } else if (entity) {
                     pickEntity({ partId: part.id, ...entity }, e.shiftKey);
                 }
             }
         },
         onDoubleClick: (e: ThreeEvent<MouseEvent>) => onPartPointer('dblclick', part, e),
+        onContextMenu: (e: ThreeEvent<MouseEvent>) => {
+            if (sketching && kernel) {
+                rememberSketchPick(e, kernel, viewportHeight);
+            }
+            offerPartTarget(e, part, kernel, viewportHeight);
+        },
     };
     return (
         <group ref={group}>
@@ -609,13 +728,16 @@ function boundsAt(project: Project, offsets: Record<string, Vec3>, focus: string
     for (const part of parts) {
         const offset = offsets[part.id];
         // Bodies built from sketch steps have no useful shape extents: use the kernel mesh once it is there.
-        const real = kernelBounds.get(part.id);
+        const built = kernelBounds.get(part.id);
+        // A part with no solid yet is framed by its sketches, or as a little space around its planes when it has none.
+        const drawn = built && !built.isEmpty() ? null : sketchExtent(part.features);
+        const real = drawn ? new Box3(new Vector3(...drawn.min), new Vector3(...drawn.max)) : built && !built.isEmpty() ? built : null;
         const centre = new Vector3();
         if (real) {
             real.getSize(half).multiplyScalar(0.5);
             real.getCenter(centre);
         } else {
-            half.set(...shapeHalfExtents(part.shape));
+            half.set(...(part.shape.kind === 'empty' ? EMPTY_PART_HALF : shapeHalfExtents(part.shape)));
         }
         const shift = new Vector3(offset[0], offset[1], offset[2]).multiplyScalar(explode);
         for (const instance of instanceTransforms(part)) {
@@ -722,8 +844,9 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
         state.first = false;
     }, [asked, ids, boundsVersion, controls]);
 
-    // Leaving a sketch puts the view back where it was when the sketch was started (the sketch turned it square on
-    // to its plane). Declared before the effects that turn the view for a sketch, so it records the view first.
+    // Leaving a sketch without keeping it puts the view back where it was when the sketch was started (the sketch
+    // turned it square on to its plane); a kept sketch leaves the view normal to it (SolidWorks, Sketch options).
+    // Declared before the effects that turn the view for a sketch, so it records the view first.
     const sketching = useSketcher((s) => s.active);
     const beforeSketch = useRef<{ position: Vector3; target: Vector3 } | null>(null);
     useEffect(() => {
@@ -735,7 +858,9 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
         } else if (beforeSketch.current) {
             const { position, target } = beforeSketch.current;
             beforeSketch.current = null;
-            moveTo(position, target, true);
+            if (sketchWasDiscarded()) {
+                moveTo(position, target, true);
+            }
         }
     }, [sketching, controls]);
 
@@ -800,8 +925,9 @@ function Rig({ project, offsets }: { project: Project; offsets: Record<string, V
 }
 
 /**
- * CAD-style orbit pivot: a left drag turns around the selected part's centre, else around the point under the
- * pointer (a part surface, or the ground). setOrbitPoint keeps the camera exactly where it is, so nothing jumps.
+ * CAD-style orbit pivot. Part workspace: a left drag turns around the spot on the part under the pointer, or the
+ * middle of the part when the pointer is off it. Assembly: around the selected part's centre, else the point under
+ * the pointer (a part surface, or the ground). setOrbitPoint keeps the camera exactly where it is, so nothing jumps.
  */
 function Pivot({ project, offsets }: { project: Project; offsets: Record<string, Vec3> }) {
     const controls = useThree((s) => s.controls) as CameraControlsImpl | null;
@@ -821,18 +947,34 @@ function Pivot({ project, offsets }: { project: Project; offsets: Record<string,
         const raycaster = new Raycaster();
         const ground = new Plane(new Vector3(0, 1, 0), 0);
         const down = (event: PointerEvent) => {
-            if (event.button !== 0) {
+            if (event.button === 1) {
+                // As in SolidWorks: the middle button turns the view, pans it with Ctrl and zooms it with Shift.
+                const { ACTION } = CameraControlsImpl;
+                controls.mouseButtons.middle = event.ctrlKey || event.metaKey ? ACTION.TRUCK : event.shiftKey ? ACTION.DOLLY : ACTION.ROTATE;
+            } else if (event.button !== 0) {
                 return;
             }
             const { project: p, offsets: o } = latest.current;
-            const { selected, workspace, activePart } = useStudio.getState();
+            const { selected, workspace, activePart, mode } = useStudio.getState();
             const pivotPart = p.parts.find((part) => part.id === (workspace === 'part' ? activePart : selected));
-            let point: Vector3 | null = pivotPart ? partCentre(pivotPart, o[pivotPart.id]) : null;
+            const rect = gl.domElement.getBoundingClientRect();
+            const ndc = new Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
+            rayFromCamera(raycaster, ndc, camera);
+            const under = () => raycaster.intersectObjects(scene.children, true).find((h) => h.object.userData.partId);
+            let point: Vector3 | null;
+            // In a sketch: about the spot of the sketch plane under the pointer, unless the part itself is there.
+            const onSketch = mode === 'sketch' && !under() ? sketchPlaneAt(event.clientX, event.clientY) : null;
+            if (onSketch && onSketch.distanceTo(camera.position) < 4 * controls.distance) {
+                point = onSketch;
+            } else if (workspace === 'part') {
+                // Editing a part: turn about the spot on it under the pointer; off the part, about its middle
+                // (not its origin, which can be far from what is on screen).
+                point = under()?.point ?? (pivotPart ? boundsAt(p, o, pivotPart.id)?.center ?? partCentre(pivotPart, o[pivotPart.id]) : null);
+            } else {
+                point = pivotPart ? partCentre(pivotPart, o[pivotPart.id]) : null;
+            }
             if (!point) {
-                const rect = gl.domElement.getBoundingClientRect();
-                const ndc = new Vector2(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
-                raycaster.setFromCamera(ndc, camera);
-                const hit = raycaster.intersectObjects(scene.children, true).find((h) => h.object.userData.partId);
+                const hit = under();
                 point = hit?.point ?? raycaster.ray.intersectPlane(ground, new Vector3());
                 // A ground point at the horizon would be a useless pivot: keep the current one.
                 if (point && !hit && point.distanceTo(camera.position) > 4 * controls.distance) {
@@ -840,13 +982,52 @@ function Pivot({ project, offsets }: { project: Project; offsets: Record<string,
                 }
             }
             if (point) {
+                const distance = controls.distance;
                 controls.setOrbitPoint(point.x, point.y, point.z);
+                if (flatHeight(camera)) {
+                    // Flat: the size of the picture is tied to this distance, and where the camera stands along its
+                    // line of sight does not show, so the new turning point leaves the zoom as it was.
+                    void controls.dollyTo(distance, false);
+                }
+            }
+        };
+        // The middle button is the view's: no auto-scroll.
+        const noScroll = (event: MouseEvent) => {
+            if (event.button === 1) {
+                event.preventDefault();
             }
         };
         // Capture phase: set the pivot before camera-controls starts the drag.
         element.addEventListener('pointerdown', down, { capture: true });
-        return () => element.removeEventListener('pointerdown', down, { capture: true });
+        element.addEventListener('mousedown', noScroll);
+        return () => {
+            element.removeEventListener('pointerdown', down, { capture: true });
+            element.removeEventListener('mousedown', noScroll);
+        };
     }, [controls, gl, connected, camera, scene]);
+    return null;
+}
+
+/**
+ * Draws the view flat (no perspective) where that is chosen: while a sketch is drawn unless Perspective is turned on
+ * for sketching, and in the 3D view when it is turned off there. See viewProjection.ts.
+ */
+function Projection() {
+    const camera = useThree((s) => s.camera) as PerspectiveCamera;
+    const controls = useThree((s) => s.controls) as CameraControlsImpl | null;
+    const sketching = useSketcher((s) => s.active && s.stage === 'draw');
+    const perspective = useStudio((s) => (sketching ? s.perspective.sketch : s.perspective.model));
+    useEffect(() => () => drawPerspective(camera), [camera]);
+    // After camera-controls has moved the camera (it updates before this), before the frame is drawn.
+    useFrame(() => {
+        if (!perspective && controls) {
+            drawFlat(camera, controls.distance);
+        } else {
+            drawPerspective(camera);
+        }
+        camera.getWorldDirection(liveView.direction);
+        liveView.known = true;
+    });
     return null;
 }
 
@@ -887,6 +1068,8 @@ export function Scene({ project }: { project: Project }) {
     const partView = useStudio((s) => s.partView);
     const sketchPart = useSketcher((s) => s.partId);
     const placingDecal = useStudio((s) => !!s.placingDecal);
+    // While a sketch is drawn the view is drawn plainly and only on change (sketchViewMode.tsx).
+    const plain = useSketchView();
     const activeShown = activePart !== null && project.parts.some((p) => p.id === activePart);
     // The open tool form's preview: changed parts drawn as they would be, new ones added.
     const preview = useStudio((s) => s.preview);
@@ -924,11 +1107,11 @@ export function Scene({ project }: { project: Project }) {
                 compute: (event, state) => {
                     const rect = state.gl.domElement.getBoundingClientRect();
                     state.pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
-                    state.raycaster.setFromCamera(state.pointer, state.camera);
+                    rayFromCamera(state.raycaster, state.pointer, state.camera);
                 },
             })}
             shadows
-            dpr={[1, 2]}
+            {...sketchCanvas(plain)}
             camera={{ fov: 32, near: 1, far: 20000, position: [200, 150, 400] }}
             // The drawing buffer is kept so view_screenshot can read the canvas at any time.
             gl={{ antialias: true, preserveDrawingBuffer: true }}
@@ -969,14 +1152,17 @@ export function Scene({ project }: { project: Project }) {
 
             <Manipulators offsets={offsets} />
 
-            <ContactShadows position={[0, -0.5, 0]} scale={900} far={400} blur={2.4} opacity={0.55} resolution={1024} />
+            <ContactShadows position={[0, -0.5, 0]} scale={900} far={400} blur={2.4} opacity={0.55} resolution={1024} frames={plain ? 0 : Infinity} />
             <CameraControls makeDefault dollyToCursor minDistance={1} maxDistance={20000} smoothTime={0.22} draggingSmoothTime={0.08} />
             <Pivot project={project} offsets={offsets} />
+            <Projection />
+            <SketchViewMode plain={plain} explode={project.view.explode} spin={!!project.view.autoRotate} />
+            <RightClickGate />
             <Rig project={project} offsets={offsets} />
             <LabelDriver project={project} offsets={offsets} />
             <CursorTracker />
             <GroundGrid />
-            <EffectComposer>
+            <EffectComposer enabled={!plain}>
                 <Bloom mipmapBlur luminanceThreshold={1} intensity={0.8} radius={0.7} />
             </EffectComposer>
             {/* After the composer, so the triad is drawn on top of the post-processed frame. */}

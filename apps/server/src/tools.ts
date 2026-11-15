@@ -52,17 +52,65 @@ const edgePicks = {
 };
 
 const point2 = z.tuple([z.number(), z.number()]);
-const planeRef = z.union([z.enum(['top', 'front', 'right']), z.object({ planeRef: z.string() })])
-    .describe('A base plane, or { planeRef: id } of an earlier plane step');
-const axisRef = z.union([z.enum(['x', 'y', 'z']), z.object({ axisRef: z.string() })])
-    .describe('A part axis through the origin, or { axisRef: id } of an earlier axis step');
+const modelPickKind = z.enum(['face', 'edge', 'circle', 'cylinder', 'cone']).optional()
+    .describe('What it was picked on in the view (informative only)');
+const customPlane = z.object({ origin: vec3, normal: vec3, xDir: vec3.describe('u axis, perpendicular to normal') });
+const fixedLine = z.object({ point: vec3, direction: vec3 });
+const flipNormal = { flipNormal: z.boolean().optional().describe('Turn the plane\'s normal around') };
+const planeRef = z.union([
+    z.enum(['top', 'front', 'right']),
+    z.object({ planeRef: z.string() }),
+    z.object({ fixedPlane: customPlane, from: modelPickKind })
+        .describe('A plane by value, e.g. a flat face as it is now (it does not follow later changes)'),
+]).describe('A base plane (top: XZ, normal +Y; front: XY, normal +Z; right: YZ, normal +X), { planeRef: id } of an earlier plane step, or { fixedPlane }');
+const axisRef = z.union([
+    z.enum(['x', 'y', 'z']),
+    z.object({ axisRef: z.string() }),
+    z.object({ fixedAxis: fixedLine, from: modelPickKind })
+        .describe('A line by value, e.g. a straight edge or a cylinder axis as it is now (it does not follow later changes)'),
+]).describe('A part axis through the origin, { axisRef: id } of an earlier axis step, or { fixedAxis }');
 const pointRef = z.union([vec3, z.object({ pointRef: z.string() })])
     .describe('A point [x, y, z] in the part frame, or { pointRef: id } of an earlier point step');
+// References of reference steps taken from the model that follow it: the kernel finds the picked face, edge or vertex
+// again at every rebuild; the fixed values are only where it was last found. (Listed first so a pick is not dropped.)
+const edgeShape = z.discriminatedUnion('type', [
+    z.object({ type: z.literal('line'), a: vec3, b: vec3 }),
+    z.object({ type: z.literal('circle'), centre: vec3, normal: vec3, radius: z.number(), full: z.boolean(), start: vec3, end: vec3 }),
+]).describe('The edge as last found: a line from a to b, or a circle or arc counter-clockwise about normal from start to end');
+const edgePick = z.object({
+    edge: vec3.describe('A point on the edge'), faces: z.array(facePick).optional().describe('The faces that meet at it'), shape: edgeShape.optional(),
+}).describe('An edge picked in the view');
+const vertexPick = z.object({ vertex: vec3, faces: z.array(facePick).optional().describe('The faces that meet there') })
+    .describe('A vertex picked in the view');
+const followedPlane = z.object({
+    fixedPlane: customPlane, from: modelPickKind, pick: z.union([z.object({ face: facePick }), edgePick]).describe('The flat face or circular edge picked'),
+}).describe('A plane taken from a flat face or circular edge that follows the model');
+const followedAxis = z.object({
+    fixedAxis: fixedLine, from: modelPickKind, pick: z.union([edgePick, z.object({ face: facePick })]).describe('The straight edge or cylindrical or conical face picked'),
+}).describe('A line taken from a straight edge or a cylinder\'s or cone\'s axis that follows the model');
+const followedPoint = z.object({ fixedPoint: vec3, from: z.enum(['vertex', 'centre']), pick: z.union([vertexPick, edgePick]) })
+    .describe('A vertex or the centre of a circular edge, following the model');
+const refPlane = z.union([followedPlane, planeRef]);
+const refAxis = z.union([followedAxis, axisRef]);
+const refPoint = z.union([followedPoint, pointRef]);
+const pointDefinition = z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('arcCentre'), edge: edgePick }),
+    z.object({ kind: z.literal('faceCentre'), face: facePick }),
+    z.object({ kind: z.literal('vertex'), vertex: vertexPick }),
+    z.object({ kind: z.literal('intersection'), a: edgePick, b: edgePick }).describe('Where two straight edges (extended) meet'),
+    z.object({
+        kind: z.literal('along'), edge: edgePick, by: z.enum(['distance', 'percent']), amount: z.number().positive(),
+        index: z.number().int().min(1).describe('Which of the points spaced amount apart, from the start of edge.shape'),
+        reverse: z.boolean().optional().describe('From the end of edge.shape'),
+    }),
+]).describe('How the point was taken from the model; it is found again at every rebuild and position is where it was last found');
 const sketchLineAxis = z.object({ line: z.string() }).describe('A line or centreline of the sketch, by curve id (sketch geometry)');
 const sketchProfile = z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('rect'), center: point2, width: z.number().positive(), height: z.number().positive(),
         radius: z.number().min(0).optional().describe('Corner radius') }),
     z.object({ kind: z.literal('circle'), center: point2, radius: z.number().positive() }),
+    z.object({ kind: z.literal('ellipse'), center: point2, major: point2.describe('End of one axis'),
+        minor: z.number().positive().describe('The other radius') }).describe('Ellipse; the longer radius is the major axis'),
     z.object({ kind: z.literal('slot'), from: point2, to: point2, radius: z.number().positive() }),
     z.object({ kind: z.literal('polygon'), points: z.array(point2).min(3) }),
     z.object({
@@ -71,6 +119,27 @@ const sketchProfile = z.discriminatedUnion('kind', [
         segments: z.array(z.discriminatedUnion('kind', [
             z.object({ kind: z.literal('line'), to: point2 }),
             z.object({ kind: z.literal('arc'), to: point2, through: point2.describe('A point the arc passes through') }),
+            z.object({ kind: z.literal('ellipse'), to: point2, center: point2, major: point2.describe('End of one axis'),
+                minor: z.number().positive().describe('The other radius'), ccw: z.boolean().describe('Counter-clockwise') })
+                .describe('Elliptical arc to `to`; both ends on the ellipse'),
+            z.object({ kind: z.literal('spline'), to: point2, through: z.array(point2).describe('Points it passes through in between'),
+                startHandle: point2.optional().describe('Tangency handle at the start: the first control point off it'),
+                endHandle: point2.optional().describe('Tangency handle at the end'),
+                spacing: z.array(z.number().positive()).optional().describe('Leave out; written by the sketcher (a cut spline keeps its spacing)'),
+                handles: z.array(z.object({ at: z.number().int().min(0), prev: point2, next: point2 })).optional()
+                    .describe('Leave out; tangency handles at other points (point index, the control points either side)'),
+                curvature: z.array(z.object({ at: z.number().int().min(0), value: z.number() })).optional()
+                    .describe('Leave out; curvature held at handle points (1/mm, positive turning left)'),
+                continuity: z.boolean().optional().describe('Leave out; curvature kept continuous across the handles') })
+                .describe('Smooth spline through points; ending where it starts, it is closed'),
+            z.object({ kind: z.literal('bspline'), to: point2, poles: z.array(point2).describe('Control vertices in between'),
+                degree: z.number().int().min(1).describe('Control vertices less one: a Bezier curve; else a clamped B-spline of that degree'),
+                knots: z.array(z.number()).optional().describe('Leave out; written by the sketcher (a cut style spline keeps its inner knots)'),
+                weights: z.array(z.number().positive()).optional().describe('A weight per control vertex, first to last: a rational curve') })
+                .describe('Style spline shaped by its control polygon'),
+
+            z.object({ kind: z.literal('conic'), to: point2, apex: point2.describe('Where the end tangents meet (top vertex)'),
+                rho: z.number().gt(0).lt(1).describe('0.5 parabola, below elliptic, above hyperbolic') }),
         ])).min(1),
     }),
 ]);
@@ -88,11 +157,24 @@ const sketch = z.object({
         points: z.array(z.looseObject({ id: z.string(), u: z.number(), v: z.number() })),
         curves: z.array(z.looseObject({ id: z.string(), kind: z.string() })),
         constraints: z.array(z.looseObject({ id: z.string(), kind: z.string() })),
+        // Sketch text, pictures, equation curves and blocks (the entities they own are in curves and points).
+        texts: z.array(z.looseObject({ id: z.string() })).optional(),
+        pictures: z.array(z.looseObject({ id: z.string() })).optional(),
+        equations: z.array(z.looseObject({ id: z.string() })).optional(),
+        blocks: z.array(z.looseObject({ id: z.string() })).optional(),
+        inserts: z.array(z.looseObject({ id: z.string() })).optional(),
+        offsets: z.array(z.looseObject({ id: z.string() })).optional(),
+        segments: z.array(z.looseObject({ id: z.string() })).optional(),
+        patterns: z.array(z.looseObject({ id: z.string() })).optional(),
     }).optional().describe('Leave out; written by the interactive sketcher'),
     regions: z.array(z.object({ loops: z.array(sketchProfile).min(1), at: point2 })).optional()
         .describe('Leave out; written by the interactive sketcher (every closed area of the sketch, for picking)'),
     open: z.array(sketchProfile).optional()
         .describe('Open chains (path profiles, not closed back to their start), e.g. a sweep path; profiles holds only closed areas'),
+    view: z.enum(['front', 'top', 'right', 'left', 'bottom', 'back', 'auxiliary']).optional()
+        .describe('Leave out; written by the sketcher (the view of a 2D to 3D conversion this sketch is)'),
+    derived: z.object({ from: z.string() }).optional()
+        .describe('Derived sketch: follows the earlier sketch step `from` (its entities), placed on this sketch\'s own plane'),
 });
 /** Pick points selecting some closed areas of the sketch instead of all of it. */
 const regionPicks = z.array(point2).optional()
@@ -314,29 +396,46 @@ const feature = z.discriminatedUnion('op', [
         ...featureBase,
         op: z.literal('plane'),
         definition: z.discriminatedUnion('kind', [
-            z.object({ kind: z.literal('offset'), base: planeRef, distance: z.number() }),
-            z.object({ kind: z.literal('angle'), base: planeRef, about: z.union([z.enum(['u', 'v']), axisRef]), angle: z.number() }),
-            z.object({ kind: z.literal('threePoints'), points: z.tuple([pointRef, pointRef, pointRef]) }),
-            z.object({ kind: z.literal('pointNormal'), point: pointRef, normal: vec3, xDir: vec3.optional() }),
-            z.object({ kind: z.literal('midplane'), a: planeRef, b: planeRef }),
-            z.object({ kind: z.literal('parallel'), base: planeRef, point: pointRef }).describe('Parallel to a plane, through a point'),
-            z.object({ kind: z.literal('normal'), axis: axisRef, point: pointRef.optional() })
+            z.object({ ...flipNormal, kind: z.literal('offset'), base: refPlane, distance: z.number() }),
+            z.object({
+                ...flipNormal,
+                kind: z.literal('angle'), base: refPlane, about: z.union([z.enum(['u', 'v']), refAxis]), angle: z.number(),
+                throughAxis: z.boolean().optional().describe('Move the plane onto the axis first (axis in or parallel to the plane)'),
+            }),
+            z.object({ ...flipNormal, kind: z.literal('threePoints'), points: z.tuple([refPoint, refPoint, refPoint]) }),
+            z.object({ ...flipNormal, kind: z.literal('pointNormal'), point: refPoint, normal: vec3, xDir: vec3.optional() }),
+            z.object({ ...flipNormal, kind: z.literal('midplane'), a: refPlane, b: refPlane }),
+            z.object({ ...flipNormal, kind: z.literal('parallel'), base: refPlane, point: refPoint }).describe('Parallel to a plane, through a point'),
+            z.object({ ...flipNormal, kind: z.literal('normal'), axis: refAxis, point: refPoint.optional() })
                 .describe('Perpendicular to an axis, through a point (default: on the axis)'),
+            z.object({ ...flipNormal, kind: z.literal('perpendicular'), base: refPlane, axis: refAxis }).describe('Through an axis, perpendicular to a plane'),
+            z.object({ ...flipNormal, kind: z.literal('linePoint'), axis: refAxis, point: refPoint }).describe('Through an axis and a point off it'),
+            z.object({
+                ...flipNormal,
+                kind: z.literal('tangent'),
+                cylinder: fixedLine.extend({ radius: z.number().positive(), pick: z.object({ face: facePick }).optional() })
+                    .describe('A cylinder: its axis and radius (with pick: as last found, the picked face followed)'),
+                point: refPoint.optional().describe('Through this point (on the surface: tangent there)'),
+                plane: refPlane.optional().describe('Or parallel to this plane (parallel to the axis), turned by angle'),
+                angle: z.number().optional(),
+                flip: z.boolean().optional().describe('The other of the two tangent planes'),
+            }).describe('Tangent to a cylinder'),
         ]),
     }).describe('Construction plane; sketches and other steps use it with { planeRef: id }'),
     z.object({
         ...featureBase,
         op: z.literal('axis'),
         definition: z.discriminatedUnion('kind', [
-            z.object({ kind: z.literal('twoPoints'), a: pointRef, b: pointRef }),
-            z.object({ kind: z.literal('pointDirection'), point: pointRef, direction: vec3 }),
-            z.object({ kind: z.literal('planeIntersection'), a: planeRef, b: planeRef }),
+            z.object({ kind: z.literal('twoPoints'), a: refPoint, b: refPoint }),
+            z.object({ kind: z.literal('pointDirection'), point: refPoint, direction: vec3 }),
+            z.object({ kind: z.literal('planeIntersection'), a: refPlane, b: refPlane }),
             z.object({ kind: z.literal('sketchLine'), sketchRef: z.string(), line: z.string() })
                 .describe('Along a line or centreline (curve id) of an earlier sketch step'),
-            z.object({ kind: z.literal('pointPlane'), point: pointRef, plane: planeRef }).describe('Through a point, normal to a plane'),
+            z.object({ kind: z.literal('pointPlane'), point: refPoint, plane: refPlane }).describe('Through a point, normal to a plane'),
+            z.object({ kind: z.literal('along'), axis: refAxis }).describe('Along an axis, e.g. a picked edge or cylinder axis ({ fixedAxis })'),
         ]),
     }).describe('Construction axis for revolves, coils and circular patterns: { axisRef: id }'),
-    z.object({ ...featureBase, op: z.literal('point'), position: vec3 }),
+    z.object({ ...featureBase, op: z.literal('point'), position: vec3, definition: pointDefinition.optional() }),
     z.object({
         ...featureBase,
         op: z.literal('sweep'),
@@ -406,6 +505,8 @@ const feature = z.discriminatedUnion('op', [
         kind: z.enum(['external', 'internal']),
         at: vec3.optional().describe('A point on the circular edge where the thread begins (end of a shaft or hole); '
             + 'axis, start and diameter come from it'),
+        alsoAt: z.array(vec3).optional().describe('With at: more circular edges threaded with the same settings, each from '
+            + 'its own hole or shaft (which decides where it starts and how far it runs)'),
         diameter: z.number().positive().optional().describe('Nominal (major) diameter; required without at'),
         pitch: z.number().positive(),
         length: z.number().positive().optional().describe('Thread length (blind); or give revolutions'),
@@ -413,6 +514,10 @@ const feature = z.discriminatedUnion('op', [
         offset: z.number().optional().describe('Start this far from the edge along the thread; negative starts before the edge '
             + '(the thread is trimmed to the hole or shaft)'),
         length2: z.number().positive().optional().describe('Direction 2: also run this far the other way from the start'),
+        method: z.enum(['cut', 'extrude']).optional().describe('With at. cut: only removes material (hole at tap size, shaft at '
+            + 'major diameter). extrude: adds the ridges (hole at major diameter, shaft at root diameter). Default: by the size found'),
+        trimStart: z.boolean().optional().describe('The thread runs out through its start face; default true'),
+        trimEnd: z.boolean().optional().describe('The thread runs out through its end; default true'),
         leftHanded: z.boolean().optional(),
         starts: z.number().int().min(1).max(8).optional().describe('Multi-start thread; default 1'),
         startAngle: z.number().optional().describe('Degrees about the axis where the thread begins'),

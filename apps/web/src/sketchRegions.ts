@@ -5,9 +5,10 @@
 // point are not split: the graph only knows the points the curves end at.
 
 import type { SketchProfile, SketchRegion, SketchSegment } from '@jarvis/core';
-import { area, circleThrough, dist, entitiesToProfiles, inside, profilePoints, type Entity, type Pt } from './sketchMath';
+import { reverseSegment, segmentPoints } from '@jarvis/core/curves';
+import { area, circleThrough, dist, entitiesToProfiles, inside, profilePoints, toSegment, type Entity, type Pt } from './sketchMath';
 
-type Curve = Extract<Entity, { kind: 'line' | 'arc' }>;
+type Curve = Extract<Entity, { kind: 'line' | 'arc' | 'curve' }>;
 
 /** Points closer than this (mm) are one vertex even when they are different sketch points. */
 const MERGE = 1e-3;
@@ -66,7 +67,7 @@ export function openChains(entities: Entity[], ends: Map<string, [string, string
             const next = vertex[i][0] === v ? vertex[i][1] : vertex[i][0];
             const c = curves[i];
             const to = point(next, i);
-            segments.push(c.kind === 'line' ? { kind: 'line', to } : { kind: 'arc', to, through: c.m });
+            segments.push(c.kind === 'curve' ? toSegment(c, vertex[i][0] !== v) : c.kind === 'line' ? { kind: 'line', to } : { kind: 'arc', to, through: c.m });
             v = next;
             const onward = at.get(v) ?? [];
             if (onward.length !== 2) {
@@ -100,14 +101,75 @@ export function openChains(entities: Entity[], ends: Map<string, [string, string
 }
 
 interface Loop {
+    /** The profile's values as text: equal keys, equal profiles. */
+    key: string;
     profile: SketchProfile;
     points: Pt[];
     size: number;
+    bounds: [number, number, number, number];
 }
 
+// What is worked out per loop and per region is kept, keyed by the values it came from: a drag changes a few loops of
+// the sketch and every other one is found here again, exactly as it was worked out before.
+const MAX_KEPT = 5000;
+const loopsKept = new Map<string, Omit<Loop, 'profile'>>();
+const pointsKept = new Map<string, Pt>();
+const regionsKept = new Map<string, SketchRegion>();
+
+function kept<T>(store: Map<string, T>, key: string, make: () => T): T {
+    let value = store.get(key);
+    if (value === undefined) {
+        value = make();
+        if (store.size >= MAX_KEPT) {
+            store.delete(store.keys().next().value!);
+        }
+        store.set(key, value);
+    }
+    return value;
+}
+
+/** Forgets what was kept (for tests: the next call works everything out again). */
+export function clearRegionStore(): void {
+    loopsKept.clear();
+    pointsKept.clear();
+    regionsKept.clear();
+}
+
+/** Values as text, every number exactly (-0 apart from 0). */
+function valueKey(v: unknown): string {
+    if (typeof v === 'number') {
+        return Object.is(v, -0) ? '-0' : String(v);
+    }
+    if (Array.isArray(v)) {
+        let s = '[';
+        for (const x of v) {
+            s += valueKey(x) + ',';
+        }
+        return s + ']';
+    }
+    if (v && typeof v === 'object') {
+        let s = '{';
+        for (const [k, x] of Object.entries(v)) {
+            s += k + ':' + valueKey(x) + ';';
+        }
+        return s + '}';
+    }
+    return typeof v === 'string' ? JSON.stringify(v) : String(v);
+}
+
+/** A loop of its own (two equal loops of a sketch stay two), with what is worked out from the profile kept. */
 function loopOf(profile: SketchProfile): Loop {
-    const points = cleanRing(profilePoints(profile));
-    return { profile, points, size: Math.abs(area(points)) };
+    const key = valueKey(profile);
+    const known = kept(loopsKept, key, () => {
+        const points = cleanRing(profilePoints(profile));
+        return { key, points, size: Math.abs(area(points)), bounds: boundsOf(points) };
+    });
+    return { ...known, profile };
+}
+
+/** interiorPoint of a loop and its holes, kept. */
+function loopInterior(outer: Loop, holes: Loop[]): Pt {
+    return kept(pointsKept, [outer.key, ...holes.map((h) => h.key)].join('|'), () => interiorPoint(outer.points, holes.map((h) => h.points)));
 }
 
 /**
@@ -148,10 +210,11 @@ export function sketchRegions(entities: Entity[], ends: Map<string, [string, str
     // Each group's outline is a hole of the smallest face of another group that contains it.
     const holes = new Map<Loop, Loop[]>();
     groups.forEach((g, gi) => {
-        const probe = interiorPoint(g.outer.points, []);
+        // (A face's bounds: a probe outside them is outside it, without the full test.)
+        const probe = loopInterior(g.outer, []);
         let parent: Loop | null = null;
         for (const { f, gi: other } of faces) {
-            if (other !== gi && f.size > g.outer.size && (!parent || f.size < parent.size) && inside(probe, f.points)) {
+            if (other !== gi && f.size > g.outer.size && (!parent || f.size < parent.size) && within(probe, f.bounds) && inside(probe, f.points)) {
                 parent = f;
             }
         }
@@ -159,9 +222,17 @@ export function sketchRegions(entities: Entity[], ends: Map<string, [string, str
             holes.set(parent, [...(holes.get(parent) ?? []), g.outer]);
         }
     });
+    // The same region as before is the same object, so what is drawn for it can be kept too (a second equal region in
+    // one sketch is a copy: each region stays an object of its own).
+    const given = new Set<SketchRegion>();
     return faces.map(({ f }) => {
         const inner = holes.get(f) ?? [];
-        return { loops: [f.profile, ...inner.map((h) => h.profile)], at: interiorPoint(f.points, inner.map((h) => h.points)) };
+        const r = kept(regionsKept, [f.key, ...inner.map((h) => h.key)].join('|'), () => ({ loops: [f.profile, ...inner.map((h) => h.profile)], at: loopInterior(f, inner) }));
+        if (given.has(r)) {
+            return { loops: [...r.loops], at: [r.at[0], r.at[1]] as Pt };
+        }
+        given.add(r);
+        return r;
     });
 }
 
@@ -221,18 +292,48 @@ function segmentDistance(p: Pt, a: Pt, b: Pt): number {
     return dist(p, [a[0] + d[0] * t, a[1] + d[1] * t]);
 }
 
+const boundsOf = (points: Pt[]): [number, number, number, number] => {
+    let [u0, u1, v0, v1] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (const [u, v] of points) {
+        u0 = Math.min(u0, u);
+        u1 = Math.max(u1, u);
+        v0 = Math.min(v0, v);
+        v1 = Math.max(v1, v);
+    }
+    return [u0, u1, v0, v1];
+};
+
+const within = (p: Pt, b: [number, number, number, number]) => p[0] >= b[0] && p[0] <= b[1] && p[1] >= b[2] && p[1] <= b[3];
+
+/** Distance from `p` to the box `b` (0 inside it). */
+const boxDistance = (p: Pt, b: [number, number, number, number]) => Math.hypot(Math.max(0, b[0] - p[0], p[0] - b[1]), Math.max(0, b[2] - p[1], p[1] - b[3]));
+
 /**
  * A point strictly inside `outer` and outside the holes, as far from all their edges as the candidates allow:
  * points of the ear-clipped triangles (centroids and towards each corner), else a grid over the bounds.
  */
 export function interiorPoint(outer: Pt[], holes: Pt[][]): Pt {
     const rings = [outer, ...holes];
-    const valid = (p: Pt) => inside(p, outer) && !holes.some((h) => inside(p, h));
-    const clearance = (p: Pt) => {
+    const boxes = rings.map(boundsOf);
+    const outerBounds = boxes[0];
+    // (A point outside a ring's bounds is outside the ring: the bounds are tested first.)
+    const valid = (p: Pt) => within(p, outerBounds) && inside(p, outer) && !holes.some((h, i) => within(p, boxes[i + 1]) && inside(p, h));
+    // Well above the rounding of a distance: a ring whose bounds lie further off than the nearest edge so far by more
+    // than this has no nearer edge, and is passed over.
+    const scale = boxes.reduce((m, b) => Math.max(m, ...b.map(Math.abs)), 0);
+    // The distance to the nearest edge; once below `floor` the point cannot win, so the search stops there.
+    const clearance = (p: Pt, floor = -Infinity) => {
         let best = Infinity;
-        for (const ring of rings) {
+        for (let r = 0; r < rings.length; r++) {
+            const ring = rings[r];
+            if (r > 0 && best < Infinity && boxDistance(p, boxes[r]) > best * (1 + 1e-9) + (scale + Math.abs(p[0]) + Math.abs(p[1])) * 1e-12) {
+                continue;
+            }
             for (let i = 0; i < ring.length; i++) {
                 best = Math.min(best, segmentDistance(p, ring[i], ring[(i + 1) % ring.length]));
+                if (best <= floor) {
+                    return best;
+                }
             }
         }
         return best;
@@ -258,7 +359,7 @@ export function interiorPoint(outer: Pt[], holes: Pt[][]): Pt {
     let best: Pt = pool[0] ?? outer[0];
     let bestClear = -1;
     for (const p of pool) {
-        const c = clearance(p);
+        const c = clearance(p, bestClear);
         if (c > bestClear) {
             best = p;
             bestClear = c;
@@ -275,7 +376,7 @@ function graphOf(entities: Entity[], ends: Map<string, [string, string]>): { cur
     const all: Curve[] = [];
     const others: Entity[] = [];
     for (const e of entities) {
-        if (e.kind === 'line' || e.kind === 'arc') {
+        if (e.kind === 'line' || e.kind === 'arc' || e.kind === 'curve') {
             all.push(e);
         } else {
             others.push(e);
@@ -287,7 +388,7 @@ function graphOf(entities: Entity[], ends: Map<string, [string, string]>): { cur
     const vertex: [number, number][] = [];
     all.forEach((c, i) => {
         const [a, b] = merged[i];
-        const middle = c.kind === 'arc' ? `:${Math.round(c.m[0] / MERGE)}:${Math.round(c.m[1] / MERGE)}` : '';
+        const middle = c.kind !== 'line' ? `:${Math.round(c.m[0] / MERGE)}:${Math.round(c.m[1] / MERGE)}` : '';
         const key = `${Math.min(a, b)}-${Math.max(a, b)}${middle}`;
         if (!seen.has(key)) {
             seen.add(key);
@@ -320,12 +421,26 @@ function mergeVertices(curves: Curve[], ends: Map<string, [string, string]>): [n
         }
         return [a, b];
     });
-    const points = [...at.entries()];
-    for (let i = 0; i < points.length; i++) {
-        for (let j = i + 1; j < points.length; j++) {
-            if (dist(points[i][1], points[j][1]) < MERGE) {
-                parent.set(find(points[i][0]), find(points[j][0]));
+    // Every two points closer than MERGE: they lie in the same or neighbouring cells of a grid twice that size.
+    const cells = new Map<string, [string, Pt][]>();
+    const cell = (u: number, v: number) => `${Math.floor(u / (2 * MERGE))},${Math.floor(v / (2 * MERGE))}`;
+    for (const [id, p] of at) {
+        const [cu, cv] = [Math.floor(p[0] / (2 * MERGE)), Math.floor(p[1] / (2 * MERGE))];
+        for (let du = -1; du <= 1; du++) {
+            for (let dv = -1; dv <= 1; dv++) {
+                for (const [other, q] of cells.get(`${cu + du},${cv + dv}`) ?? []) {
+                    if (dist(q, p) < MERGE) {
+                        parent.set(find(other), find(id));
+                    }
+                }
             }
+        }
+        const key = cell(p[0], p[1]);
+        const list = cells.get(key);
+        if (list) {
+            list.push([id, p]);
+        } else {
+            cells.set(key, [[id, p]]);
         }
     }
     const index = new Map<string, number>();
@@ -404,6 +519,16 @@ function isCycle(block: number[], vertex: [number, number][]): boolean {
 function leaving(c: Curve, reversed: boolean): { angle: number; bend: number } {
     const from = reversed ? c.b : c.a;
     const to = reversed ? c.a : c.b;
+    if (c.kind === 'curve') {
+        // Measured just off the end: the direction and the turn of the first tiny steps.
+        const seg = reversed ? reverseSegment(c.a, c.seg) : c.seg;
+        const [p1, p2] = segmentPoints(from, seg, 4000);
+        const d1: Pt = [p1[0] - from[0], p1[1] - from[1]];
+        const d2: Pt = [p2[0] - p1[0], p2[1] - p1[1]];
+        const turn = d1[0] * d2[1] - d1[1] * d2[0];
+        const l = Math.hypot(...d1) * Math.hypot(...d2) * dist(from, p2);
+        return { angle: Math.atan2(d1[1], d1[0]), bend: l > 0 ? (2 * turn) / l : 0 };
+    }
     const circle = c.kind === 'arc' ? circleThrough(c.a, c.m, c.b) : null;
     if (c.kind === 'line' || !circle) {
         return { angle: Math.atan2(to[1] - from[1], to[0] - from[0]), bend: 0 };
@@ -476,8 +601,9 @@ function facePath(curves: Curve[], face: number[]): SketchProfile {
     const segments: SketchSegment[] = face.map((h) => {
         const c = curves[h >> 1];
         const to = h & 1 ? c.a : c.b;
-        return c.kind === 'line' ? { kind: 'line', to } : { kind: 'arc', to, through: c.m };
+        return c.kind === 'curve' ? toSegment(c, (h & 1) === 1) : c.kind === 'line' ? { kind: 'line', to } : { kind: 'arc', to, through: c.m };
     });
+
     segments[segments.length - 1].to = start;
     return { kind: 'path', start, segments };
 }

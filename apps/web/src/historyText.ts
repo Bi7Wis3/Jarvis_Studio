@@ -124,21 +124,34 @@ function stepName(part: Part | undefined, id: string): string {
     return step ? featureName(step) : id;
 }
 
-/** A base plane name or a plane step's name. */
+/** A base plane name, a plane step's name, or what a plane taken from the model was picked on. */
 export function planeRefText(plane: PlaneRef, part?: Part): string {
-    return typeof plane === 'string' ? plane[0].toUpperCase() + plane.slice(1) : stepName(part, plane.planeRef);
+    if (typeof plane === 'string') {
+        return plane[0].toUpperCase() + plane.slice(1);
+    }
+    return 'planeRef' in plane ? stepName(part, plane.planeRef) : `a picked ${plane.from === 'circle' ? 'circular edge' : 'face'}`;
 }
 
 export function axisRefText(axis: AxisRef | Vec3, part?: Part): string {
     if (typeof axis === 'string') {
         return `${axis.toUpperCase()} axis`;
     }
-    return Array.isArray(axis) ? `(${axis.map(mm).join(', ')})` : stepName(part, axis.axisRef);
+    if (Array.isArray(axis)) {
+        return `(${axis.map(mm).join(', ')})`;
+    }
+    return 'axisRef' in axis ? stepName(part, axis.axisRef)
+        : axis.from === 'cylinder' || axis.from === 'cone' ? `the axis of a picked ${axis.from}` : 'a picked edge';
 }
 
 /** Coordinates, or a point step's name. */
 export function pointRefText(point: PointRef, part?: Part): string {
-    return Array.isArray(point) ? `(${point.map(mm).join(', ')})` : stepName(part, point.pointRef);
+    if (Array.isArray(point)) {
+        return `(${point.map(mm).join(', ')})`;
+    }
+    if ('fixedPoint' in point) {
+        return point.from === 'vertex' ? 'a picked vertex' : 'the centre of a picked circular edge';
+    }
+    return stepName(part, point.pointRef);
 }
 
 /** Named plane, a plane step, or "face" for a custom plane picked from a part face. */
@@ -164,7 +177,7 @@ function axisIds(axis: AxisRef | Vec3 | RevolveAxis | undefined): string[] {
 }
 
 function pointIds(point: PointRef | undefined): string[] {
-    return point && !Array.isArray(point) ? [point.pointRef] : [];
+    return point && !Array.isArray(point) && 'pointRef' in point ? [point.pointRef] : [];
 }
 
 function sourceIds(source: SketchSource): string[] {
@@ -394,6 +407,12 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                     return `Parallel to ${planeRefText(d.base, part)} through ${pointRefText(d.point, part)}`;
                 case 'normal':
                     return `Normal to ${axisRefText(d.axis, part)}${d.point ? ` through ${pointRefText(d.point, part)}` : ''}`;
+                case 'perpendicular':
+                    return `Through ${axisRefText(d.axis, part)}, perpendicular to ${planeRefText(d.base, part)}`;
+                case 'linePoint':
+                    return `Through ${axisRefText(d.axis, part)} and ${pointRefText(d.point, part)}`;
+                case 'tangent':
+                    return `Tangent to a picked cylinder Ø${mm(d.cylinder.radius * 2)}`;
             }
         }
         case 'axis': {
@@ -409,10 +428,27 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                     return `Along a line of ${stepName(part, d.sketchRef)}`;
                 case 'pointPlane':
                     return `Through ${pointRefText(d.point, part)}, normal to ${planeRefText(d.plane, part)}`;
+                case 'along':
+                    return `Along ${axisRefText(d.axis, part)}`;
             }
         }
-        case 'point':
-            return `At (${feature.position.map(mm).join(', ')})`;
+        case 'point': {
+            const at = `(${feature.position.map(mm).join(', ')})`;
+            switch (feature.definition?.kind) {
+                case 'arcCentre':
+                    return `Centre of a picked circular edge, at ${at}`;
+                case 'faceCentre':
+                    return `Centre of a picked face, at ${at}`;
+                case 'vertex':
+                    return `On a picked vertex, at ${at}`;
+                case 'intersection':
+                    return `Where two picked edges meet, at ${at}`;
+                case 'along':
+                    return `Along a picked edge, at ${at}`;
+                default:
+                    return `At ${at}`;
+            }
+        }
         case 'sweep': {
             const mode = feature.mode === 'add' ? 'join' : 'cut';
             if ('helix' in feature.path) {
@@ -458,7 +494,7 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                 `P ${mm(feature.pitch)}${(feature.starts ?? 1) > 1 ? ` × ${feature.starts} starts` : ''}`,
                 feature.revolutions !== undefined ? `${mm(feature.revolutions)} turns` : `${mm(feature.length ?? 0)} mm`,
                 ...(feature.leftHanded ? ['left hand'] : []),
-                ...(feature.at ? ['on a picked edge'] : []),
+                ...(feature.at ? [feature.alsoAt?.length ? `on ${feature.alsoAt.length + 1} picked edges` : 'on a picked edge'] : []),
             ].join(' · ');
     }
 }

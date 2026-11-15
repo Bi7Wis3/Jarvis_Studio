@@ -42,18 +42,112 @@ export type SketchPlane = SketchPlaneName | CustomSketchPlane | { planeRef: stri
 
 // ---- Reference geometry: construction planes, axes and points as history steps ---------------------------
 
-/** A named base plane, or an earlier plane step of the same part by id. */
-export type PlaneRef = SketchPlaneName | { planeRef: string };
-/** A part-frame axis through the origin, or an earlier axis step by id. */
-export type AxisRef = 'x' | 'y' | 'z' | { axisRef: string };
+/** What a reference taken from the model was picked on (for the history text and the form). */
+export type ModelPickKind = 'face' | 'edge' | 'circle' | 'cylinder' | 'cone';
 
-/** A point in the part frame: coordinates, or an earlier point step by id. */
-export type PointRef = Vec3 | { pointRef: string };
+/**
+ * An edge as last found: a straight edge from a to b, or a circle or arc running counter-clockwise about `normal`
+ * from start to end (a full circle starts and ends at the same point).
+ */
+export type ModelEdgeShape =
+    | { type: 'line'; a: Vec3; b: Vec3 }
+    | { type: 'circle'; centre: Vec3; normal: Vec3; radius: number; full: boolean; start: Vec3; end: Vec3 };
 
-export type PlaneDefinition =
+/**
+ * An edge of the model as picked in the view (part frame): a point on it and the faces that meet there, so the kernel
+ * finds it again when it moves with those faces. `shape` is the edge as it was last found.
+ */
+export interface ModelEdgePick {
+    edge: Vec3;
+    faces?: FacePickRef[];
+    shape?: ModelEdgeShape;
+}
+
+/** A vertex of the model as picked in the view: where it was, and the faces that meet there. */
+export interface ModelVertexPick {
+    vertex: Vec3;
+    faces?: FacePickRef[];
+}
+
+/**
+ * Where a reference was taken from the model: a face (a point on it and its outward normal), an edge or a vertex. The
+ * kernel finds it again on the body at every rebuild, so the reference follows changes made before it.
+ */
+export type ModelEntityPick = { face: FacePickRef } | ModelEdgePick | ModelVertexPick;
+
+/**
+ * A plane taken from the model: a flat face (or the plane of a circular edge). With `pick` the kernel finds that
+ * face or edge again at every rebuild and `fixedPlane` is only where it was last found (an error names the plane when
+ * it is gone); without `pick` (older steps) the plane is kept by value as it was when picked.
+ */
+export interface FixedPlaneRef {
+    fixedPlane: CustomSketchPlane;
+    from?: ModelPickKind;
+    pick?: { face: FacePickRef } | ModelEdgePick;
+}
+
+/** A line in the part frame: a point on it and its direction. */
+export interface FixedLine {
+    point: Vec3;
+    direction: Vec3;
+}
+
+/**
+ * A line taken from the model: a straight edge (through its midpoint), or the axis of a cylindrical or conical face.
+ * With `pick` it follows the model as a FixedPlaneRef does; without it (older steps) it is kept by value.
+ */
+export interface FixedAxisRef {
+    fixedAxis: FixedLine;
+    from?: ModelPickKind;
+    pick?: ModelEdgePick | { face: FacePickRef };
+}
+
+/** A named base plane, an earlier plane step of the same part by id, or a plane taken from the model. */
+export type PlaneRef = SketchPlaneName | { planeRef: string } | FixedPlaneRef;
+/** A part-frame axis through the origin, an earlier axis step by id, or a line taken from the model. */
+export type AxisRef = 'x' | 'y' | 'z' | { axisRef: string } | FixedAxisRef;
+
+/**
+ * A point taken from the model: a vertex, or the centre of a circular edge. `fixedPoint` is where it was last found;
+ * the kernel finds the vertex or edge of `pick` again at every rebuild.
+ */
+export interface FixedPointRef {
+    fixedPoint: Vec3;
+    from: 'vertex' | 'centre';
+    pick: ModelVertexPick | ModelEdgePick;
+}
+
+/** A point in the part frame: coordinates, an earlier point step by id, or a point taken from the model. */
+export type PointRef = Vec3 | { pointRef: string } | FixedPointRef;
+
+/** A cylindrical face taken from the model: its axis and radius (with `pick`, as last found: it follows the model). */
+export interface FixedCylinder extends FixedLine {
+    radius: number;
+    pick?: { face: FacePickRef };
+}
+
+/**
+ * How a point step was taken from the model; the kernel finds it again at every rebuild and the step's `position` is
+ * where it was last found. A circular edge's centre, a face's centre (its area centroid), a vertex, where two straight
+ * edges (extended) meet, or along a straight or circular edge from the start of its `shape` (from its end with
+ * `reverse`): the `index`-th of points spaced `amount` mm or `amount` percent of the edge's length apart.
+ */
+export type PointDefinition =
+    | { kind: 'arcCentre'; edge: ModelEdgePick }
+    | { kind: 'faceCentre'; face: FacePickRef }
+    | { kind: 'vertex'; vertex: ModelVertexPick }
+    | { kind: 'intersection'; a: ModelEdgePick; b: ModelEdgePick }
+    | { kind: 'along'; edge: ModelEdgePick; by: 'distance' | 'percent'; amount: number; index: number; reverse?: boolean };
+
+/** `flipNormal` turns any plane's normal around (its u axis stays, so v turns too). */
+export type PlaneDefinition = (
     | { kind: 'offset'; base: PlaneRef; distance: number }
-    /** The base plane turned about one of its own axes (u or v, through its origin) or about an axis, in degrees. */
-    | { kind: 'angle'; base: PlaneRef; about: 'u' | 'v' | AxisRef; angle: number }
+    /**
+     * The base plane turned about one of its own axes (u or v, through its origin) or about an axis, in degrees.
+     * `throughAxis`: the plane is first moved to pass through the axis (which must lie in or parallel to it), as
+     * SolidWorks' At angle does for an edge off the plane.
+     */
+    | { kind: 'angle'; base: PlaneRef; about: 'u' | 'v' | AxisRef; angle: number; throughAxis?: boolean }
     | { kind: 'threePoints'; points: [PointRef, PointRef, PointRef] }
     /** Through a point with a normal, e.g. tangent to a curved face where the user clicked. */
     | { kind: 'pointNormal'; point: PointRef; normal: Vec3; xDir?: Vec3 }
@@ -61,7 +155,18 @@ export type PlaneDefinition =
     /** Parallel to a plane, through a point. */
     | { kind: 'parallel'; base: PlaneRef; point: PointRef }
     /** Perpendicular to an axis, through a point (default: the axis's own point). */
-    | { kind: 'normal'; axis: AxisRef; point?: PointRef };
+    | { kind: 'normal'; axis: AxisRef; point?: PointRef }
+    /** Through an axis or edge, perpendicular to a plane. */
+    | { kind: 'perpendicular'; base: PlaneRef; axis: AxisRef }
+    /** Through an axis or edge and a point off it. */
+    | { kind: 'linePoint'; axis: AxisRef; point: PointRef }
+    /**
+     * Tangent to a cylinder: through a point (on the surface: tangent there; off it: one of the two tangent planes
+     * through it, `flip` for the other), or parallel to a plane that is parallel to the axis, turned `angle` degrees
+     * about the axis (`flip`: the tangent on the other side).
+     */
+    | { kind: 'tangent'; cylinder: FixedCylinder; point?: PointRef; plane?: PlaneRef; angle?: number; flip?: boolean }
+) & { flipNormal?: boolean };
 
 export type AxisDefinition =
     | { kind: 'twoPoints'; a: PointRef; b: PointRef }
@@ -70,7 +175,9 @@ export type AxisDefinition =
     /** Along a line or centreline (curve id `line`) of an earlier sketch step. */
     | { kind: 'sketchLine'; sketchRef: string; line: string }
     /** Through a point, normal to a plane. */
-    | { kind: 'pointPlane'; point: PointRef; plane: PlaneRef };
+    | { kind: 'pointPlane'; point: PointRef; plane: PlaneRef }
+    /** Along an axis: an earlier axis step, a part axis, or a straight edge or a cylinder's axis taken from the model. */
+    | { kind: 'along'; axis: AxisRef };
 
 /**
  * What a revolve turns about: the sketch's own u or v axis (through its origin), a line or centreline of its sketch
@@ -95,12 +202,56 @@ export interface HelixPath {
 export type SketchSegment =
     | { kind: 'line'; to: [number, number] }
     /** Circular arc from the current point to `to`, passing through `through`. */
-    | { kind: 'arc'; to: [number, number]; through: [number, number] };
+    | { kind: 'arc'; to: [number, number]; through: [number, number] }
+    /**
+     * Elliptical arc from the current point to `to` on the ellipse with centre `center`, one axis ending at `major` and
+     * the other radius `minor` (the longer of the two is the major axis); counter-clockwise when `ccw`.
+     */
+    | { kind: 'ellipse'; to: [number, number]; center: [number, number]; major: [number, number]; minor: number; ccw: boolean }
+    /**
+     * Spline from the current point through `through` to `to`: the curvature-continuous cubic interpolation of
+     * @jarvis/core/curves (splineBezier). Ending where it starts, it is closed and runs smoothly through its start.
+     */
+    | {
+        kind: 'spline'; to: [number, number]; through: [number, number][];
+        /** Tangency handles at the ends (open splines): each is the first control point off its end, so it sets the end's direction and weight. */
+        startHandle?: [number, number]; endHandle?: [number, number];
+        /** See SketchCurve 'spline'. */
+        spacing?: number[];
+        /**
+         * Tangency handles at other points (`at` counts the points from the start: 0 the start, then `through`, then
+         * `to`): the control points just before and after the point, in line with it (@jarvis/core/splines).
+         */
+        handles?: { at: number; prev: [number, number]; next: [number, number] }[];
+        /** Curvature held at points that have a handle: signed, 1/mm, positive where the spline turns left. */
+        curvature?: { at: number; value: number }[];
+        /** Curvature kept continuous across the handles too (SolidWorks: Maintain internal continuity). */
+        continuity?: boolean;
+    }
+    /**
+     * Style spline from the current point to `to`, its control polygon running through `poles` in between: a Bezier
+     * curve when `degree` is the number of control vertices less one, else a clamped B-spline of that degree with
+     * evenly spaced knots (@jarvis/core/curves bsplineAt).
+     */
+    | {
+        kind: 'bspline'; to: [number, number]; poles: [number, number][]; degree: number;
+        /** See SketchCurve 'styleSpline'. */
+        knots?: number[];
+        /** A weight for each control vertex, from the first (the current point) to the last (`to`): a rational curve. */
+        weights?: number[];
+    }
+    /**
+     * Conic from the current point to `to`, its end tangents meeting at `apex` (the top vertex); `rho` (0 to 1) is how
+     * far the shoulder is from the chord's middle towards the apex: below 0.5 elliptic, 0.5 a parabola, above hyperbolic.
+     */
+    | { kind: 'conic'; to: [number, number]; apex: [number, number]; rho: number };
 
 /** One closed profile in sketch coordinates (u, v), mm. */
 export type SketchProfile =
     | { kind: 'rect'; center: [number, number]; width: number; height: number; radius?: number }
     | { kind: 'circle'; center: [number, number]; radius: number }
+    /** Ellipse: centre, the end of one axis, and the other radius (the longer of the two is the major axis). */
+    | { kind: 'ellipse'; center: [number, number]; major: [number, number]; minor: number }
     | { kind: 'slot'; from: [number, number]; to: [number, number]; radius: number }
     | { kind: 'polygon'; points: [number, number][] }
     /** Closed path of lines and arcs; it closes back to `start` with a line if needed. */
@@ -132,7 +283,17 @@ export interface Sketch {
      * areas the kernel extrudes; a sweep takes its path from here.
      */
     open?: SketchProfile[];
+    /** 2D to 3D: the view of the part this sketch was taken out of a drawing sketch as (Add to Front Sketch, ...). */
+    view?: SketchView;
+    /**
+     * Derived Sketch: the sketch follows the earlier sketch step `from` (its entities, profiles and regions), placed on
+     * this sketch's own plane; its own geometry is a copy kept for the sketcher. Underive drops the link.
+     */
+    derived?: { from: string };
 }
+
+/** The views a 2D to 3D conversion folds a drawing's sketches into. */
+export type SketchView = 'front' | 'top' | 'right' | 'left' | 'bottom' | 'back' | 'auxiliary';
 
 /** One bounded region: `loops[0]` is its outline, the other loops are holes in it; `at` is a point inside it. */
 export interface SketchRegion {
@@ -148,19 +309,64 @@ export interface SketchPoint {
     fixed?: boolean;
 }
 
-/** construction: reference geometry (centre lines, guides) that is never part of a profile. */
+/**
+ * construction: reference geometry (centre lines, guides) that is never part of a profile. A line's `endless` side
+ * runs on without end beyond that point (SolidWorks Infinite length; trimming gives it ends): never part of a profile.
+ */
 export type SketchCurve =
-    | { id: string; kind: 'line'; a: string; b: string; construction?: boolean }
+    | { id: string; kind: 'line'; a: string; b: string; construction?: boolean; endless?: 'a' | 'b' | 'both' }
     | { id: string; kind: 'circle'; center: string; radius: number; construction?: boolean }
     /** Counter-clockwise from start to end around center. */
-    | { id: string; kind: 'arc'; center: string; start: string; end: string; construction?: boolean };
+    | { id: string; kind: 'arc'; center: string; start: string; end: string; construction?: boolean }
+    /** Ellipse: its centre and the ends of its two axes (Radius 1 and Radius 2; either may be the longer). */
+    | { id: string; kind: 'ellipse'; center: string; major: string; minor: string; construction?: boolean }
+    /** Partial ellipse: as an ellipse, counter-clockwise from start to end. */
+    | { id: string; kind: 'ellipseArc'; center: string; major: string; minor: string; start: string; end: string; construction?: boolean }
+    /** Spline through its points in order; closed when the last point is the first. */
+    | {
+        id: string; kind: 'spline'; points: string[]; startHandle?: string; endHandle?: string; construction?: boolean;
+        /**
+         * Per piece between points, its parameter length as a multiple of its chord (absent: 1); a piece cut from a
+         * longer spline, a split or a control polygon drag keeps its shape this way, and Relax spline drops it.
+         */
+        spacing?: number[];
+        /**
+         * Tangency handles at other points (SolidWorks: an active spline handle): `handle` is the control point after
+         * `point` (before it, with `before`: a spline run the other way); the other side runs the opposite way, `back`
+         * times as long (1 when left out).
+         */
+        handles?: { point: string; handle: string; back?: number; before?: true }[];
+        /** Curvature held at points that have a handle (Add Curvature Control): signed, 1/mm, positive turning left. */
+        curvature?: { point: string; value: number }[];
+        /** Maintain internal continuity (curvature continuous across the handles): on unless false. */
+        continuity?: false;
+        /** Proportional: dragging an end point resizes and turns the whole spline, its shape kept. */
+        proportional?: boolean;
+        /** Fit Spline, Constrained: fitted to these curves within the tolerance, and fitted again when they change. */
+        fit?: { curves: string[]; tolerance: number };
+    }
+    /** Style spline of control vertices: Bezier (no degree) or a B-spline of degree 3, 5 or 7. */
+    | {
+        id: string; kind: 'styleSpline'; points: string[]; degree?: 3 | 5 | 7; construction?: boolean;
+        /** The B-spline's inner knots (0 to 1, ascending) when not evenly spaced: a piece cut from a longer one, or a converted spline. */
+        knots?: number[];
+        /** Rational spline: a weight for each control vertex (1: as a non-rational one). */
+        weights?: number[];
+        /** Local edit: dragging one of its control vertices leaves the style splines joined to it as they are. */
+        localEdit?: boolean;
+    }
+    /** Parabola: its focus and vertex (apex), from start to end. */
+    | { id: string; kind: 'parabola'; focus: string; vertex: string; start: string; end: string; construction?: boolean }
+    /** Conic from start to end, its end tangents meeting at the top vertex `apex`; Rho 0 to 1 (see SketchSegment). */
+    | { id: string; kind: 'conic'; start: string; end: string; apex: string; rho: number; construction?: boolean };
 
 /**
  * Geometric constraints and driving dimensions. Dimensions are in mm and degrees. 'origin' and the sketch axes
  * (curve ids 'axis-u' and 'axis-v') can be referenced, so offsets from the origin or an axis are distances to them.
- * A dimension's `at` is where the user put its label, in sketch (u, v).
+ * A dimension's `at` is where the user put its label, in sketch (u, v). suppressed: kept in the sketch but not
+ * solved (SolidWorks: Suppressed in Display/Delete Relations and SketchXpert).
  */
-export type SketchConstraint = { id: string } & (
+export type SketchConstraint = { id: string; suppressed?: boolean } & (
     | { kind: 'coincident'; a: string; b: string }
     | { kind: 'horizontal' | 'vertical'; line: string }
     /** Two points level with each other (horizontal) or one above the other (vertical). */
@@ -172,25 +378,304 @@ export type SketchConstraint = { id: string } & (
     | { kind: 'parallel' | 'perpendicular' | 'equal' | 'tangent' | 'concentric' | 'coradial' | 'collinear'; a: string; b: string }
     | { kind: 'pointOnCurve'; point: string; curve: string }
     | { kind: 'midpoint'; point: string; line: string }
-    | { kind: 'symmetric'; a: string; b: string; about: string }
-    | { kind: 'fix'; point: string }
+    /** The point where lines a and b cross (on both infinite lines). */
+    | { kind: 'intersection'; point: string; a: string; b: string }
+    /**
+     * a and b mirror images about a line. `part` holds only half of it: a-b square to the line, or its middle on the
+     * line (for a point that its curve already holds on a line, so the whole relation would repeat itself).
+     */
+    | { kind: 'symmetric'; a: string; b: string; about: string; part?: 'perpendicular' | 'midpoint' }
+    /** A locked point; with `axis` only that coordinate is held (a point that can only slide along its curve). */
+    | { kind: 'fix'; point: string; axis?: 'u' | 'v' }
     /** A locked circle or arc keeps its radius (its centre is locked by 'fix'). */
     | { kind: 'fixRadius'; curve: string }
-    /** Distance between two points, or from a point to a line (perpendicular); axis 'u' or 'v' measures one direction only. */
-    | { kind: 'distance'; a: string; b: string; value: number; axis?: 'u' | 'v'; at?: [number, number] }
-    | { kind: 'length'; line: string; value: number; at?: [number, number] }
+    /**
+     * Distance between two points, or from a point to a line (perpendicular); axis 'u' or 'v' measures one direction only.
+     * aMid / bMid: that end is a line or an arc, measured at its midpoint. aCond / bCond: that end is a circle or arc, measured to
+     * the nearest (min) or farthest (max) point of it (without: the centre, by its point id). doubled: a point to a
+     * centreline, the value being twice the distance (a diameter of a revolved profile). ordinate: shown as an
+     * ordinate dimension (from the zero `a`, the value at `b`, aligned with the others of its row). unaligned: an
+     * ordinate taken out of its row (Break alignment): its label moves on its own.
+     */
+    | ({ kind: 'distance'; a: string; b: string; value: number; axis?: 'u' | 'v'; at?: [number, number]
+        aMid?: boolean; bMid?: boolean; aCond?: 'min' | 'max'; bCond?: 'min' | 'max'; doubled?: boolean; ordinate?: boolean; unaligned?: boolean } & Driven)
+    /** The total length of a chain of lines and arcs, end to end; driving (the chain keeps that length) or driven. */
+    | ({ kind: 'pathLength'; curves: string[]; value: number; at?: [number, number] } & Driven)
+    | ({ kind: 'length'; line: string; value: number; at?: [number, number] } & Driven)
     /**
      * The angle between line a and line b, each taken from its first point to its second, or the other way round
      * when reversed: the pair of directions picks which of the four angles at the crossing is dimensioned (0-180).
+     * Either may also be a spline's tangency handle point: the direction from the spline's end to the handle.
      */
-    | { kind: 'angle'; a: string; b: string; value: number; at?: [number, number]; reverseA?: boolean; reverseB?: boolean }
-    | { kind: 'radius' | 'diameter'; curve: string; value: number; at?: [number, number] }
+    | ({ kind: 'angle'; a: string; b: string; value: number; at?: [number, number]; reverseA?: boolean; reverseB?: boolean } & Driven)
+    | ({ kind: 'radius' | 'diameter'; curve: string; value: number; at?: [number, number] } & Driven)
+    /** The true length of an arc, along it. */
+    | ({ kind: 'arcLength'; curve: string; value: number; at?: [number, number] } & Driven)
+    /**
+     * The angle at point `vertex` from the direction to point a to the direction to point b (0-180). running: one of
+     * an angular running set from the zero `a`, measured anticlockwise (0-360), or the nearer way when bidirectional
+     * (0-180); unaligned: taken out of the set's ring (Break alignment).
+     */
+    | ({ kind: 'pointAngle'; vertex: string; a: string; b: string; value: number; at?: [number, number]
+        running?: boolean; bidirectional?: boolean; unaligned?: boolean } & Driven)
+    /**
+     * A path (SketchGeometry.paths, its member curves listed here too) tangent to `curve` wherever they touch: the
+     * member in contact holds it, and the contact passes from member to member as they move (a cam and its follower).
+     */
+    | { kind: 'pathTangent'; path: string; curves: string[]; curve: string }
+    /** Arcs a and b sweep the same angle (part of Equal slots for arc slots). */
+    | { kind: 'equalSweep'; a: string; b: string }
+    /** The Rho of a conic as a dimension: driving, it sets the conic's rho. */
+    | ({ kind: 'rho'; curve: string; value: number; at?: [number, number] } & Driven)
 );
+
+/**
+ * driven: a reference dimension that only reports the size (its value follows the geometry and holds nothing);
+ * absent for a driving one.
+ */
+interface Driven {
+    driven?: boolean;
+    /** Tolerance and precision the value is shown with (Dimension PropertyManager); they change nothing in the sketch. */
+    tolerance?: DimensionTolerance;
+}
+
+/**
+ * How a dimension's value is shown. type: none | basic (boxed, the exact value) | bilateral (+max / -min) | limit
+ * (the upper and lower limits) | symmetric (± max) | min | max (suffixes). max / min: the amounts over and under the
+ * value. precision / tolPrecision: digits after the decimal point of the value and of the tolerance (absent: as the
+ * app shows values). parentheses: around the value with its tolerance.
+ */
+export interface DimensionTolerance {
+    type: 'none' | 'basic' | 'bilateral' | 'limit' | 'symmetric' | 'min' | 'max';
+    max?: number;
+    min?: number;
+    precision?: number;
+    tolPrecision?: number;
+    parentheses?: boolean;
+}
 
 export interface SketchGeometry {
     points: SketchPoint[];
     curves: SketchCurve[];
     constraints: SketchConstraint[];
+    /** Sketch text items; each owns the glyph curves it generated (see SketchText). */
+    texts?: SketchText[];
+    /** Pictures on the sketch plane, a backdrop to trace over; never part of a profile. */
+    pictures?: SketchPicture[];
+    /** Equation driven curves; each owns the spline it generated. */
+    equations?: SketchEquationCurve[];
+    /** Block definitions of this sketch, in block coordinates (the insertion point at 0, 0). */
+    blocks?: SketchBlock[];
+    /** Placed instances of the blocks; each owns the curves it generated. */
+    inserts?: SketchBlockInsert[];
+    /** Offsets of chains with ellipses, splines, parabolas or conics; each owns the curves it generated. */
+    offsets?: SketchOffset[];
+    /** Segment tool groups: equally spaced points (or pieces) of one entity, re-spaced when one of them is deleted. */
+    segments?: SketchSegmentGroup[];
+    /** Linear and circular sketch patterns, kept so they can be edited (count, spacing) after they are made. */
+    patterns?: SketchPatternRecord[];
+    /** Paths (SolidWorks Make Path): chains of curves treated as one, and belts round pulleys. */
+    paths?: SketchPath[];
+}
+
+/**
+ * A path: curves joined end to end, in order, selected and related as one (Make Path). A belt's path is the belt
+ * round its pulleys (SolidWorks Belt/Chain): its lines and arcs are built from `belt` and rebuilt when it is edited.
+ */
+export interface SketchPath {
+    id: string;
+    curves: string[];
+    belt?: SketchBelt;
+}
+
+export interface SketchBelt {
+    /** The circles or arcs the belt runs round, in order. */
+    pulleys: string[];
+    /** Per pulley: the belt runs round it the other way (on its other side). */
+    flip: boolean[];
+    /** The belt sits this far off each pulley (Use belt thickness), mm. */
+    thickness?: number;
+    /** Driving: the belt is this long (mm) and the pulleys move to suit; absent, the length follows the layout. */
+    length?: number;
+}
+
+/**
+ * Generated sketch items (text, equation curves, block instances) own ordinary curves and points of the sketch, so
+ * profiles, regions and the kernel use them like any other entity; their points are fixed, and the item rebuilds
+ * them when it is edited. Dissolving or exploding the item drops the item and keeps the entities.
+ */
+export interface SketchOwned {
+    curves: string[];
+    points: string[];
+}
+
+/**
+ * Sketch text (SolidWorks Sketch Text). The text may hold codes for parts of it: <b>bold</b>, <i>italic</i> and
+ * <r30>rotated 30 degrees counter-clockwise</r> (each character about its own centre). Glyph outlines are the font's
+ * own lines and quadratic or cubic Bezier curves, kept exact as lines and Bezier style splines.
+ */
+export interface SketchText extends SketchOwned {
+    id: string;
+    text: string;
+    /** Font family, as the server lists it. */
+    font: string;
+    bold?: boolean;
+    italic?: boolean;
+    /** Height of the capital letters, mm. */
+    height: number;
+    /** Width factor and spacing between characters, percent (100: as the font has them). */
+    widthFactor?: number;
+    spacing?: number;
+    /** Start of the baseline when the text does not run along curves. */
+    at: [number, number];
+    /** Sketch curves the text runs along, end to end in order. */
+    along?: string[];
+    /** Along curves only. */
+    align?: 'left' | 'center' | 'right' | 'full';
+    /** flipV along curves only: the text goes to the other side of the curve. flipH mirrors the text. */
+    flipV?: boolean;
+    flipH?: boolean;
+    construction?: boolean;
+}
+
+/** A picture on the sketch plane (SolidWorks Sketch Picture), its lower left corner at `at`. */
+export interface SketchPicture {
+    id: string;
+    /** Asset id of the stored image. */
+    asset: string;
+    at: [number, number];
+    width: number;
+    height: number;
+    /** Degrees, counter-clockwise, about `at`. */
+    angle: number;
+    flipH?: boolean;
+    flipV?: boolean;
+    lockAspect?: boolean;
+    /** The image's size in pixels. */
+    pixels: [number, number];
+    /** none: opaque; file: the file's own transparency; full: the whole picture; colour: one colour within a tolerance. */
+    transparency?: 'none' | 'file' | 'full' | 'colour';
+    /** 0 to 1 (full and colour). */
+    amount?: number;
+    colour?: string;
+    /** 0 to 1, how far from `colour` still counts as it. */
+    tolerance?: number;
+    hidden?: boolean;
+}
+
+/**
+ * Equation driven curve: explicit y(x) for x from `from` to `to`, or parametric x(t), y(t) for t from `from` to `to`
+ * (expressions; angles in radians). It is built as a spline through enough points to keep within `tolerance`.
+ */
+export interface SketchEquationCurve extends SketchOwned {
+    id: string;
+    type: 'explicit' | 'parametric';
+    /** Explicit: y; parametric: x and y. */
+    x?: string;
+    y: string;
+    from: string;
+    to: string;
+    /** The largest deviation allowed, mm; `deviation` is what the spline achieved. */
+    tolerance: number;
+    deviation?: number;
+    construction?: boolean;
+    /** How far the curve was moved from where its equations put it (Move, Copy): added to every point, mm. */
+    offset?: [number, number];
+    /**
+     * How far it was turned (degrees, counter-clockwise about the equations' origin, before `offset`): the curve is
+     * rigid and follows relations and dimensions on its end points.
+     */
+    angle?: number;
+    /** Range locks: an unlocked end (false) can be dragged along the curve, which changes the range. */
+    lockFrom?: false;
+    lockTo?: false;
+}
+
+/**
+ * A block definition: its entities with their own relations, in block coordinates. Its geometry may hold text,
+ * equation curves and instances of other blocks (nested blocks; their definitions are in the sketch's `blocks`).
+ */
+export interface SketchBlock {
+    id: string;
+    name: string;
+    geometry: SketchGeometry;
+    /** Sketch/curve colour of the block's entities, #rrggbb. */
+    colour?: string;
+    /** Link to file: the block file (by name) every instance follows; the block is not edited in this sketch. */
+    link?: string;
+}
+
+/**
+ * One placed instance of a block: insertion point, rotation (degrees) and scale. In the solver an instance is one
+ * rigid body: relations to its entities move and turn it as a whole.
+ */
+export interface SketchBlockInsert extends SketchOwned {
+    id: string;
+    block: string;
+    at: [number, number];
+    angle: number;
+    scale: number;
+    /** The insertion point: a point of the sketch (last of `points`) that relations can use and that drags the instance. */
+    origin?: string;
+    /** Lock angle: the instance can be dragged but not turned. */
+    lockAngle?: boolean;
+    /** For construction: every entity of the instance is construction geometry. */
+    construction?: boolean;
+    /** Hidden in the view (it is still part of the sketch). */
+    hidden?: boolean;
+}
+
+/** A Segment tool group (SolidWorks equidistant points): its entity, the points in order, and what holds them. */
+export interface SketchSegmentGroup {
+    id: string;
+    /** The entity divided (its first piece, in segments mode). */
+    curve: string;
+    mode: 'points' | 'segments';
+    /** The new points, in order along the entity. */
+    points: string[];
+    /** The construction chords between neighbours, all equal (points mode). */
+    chords: string[];
+    /** The pieces, in order (segments mode; the first is `curve`). */
+    pieces?: string[];
+}
+
+/** A linear or circular sketch pattern: what it was made from and with, and what it added (to edit it later). */
+export interface SketchPatternRecord {
+    id: string;
+    kind: 'linear' | 'circular';
+    /** The patterned curves (the original instance). */
+    seed: string[];
+    /** The pattern's options (the sketcher's LinearPatternOptions or CircularPatternOptions). */
+    options: Record<string, unknown>;
+    /** Entities and relations the pattern added: instances and its construction skeleton. */
+    curves: string[];
+    points: string[];
+    constraints: string[];
+    /** Display instance count: the count is shown in the view, where a double-click changes it. */
+    showCount?: boolean;
+}
+
+/**
+ * Offset Entities of a chain with curves whose offset is not of their own kind (ellipses, splines, parabolas,
+ * conics): the offset is rebuilt from the chain whenever the chain changes (SolidWorks' offset relation), as fixed
+ * lines, arcs and splines fitted within `tolerance` of the true offset (`deviation`: what they achieved, mm).
+ */
+export interface SketchOffset extends SketchOwned {
+    id: string;
+    /** The chain's curves in the order it runs; reversed: that curve runs from its end to its start. */
+    base: { curve: string; reversed?: boolean }[];
+    closed?: boolean;
+    /** Signed distance of each side, left of the chain's way (two sides when Bi-directional). */
+    distances: number[];
+    cap?: 'arcs' | 'lines';
+    /** The offset is construction geometry. */
+    construction?: boolean;
+    /** The driven dimension showing each side's distance; a value typed into it sets that distance. */
+    dimensions?: string[];
+    tolerance: number;
+    deviation?: number;
+    /** What the offset was last built from, to tell when the chain has changed. */
+    key?: string;
 }
 
 /** How far an extrusion goes: along the plane normal, the opposite way, or half each way. */
@@ -371,8 +856,8 @@ export type Feature = FeatureBase & (
     | { op: 'plane'; definition: PlaneDefinition }
     /** Construction axis (builds nothing); revolves, coils and patterns use it by id. */
     | { op: 'axis'; definition: AxisDefinition }
-    /** Construction point (builds nothing). */
-    | { op: 'point'; position: Vec3 }
+    /** Construction point (builds nothing); with `definition`, taken from the model and found again at every rebuild. */
+    | { op: 'point'; position: Vec3; definition?: PointDefinition }
     /**
      * Sweeps a closed profile along a path: the open chain (or single closed profile) of another sketch, or a helix
      * (springs, coils). `diameter` instead of `profile`: a circular profile, a round rod centred on the path start.
@@ -429,6 +914,22 @@ export type Feature = FeatureBase & (
         at?: Vec3; revolutions?: number; offset?: number; leftHanded?: boolean; starts?: number; startAngle?: number;
         /** Direction 2, on a picked edge: the thread also runs this far the other way from its start, as one thread. */
         length2?: number;
+        /**
+         * On a picked edge. cut: only removes material (a hole drilled at tap size, a shaft at the major diameter).
+         * extrude: adds the ridges (a hole at the major diameter, a shaft at the root diameter). Absent (older
+         * threads): chosen from the size of the hole or shaft, as they were built before.
+         */
+        method?: 'cut' | 'extrude';
+        /** The thread runs out through its start face (and its end) instead of starting a little inside; default true. */
+        trimStart?: boolean;
+        trimEnd?: boolean;
+        /** More circular edges threaded the same way, each from its own hole or shaft (`at` is the first). */
+        alsoAt?: Vec3[];
+        /**
+         * Set only on the copy a tool preview builds, never saved: the ridges are shown on the body without the slow
+         * booleans, for a quick look while the form is open.
+         */
+        preview?: boolean;
     }
 );
 
@@ -537,6 +1038,8 @@ export interface Project {
 export interface MeshStatus {
     keys: Record<string, string | null>;
     errors: Record<string, string>;
+    /** Per part, its reference steps with references taken from the model as the kernel found them, by step id. */
+    followed?: Record<string, Record<string, Feature>>;
 }
 
 /** A picture pasted or dropped into the prompt bar. data is base64 without the data: prefix. */
@@ -765,12 +1268,25 @@ export function sketchBounds(sketch: Sketch): { min: [number, number]; max: [num
             add(p.to[0], p.to[1], p.radius);
         } else if (p.kind === 'polygon') {
             p.points.forEach(([u, v]) => add(u, v));
+        } else if (p.kind === 'ellipse') {
+            add(p.center[0], p.center[1], Math.max(p.minor, Math.hypot(p.major[0] - p.center[0], p.major[1] - p.center[1])));
         } else {
             add(p.start[0], p.start[1]);
             p.segments.forEach((s) => {
                 add(s.to[0], s.to[1]);
                 if (s.kind === 'arc') {
                     add(s.through[0], s.through[1]);
+                } else if (s.kind === 'ellipse') {
+                    add(s.center[0], s.center[1], Math.max(s.minor, Math.hypot(s.major[0] - s.center[0], s.major[1] - s.center[1])));
+                } else if (s.kind === 'spline') {
+                    s.through.forEach(([u, v]) => add(u, v));
+                    [s.startHandle, s.endHandle].forEach((h) => h && add(h[0], h[1]));
+                    s.handles?.forEach((k) => [k.prev, k.next].forEach(([u, v]) => add(u, v)));
+                } else if (s.kind === 'bspline') {
+                    s.poles.forEach(([u, v]) => add(u, v));
+
+                } else if (s.kind === 'conic') {
+                    add(s.apex[0], s.apex[1]);
                 }
             });
         }

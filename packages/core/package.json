@@ -9,7 +9,17 @@
     ".": "./src/index.ts",
     "./geometry": "./src/geometry.ts",
     "./fasteners": "./src/fasteners.ts",
-    "./reference": "./src/reference.ts"
+    "./reference": "./src/reference.ts",
+    "./curves": "./src/curves.ts",
+    "./projection": "./src/projection.ts",
+    "./text": "./src/sketchText.ts",
+    "./expression": "./src/expression.ts",
+    "./curveFit": "./src/curveFit.ts",
+    "./curveIntersect": "./src/curveIntersect.ts",
+    "./curveSplit": "./src/curveSplit.ts",
+    "./derived": "./src/derived.ts",
+    "./curveOffset": "./src/curveOffset.ts",
+    "./splines": "./src/splines.ts"
   },
   "dependencies": {
     "three": "^0.187.0"

@@ -1,5 +1,8 @@
 import { Vector3, type Camera } from 'three';
-import { shapeHalfExtents, type Project, type Vec3 } from '@jarvis/core';
+import { shapeHalfExtents, type Part, type Project, type Vec3 } from '@jarvis/core';
+import { partLook } from './partView';
+import { useSketcher } from './sketcher';
+import { useStudio } from './state';
 
 const ROW_GAP = 36;
 const COLUMN_GAP = 120;
@@ -21,6 +24,31 @@ interface Anchor {
     labelY: number;
     side: 'left' | 'right';
     visible: boolean;
+}
+
+interface LabelView {
+    workspace: 'part' | 'assembly';
+    activePart: string | null;
+    partView: 'isolated' | 'inContext';
+    sketching: boolean;
+}
+
+/**
+ * The parts that get a label: only those the view shows (in the part workspace an isolated part alone), and none
+ * while a sketch is open, where they would lie over the sketch.
+ */
+export function labelledParts(project: Project, view: LabelView): Part[] {
+    if (view.sketching) {
+        return [];
+    }
+    const activePart = project.parts.some((p) => p.id === view.activePart) ? view.activePart : null;
+    const s = { workspace: view.workspace, activePart, partView: view.partView, focus: project.view.focus };
+    return project.parts.filter((p) => partLook(p.id, s) !== 'hidden');
+}
+
+function currentView(): LabelView {
+    const { workspace, activePart, partView } = useStudio.getState();
+    return { workspace, activePart, partView, sketching: useSketcher.getState().active };
 }
 
 function spread(rows: Anchor[], height: number): void {
@@ -49,7 +77,7 @@ export function layoutLabels(
     const anchors: Anchor[] = [];
     let minX = Infinity;
     let maxX = -Infinity;
-    for (const part of project.parts) {
+    for (const part of labelledParts(project, currentView())) {
         const offset = offsets[part.id];
         point.set(
             part.position[0] + offset[0] * explode,
@@ -101,17 +129,22 @@ export function layoutLabels(
 }
 
 export function Labels({ project }: { project: Project }) {
+    const workspace = useStudio((s) => s.workspace);
+    const activePart = useStudio((s) => s.activePart);
+    const partView = useStudio((s) => s.partView);
+    const sketching = useSketcher((s) => s.active);
+    const parts = labelledParts(project, { workspace, activePart, partView, sketching });
     return (
         <div className={`labels ${project.view.labels ? 'on' : ''}`}>
             <svg>
-                {project.parts.map((part) => (
+                {parts.map((part) => (
                     <g key={part.id}>
                         <polyline id={`leader-${part.id}`} />
                         <circle id={`dot-${part.id}`} r={4} />
                     </g>
                 ))}
             </svg>
-            {project.parts.map((part) => (
+            {parts.map((part) => (
                 <div key={part.id} id={`label-${part.id}`} className="label">
                     {part.name}
                 </div>

@@ -1,0 +1,92 @@
+/* Whole-sketch tools in the view: Modify Sketch's black origin and centre of rotation, Instant2D's handles and
+   ruler, the shaded contours' context toolbar, and the closing arrow of Close Sketch to Model. */
+
+.sk-dof.over {
+    cursor: pointer;
+}
+
+.sk-label.pt.modify-origin span {
+    width: 11px;
+    height: 11px;
+    border: 2px solid #e9eef6;
+    border-radius: 50%;
+    background: rgba(8, 11, 17, 0.7);
+}
+
+.sk-label.pt.modify-centre span {
+    width: 9px;
+    height: 9px;
+    border: 2px solid #35e0ff;
+    border-radius: 2px;
+    background: transparent;
+    transform: rotate(45deg);
+}
+
+.sk-label.pt.modify-origin.hot span,
+.sk-label.pt.modify-centre.hot span {
+    border-color: #ffd166;
+}
+
+.sk-label.live.modify-tip {
+    color: #ffd166;
+}
+
+/* Instant2D: the value handles on a dimension, and the ruler's numbers. */
+.sk-label.pt.i2d-handle span {
+    width: 9px;
+    height: 9px;
+    border: 1.5px solid #35e0ff;
+    border-radius: 50%;
+    background: rgba(8, 11, 17, 0.85);
+}
+
+.sk-label.pt.i2d-handle.hot span {
+    border-color: #ffd166;
+    background: rgba(255, 209, 102, 0.35);
+}
+
+.sk-label.i2d-tick {
+    color: #8fa3bf;
+    font-size: 9.5px;
+    font-weight: 500;
+}
+
+.sk-label.i2d-tick.on {
+    color: #ffd166;
+}
+
+/* Shaded sketch contours: the context toolbar of an Alt-clicked area, in the toolbar's compact style. */
+.sk-context-bar {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 6px;
+    background: rgba(13, 17, 25, 0.96);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    transform: translate(14px, -38px);
+    pointer-events: auto;
+}
+
+.sk-context-bar button {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: none;
+    color: var(--text);
+    cursor: pointer;
+}
+
+.sk-context-bar button:hover,
+.sk-context-bar button:focus-visible {
+    border-color: var(--accent-2);
+    background: rgba(53, 224, 255, 0.12);
+}
+
+.sk-context-bar svg {
+    width: 18px;
+    height: 18px;
+}

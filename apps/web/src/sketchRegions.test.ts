@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { SketchGeometry, SketchProfile } from '@jarvis/core';
 import { addArc, addCircle, addLine, addRect, geometryEntities, geometryOpenChains, geometryProfiles, EMPTY_GEOMETRY } from './sketchGeometry';
 import { area, entitiesToProfiles, inside, profilePoints, type Pt } from './sketchMath';
+import { regionsOf } from './regionPick';
+import { clearRegionStore } from './sketchRegions';
 
 const areaOf = (p: SketchProfile) => Math.abs(area(profilePoints(p)));
 
@@ -147,5 +149,58 @@ describe('open chains', () => {
         expect(chains.every((c) => c.kind === 'path' && c.segments.length === 1)).toBe(true);
         expect(geometryProfiles(g).profiles).toHaveLength(1);
         expect(geometryOpenChains(addCircle(EMPTY_GEOMETRY, { at: [0, 0] }, 5).g)).toEqual([]);
+    });
+});
+
+describe('regions kept between calls', () => {
+    /** Every number of `a` and `b` the same (Object.is), and the same shape. */
+    const same = (a: unknown, b: unknown): boolean => {
+        if (typeof a === 'number' || typeof b === 'number') {
+            return Object.is(a, b);
+        }
+        if (Array.isArray(a) && Array.isArray(b)) {
+            return a.length === b.length && a.every((x, i) => same(x, b[i]));
+        }
+        if (a && b && typeof a === 'object' && typeof b === 'object') {
+            const [ka, kb] = [Object.keys(a), Object.keys(b)];
+            return ka.join() === kb.join() && ka.every((k) => same((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+        }
+        return a === b;
+    };
+
+    /** Rectangles with circles inside and beside them, a shared edge, a circle twice over. */
+    function sketch(): SketchGeometry {
+        let g = EMPTY_GEOMETRY;
+        for (let i = 0; i < 4; i++) {
+            g = addRect(g, [i * 30, 0], [i * 30 + 20, 14]).g;
+            g = addCircle(g, { at: [i * 30 + 8, 7] }, 3).g;
+            g = addCircle(g, { at: [i * 30 + 25, 30] }, 2).g;
+        }
+        g = polyline(g, [20, 0], [26, 0], [26, 14], [20, 14]);
+        g = addCircle(g, { at: [200, 0] }, 5).g;
+        return addCircle(g, { at: [200, 0] }, 5).g;
+    }
+
+    it('gives what working everything out again gives, also while a point is dragged', () => {
+        let g = sketch();
+        const corner = g.points.find((p) => p.u === 30 && p.v === 0)!;
+        for (let step = 0; step < 6; step++) {
+            const kept = regionsOf(g);
+            clearRegionStore();
+            expect(same(kept, regionsOf(g))).toBe(true);
+            // A corner of the second rectangle moves a little each time (the fourth time onto the next corner).
+            g = { ...g, points: g.points.map((p) => (p.id === corner.id ? { ...p, u: step === 3 ? 50 : p.u + 0.7, v: step === 3 ? 0 : p.v - 0.4 } : p)) };
+        }
+    });
+
+    it('keeps the regions a change does not touch as the same objects, and two equal regions as two', () => {
+        const g = sketch();
+        const first = regionsOf(g);
+        const moved = g.points.find((p) => p.u === 90 && p.v === 0)!;
+        const next = regionsOf({ ...g, points: g.points.map((p) => (p === moved ? { ...p, u: 89 } : p)) });
+        const shared = next.filter((r) => first.includes(r));
+        expect(shared.length).toBeGreaterThan(first.length - 4);
+        expect(shared.length).toBeLessThan(first.length);
+        expect(new Set(next).size).toBe(next.length);
     });
 });

@@ -6,6 +6,7 @@ import { Euler, MathUtils, Matrix4, Quaternion, Vector3 } from 'three';
 import type { Feature, Part, SketchGeometry, SketchPlane, SketchRegion, Vec3 } from '@jarvis/core';
 import { resolveRevolveAxis } from '@jarvis/core/reference';
 import { niceStep, roundTo, valueText } from './numberText';
+import { planeAngleHandle, planeOffsetHandle, stepsBefore, type RefValues } from './referenceDefs';
 import { pickedRegions } from './regionPick';
 import { axisFromValue, revolveAxisKey } from './revolveAxis';
 import { planeFrame, profilePoints, type Pt } from './sketchMath';
@@ -274,6 +275,29 @@ export const TOOL_HANDLES: Record<string, HandleFn> = {
             kind: 'distance', key: 'depth', origin: point(m, pos), direction: unit(direction(m, scale(n, -1))), value: depth, min: 0,
             step: DEFAULT_STEP.length, label: 'Depth',
         }];
+    },
+    plane: (values, ctx) => {
+        const h = ctx.part ? planeOffsetHandle(values as RefValues, stepsBefore(ctx)) : null;
+        const turn = ctx.part ? planeAngleHandle(values as RefValues, stepsBefore(ctx)) : null;
+        const m = partMatrix(ctx.part);
+        return [
+            ...(h ? [{
+                kind: 'distance' as const, key: h.key, origin: point(m, h.origin), direction: unit(direction(m, h.direction)), value: h.value, min: 0,
+                step: DEFAULT_STEP.length, label: 'Distance',
+            }] : []),
+            // An angled plane: the arc about what it turns, from the base plane.
+            ...(turn ? [{
+                kind: 'angle' as const, key: turn.key, origin: point(m, turn.origin), axis: unit(direction(m, turn.axis)),
+                start: unit(direction(m, turn.start)), radius: 0, value: turn.value, min: 0, max: 360, step: DEFAULT_STEP.angle,
+            }] : []),
+        ];
+    },
+    // The point being placed or edited: arrows along the part's X, Y and Z (the world's when the part is not turned).
+    point: (values, ctx) => {
+        const pos = values.kind === 'xyz' ? vecOf(values, 'pos') : null;
+        return ctx.part && pos
+            ? [{ kind: 'translate', keys: ['pos0', 'pos1', 'pos2'], position: point(partMatrix(ctx.part), pos), step: DEFAULT_STEP.position }]
+            : [];
     },
 };
 

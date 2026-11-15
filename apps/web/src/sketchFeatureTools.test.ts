@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Feature, Part, Project, Sketch } from '@jarvis/core';
 import { captureToolCalls, useStudio } from './state';
 import { editorFor, noEditTool, type Ctx, type ToolDef, type Values } from './toolDefs';
+import type { PickItem } from './pickField';
 import { useRegionPick } from './regionPick';
 
 // The sketcher's wasm URL only resolves in the browser.
@@ -110,14 +111,29 @@ describe('thread tool', () => {
         const thread: Feature = { id: 't', op: 'thread', kind: 'external', pitch: 1.25, length: 10, position: [0, 0, 0], diameter: 8 };
         const tool = editorFor(part([steps[0], shaft, thread]), thread) as ToolDef;
         const v = tool.defaults!(ctxFor(p));
-        expect(v).toMatchObject({ start: 'edge', edge: '' });
+        expect(v).toMatchObject({ start: 'edge', edges: [] });
         expect(await errorOf(tool, v, ctxFor(p))).toMatch(/Click the circular edge/);
-        const picked = { ...v, at0: '2', at1: '20', at2: '0', edge: 'the Ø4 mm circular edge', end: 'revolutions', revolutions: '6', hand: 'left', starts: '2' };
+        const picked = { ...v, edges: [{ kind: 'edge', at: [2, 20, 0] }] as PickItem[], end: 'revolutions', revolutions: '6', hand: 'left', starts: '2' };
         const [call] = callsOf(tool, picked, ctxFor(p));
         const saved = (call.args.features as Record<string, unknown>[])[0];
         expect(saved).toMatchObject({ op: 'thread', kind: 'external', at: [2, 20, 0], pitch: 1.25, revolutions: 6, leftHanded: true, starts: 2 });
         expect(saved).not.toHaveProperty('diameter');
         expect(saved).not.toHaveProperty('position');
+        expect(saved).not.toHaveProperty('alsoAt');
+    });
+
+    it('threads several edges in one step: the first is the start edge, the others go with it', () => {
+        const p = part([steps[0], shaft]);
+        const thread: Feature = { id: 't', op: 'thread', kind: 'internal', pitch: 0.8, length: 10, at: [2, 20, 0], alsoAt: [[12, 20, 0]] };
+        const tool = editorFor(part([steps[0], shaft, thread]), thread) as ToolDef;
+        const v = tool.defaults!(ctxFor(p, thread));
+        expect(v.edges).toEqual([{ kind: 'edge', at: [2, 20, 0] }, { kind: 'edge', at: [12, 20, 0] }]);
+        const three = [...(v.edges as PickItem[]), { kind: 'edge', at: [22, 20, 0] }] as PickItem[];
+        const [call] = callsOf(tool, { ...v, edges: three }, ctxFor(p, thread));
+        expect((call.args.updates as Record<string, unknown>[])[0]).toMatchObject({ at: [2, 20, 0], alsoAt: [[12, 20, 0], [22, 20, 0]] });
+        // Down to one edge: the others are cleared.
+        const [one] = callsOf(tool, { ...v, edges: three.slice(0, 1) }, ctxFor(p, thread));
+        expect((one.args.updates as Record<string, unknown>[])[0]).toMatchObject({ at: [2, 20, 0], alsoAt: null });
     });
 
     it('opens a stored thread with its preset and clears what the form drops', () => {
@@ -126,7 +142,7 @@ describe('thread tool', () => {
         const tool = editorFor(p, thread) as ToolDef;
         const v = tool.defaults!(ctxFor(p, thread));
         expect(v).toMatchObject({ start: 'point', size: 'M8', diameter: '8', length: '10' });
-        const [call] = callsOf(tool, { ...v, start: 'edge', edge: 'the stored edge', at0: '4', at1: '20', at2: '0' }, ctxFor(p, thread));
+        const [call] = callsOf(tool, { ...v, start: 'edge', edges: [{ kind: 'edge', at: [4, 20, 0] }] as PickItem[] }, ctxFor(p, thread));
         expect((call.args.updates as Record<string, unknown>[])[0]).toMatchObject({ at: [4, 20, 0], position: null, diameter: null, revolutions: null });
     });
 });

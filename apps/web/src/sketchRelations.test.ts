@@ -152,7 +152,7 @@ describe('relation tools', () => {
         let s = state().geometry;
         const centre = (id: string) => {
             const c = s.curves.find((k) => k.id === id);
-            return c && c.kind !== 'line' ? at(s, c.center) : [NaN, NaN];
+            return c && (c.kind === 'circle' || c.kind === 'arc') ? at(s, c.center) : [NaN, NaN];
         };
         expect(centre(c1)[0]).toBeCloseTo(centre(c2)[0], 5);
         expect(curveRadius(s, c1)).not.toBeCloseTo(curveRadius(s, c2)!, 3);
@@ -246,7 +246,7 @@ describe('drawing', () => {
         expect(state().geometry.constraints).toContainEqual(expect.objectContaining({ kind: 'pointOnCurve', point: 'px' }));
     });
 
-    it('ends a line chain with Enter instead of leaving the sketch, and leaves only when idle', () => {
+    it('ends a line chain with Enter, and when idle never leaves the sketch (Enter repeats the last command)', () => {
         begin(EMPTY_GEOMETRY, 'line');
         sketchClick([0, 0], TOL);
         sketchClick([10, 0], TOL);
@@ -254,7 +254,8 @@ describe('drawing', () => {
         expect(enterKey()).toBe('done');
         expect(state().draft).toHaveLength(0);
         expect(state().active).toBe(true);
-        expect(enterKey()).toBe('exit');
+        expect(enterKey()).toBe('repeat');
+        expect(state().active).toBe(true);
     });
 
     it('applies a typed value with Enter and shows its error in the status line', () => {
@@ -380,7 +381,7 @@ describe('angle dimensions', () => {
         expect(sketchDown([15, 0.3], TOL)).toBe(true);
         sketchUp();
         sketchClick([15, 0.3], TOL);
-        sketchClick([5, 8.66], TOL);
+        sketchClick([3, 5.196], TOL); // off the midpoint, which would pick the midpoint
         sketchClick([-6, 6], TOL);
         expect(state().dimDraft?.text).toBe('120');
     });

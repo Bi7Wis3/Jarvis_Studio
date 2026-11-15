@@ -6,7 +6,7 @@ import { fetchPreview, LatestOnly, toPreview, type PreviewResponse, type ToolCal
 import { useRegionPick } from './regionPick';
 import { captureToolCalls, clearPreview, setPreview } from './state';
 import type { Ctx, Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
-import { clearToolSession, publishToolSession } from './toolSession';
+import { clearToolSession, publishToolSession, toolPreset } from './toolSession';
 import { PickList, PositionTarget, usePickBoxes } from './PickList';
 
 const PREVIEW_DELAY_MS = 250;
@@ -118,7 +118,7 @@ function useToolSessionPublish(tool: ToolDef, ctx: Ctx, values: Values, setValue
 }
 
 export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
-    const [values, setValues] = useState<Values>(() => tool.defaults?.(ctx) ?? {});
+    const [values, setValues] = useState<Values>(() => ({ ...(tool.defaults?.(ctx) ?? {}), ...(ctx.edit ? {} : toolPreset(tool.id)) }));
     const [result, setResult] = useState<Result | null>(null);
     const [busy, setBusy] = useState(false);
     const form = useRef<HTMLFormElement>(null);

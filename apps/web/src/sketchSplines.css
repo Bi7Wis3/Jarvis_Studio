@@ -1,0 +1,16 @@
+/* Spline tools in the sketch view (sketchSplineDrawing.tsx) and their forms. */
+
+.sk-label.sp-radius {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(8, 11, 17, 0.8);
+    color: #8fc7ff;
+    font-weight: 500;
+}
+
+.sp-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 4px 0;
+}

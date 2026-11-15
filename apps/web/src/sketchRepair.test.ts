@@ -82,6 +82,24 @@ describe('repair sketch', () => {
         expect(solveGeometry(r.g).ok).toBe(true);
     });
 
+    it('reports a point shared by three entities (also when joined by a coincident relation) and leaves it to the user', () => {
+        let g = addLine(EMPTY_GEOMETRY, { at: [0, 0] }, { at: [10, 0] }).g;
+        const hub = (g.curves[0] as { b: string }).b;
+        g = addLine(g, { at: [10, 0], point: hub }, { at: [10, 10] }).g;
+        expect(findProblems(g)).toEqual([]);
+        g = addLine(g, { at: [10, 0], point: hub }, { at: [20, 0] }).g;
+        const problems = findProblems(g);
+        expect(problems).toMatchObject([{ kind: 'shared', action: '' }]);
+        expect(problems[0].text).toContain('shared by 3 entities');
+        expect(problems[0].refs).toEqual(expect.arrayContaining([hub, ...g.curves.map((c) => c.id)]));
+        // Fix all leaves it alone and does not count it.
+        expect(fixAll(g)).toEqual({ g, fixed: 0 });
+        // A fourth line with its own end point held coincident: one report, four entities.
+        const own = addLine(g, { at: [10, 0] }, { at: [10, -10] });
+        const joined = addConstraint(own.g, { kind: 'coincident', a: hub, b: (own.g.curves[3] as { a: string }).a }).g;
+        expect(findProblems(joined).filter((p) => p.kind === 'shared').map((p) => p.text)).toEqual([expect.stringContaining('shared by 4 entities')]);
+    });
+
     it('merging drops relations that say nothing any more', () => {
         let g = gapped();
         const [l1, l2] = g.curves as { id: string; a: string; b: string }[];

@@ -35,7 +35,7 @@ export function axisValue(ref: AxisRef | Vec3 | undefined): string {
     if (Array.isArray(ref)) {
         return `vec:${ref.join(',')}`;
     }
-    return typeof ref === 'string' ? ref : `ref:${ref.axisRef}`;
+    return typeof ref === 'string' ? ref : 'axisRef' in ref ? `ref:${ref.axisRef}` : `fixed:${JSON.stringify(ref)}`;
 }
 
 export function axisFromValue(value: string): AxisRef | Vec3 | undefined {
@@ -44,6 +44,9 @@ export function axisFromValue(value: string): AxisRef | Vec3 | undefined {
     }
     if (value.startsWith('ref:')) {
         return { axisRef: value.slice(4) };
+    }
+    if (value.startsWith('fixed:')) {
+        return JSON.parse(value.slice(6)) as AxisRef;
     }
     if (value.startsWith('vec:')) {
         const v = value.slice(4).split(',').map(Number);
@@ -244,7 +247,7 @@ export function planeOptions(features: readonly Feature[] | undefined, upto?: st
 export const MIRROR_DEFAULTS: Values = { plane: 'right', offset: '0', what: 'body', features: [] };
 
 export function mirrorValues(f: Mirror): Values {
-    const plane = typeof f.plane === 'string' ? OLD_PLANES[f.plane] ?? f.plane : `ref:${f.plane.planeRef}`;
+    const plane = typeof f.plane === 'string' ? OLD_PLANES[f.plane] ?? f.plane : planeValue(f.plane);
     return {
         plane, offset: String(f.offset ?? 0), what: f.features?.length ? 'features' : 'body', features: [...(f.features ?? [])],
     };
@@ -255,13 +258,18 @@ function planeFromValue(value: string, what: string): PlaneRef {
     if (value.startsWith('ref:')) {
         return { planeRef: value.slice(4) };
     }
+    if (value.startsWith('fixed:')) {
+        return JSON.parse(value.slice(6)) as PlaneRef;
+    }
     if (value === 'front' || value === 'top' || value === 'right') {
         return value;
     }
     throw new Error(`Pick ${what}.`);
 }
 
-const planeValue = (plane: PlaneRef): string => (typeof plane === 'string' ? plane : `ref:${plane.planeRef}`);
+// A plane taken from the model (only Jarvis writes one here) is kept as it is through an edit.
+const planeValue = (plane: PlaneRef): string => (typeof plane === 'string' ? plane
+    : 'planeRef' in plane ? `ref:${plane.planeRef}` : `fixed:${JSON.stringify(plane)}`);
 
 /** The mirror's fields; `features` is null (removed) when mirroring the body. */
 export function mirrorFeature(v: Input): Record<string, unknown> {

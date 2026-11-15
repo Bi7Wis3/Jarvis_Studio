@@ -2,11 +2,13 @@
 // cached by meshKey.
 
 import { Worker } from 'node:worker_threads';
-import type { Part, PrintSettings, Project } from '@jarvis/core';
+import type { Feature, Part, PrintSettings, Project } from '@jarvis/core';
 import { meshKey } from './key.js';
 import type { CombineContext } from './context.js';
 import type { WorkerRequest, WorkerResponse } from './worker.js';
 import type { MassProps } from './props.js';
+import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projection';
+import type { FreecadExport } from '../export/freecadMacro.js';
 
 export { meshKey } from './key.js';
 export { combineContext, type CombineContext, type CombinePart } from './context.js';
@@ -29,6 +31,8 @@ export interface MeshData {
     triFace: Uint32Array;
     /** Per segment of `edges`: ordinal (0..E-1) of the B-rep edge it belongs to (seams excluded). */
     segEdge: Uint32Array;
+    /** Reference steps whose references taken from the model were found again, as found (by step id). */
+    followed?: Record<string, Feature>;
 }
 
 /** A part whose history failed; `partial` is the solid up to the failing step, when there is one. */
@@ -40,14 +44,19 @@ export class CadBuildError extends Error {
 }
 
 export interface CadKernelOptions {
-    /** Per-job timeout; on expiry the worker is restarted. Default 60 s. */
+    /**
+     * Per-job timeout; on expiry the worker is restarted. Default 5 minutes: a part with long modelled threads takes
+     * more than a minute to build from nothing (after a server restart, when no step is cached yet), and a limit
+     * below that makes it fail every time.
+     */
     timeoutMs?: number;
     /** Meshes kept in memory. Default 500. */
     cacheSize?: number;
 }
 
 type JobRequest = Omit<Extract<WorkerRequest, { type: 'mesh' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'step' }>, 'id'>
-    | Omit<Extract<WorkerRequest, { type: 'props' }>, 'id'>;
+    | Omit<Extract<WorkerRequest, { type: 'props' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'project' }>, 'id'>
+    | Omit<Extract<WorkerRequest, { type: 'freecad' }>, 'id'>;
 
 interface Job {
     request: JobRequest;
@@ -69,6 +78,7 @@ export class CadKernel {
     timeoutMs: number;
     private readonly cacheSize: number;
     private readonly cache = new Map<string, CacheEntry>();
+    private readonly projections = new Map<string, Promise<ModelSketch>>();
     private worker: Worker | null = null;
     private ready = false;
     private closed = false;
@@ -77,7 +87,7 @@ export class CadKernel {
     private nextId = 1;
 
     private constructor(options: CadKernelOptions) {
-        this.timeoutMs = options.timeoutMs ?? 60_000;
+        this.timeoutMs = options.timeoutMs ?? (Number(process.env.JARVIS_CAD_TIMEOUT_MS) || 300_000);
         this.cacheSize = options.cacheSize ?? 500;
     }
 
@@ -122,6 +132,32 @@ export class CadKernel {
     async step(project: Project): Promise<Buffer> {
         const bytes = (await this.run({ type: 'step', project })) as Uint8Array;
         return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    }
+
+    /** A FreeCAD macro that rebuilds the parts' histories (all parts when `partIds` is empty); see export/freecadMacro.ts. */
+    freecadMacro(project: Project, partIds: string[] = []): Promise<FreecadExport> {
+        return this.run({ type: 'freecad', project, partIds }) as Promise<FreecadExport>;
+    }
+
+    /**
+     * Model geometry for a sketch on `frame` (see cad/project.ts): the part's edges projected onto the plane, picked
+     * edges and face loops, a section or the silhouette. `part` holds the steps before the sketch. Cached.
+     */
+    project(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, frame: PlaneFrame3, query: ModelQuery, context?: CombineContext): Promise<ModelSketch> {
+        const key = `${meshKey(part, print, context)} ${JSON.stringify(frame)} ${JSON.stringify(query)}`;
+        const hit = this.projections.get(key);
+        if (hit) {
+            this.projections.delete(key);
+            this.projections.set(key, hit);
+            return hit;
+        }
+        const promise = this.run({ type: 'project', part: { shape: part.shape, features: part.features }, print, context, frame, query }) as Promise<ModelSketch>;
+        promise.catch(() => this.projections.delete(key));
+        this.projections.set(key, promise);
+        while (this.projections.size > 200) {
+            this.projections.delete(this.projections.keys().next().value as string);
+        }
+        return promise;
     }
 
     /** Volume, area, centre of mass and inertia (unit density) of a part's solid. Not cached. */
@@ -192,7 +228,8 @@ export class CadKernel {
         clearTimeout(current.timer);
         this.current = null;
         if (message.ok) {
-            current.job.resolve('mesh' in message ? message.mesh : 'props' in message ? message.props : message.step);
+            current.job.resolve('mesh' in message ? message.mesh : 'props' in message ? message.props : 'model' in message ? message.model
+                : 'freecad' in message ? message.freecad : message.step);
         } else {
             current.job.reject(new CadBuildError(message.error, message.partial));
         }

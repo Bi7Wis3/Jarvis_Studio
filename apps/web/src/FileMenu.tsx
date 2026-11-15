@@ -180,6 +180,7 @@ function MainMenu(props: {
             <div className="ctx-sep" role="separator" />
             {item('Export STL (printed parts)', () => onRun('Exporting STL', 'export_stl'))}
             {item('Export STEP', () => onRun('Exporting STEP', 'export_step'))}
+            {item('Export history for FreeCAD', () => onRun('Exporting history for FreeCAD', 'export_freecad'))}
             <div className="ctx-sep" role="separator" />
             {item('Print settings…', () => onView('print'))}
             <div className="ctx-sep" role="separator" />

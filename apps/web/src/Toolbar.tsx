@@ -1,11 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useShallow } from 'zustand/react/shallow';
 import type { Feature } from '@jarvis/core';
 import { Icon } from './icons';
 import { showError } from './menus';
+import { familyOf, toolbarItems, type ToolFamily } from './toolFamilies';
 import { clearEditing, clearPicked, runTool, select, setRollback, setWorkspace, useStudio } from './state';
 import {
-    closeSketch, deleteSelected, enterKey, fitSketch, redoSketch, setTool, toggleConstructionSelected, sketchEscape, startSketch, typeKey,
+    closeSketch, deleteSelected, enterKey, fitSketch, redoSketch, setTool, toggleConstructionSelected, sketchEscape, startSketch, toggleLineArc, typeKey,
     undoSketch,
     useSketcher,
     type SketchTool,
@@ -17,21 +19,32 @@ import {
 } from './toolDefs';
 import { FieldInput, useToolForm } from './toolForm';
 import { PropertyManager, usePropertyManager, usesPanel } from './PropertyManager';
-import { planeLabel } from './sketchMath';
+import { copySelection, cutSelection, moreHint, pasteAtCursor, useSketchMore } from './sketchMoreTools';
 import './toolbar.css';
+import { openSketchXpert } from './sketchXpertAuto';
+import { useSketchToggles } from './sketchToggles';
+import { lastSketchCommand, noteSketchCommand } from './sketchRepeat';
+import { confirmDiscard, isSketchForm, keepSketch, sketchPlaneText, sketchStatusText, useDiscardAsk } from './sketchBar';
 
 // Estimated widths matching the CSS, used to decide which groups collapse into menus.
 const BUTTON_W = 28;
 const BUTTON_GAP = 2;
 const GROUP_PAD = 9;
 const MENU_W = 38;
+/** A family button: the tool in use plus the narrow arrow that opens its variants. */
+const FAMILY_W = 40;
+const FAMILY_KEY = 'jarvis.toolbar.families';
+// A collapsed group's name beside its icon: gap, then about this much per letter.
+const LABEL_GAP = 5;
+const LABEL_CHAR_W = 6.6;
 const BAR_PAD = 10;
 const SWITCH_W = 142;
 const SIDE_GAP = 20;
 /** Bottom of the toolbar (top 12 + 38 high), see .toolbar in styles.css. */
 const BAND_BOTTOM = 52;
 
-type Layout = { kind: 'hidden' } | { kind: 'all' } | { kind: 'groups'; collapsed: Set<string> };
+type Layout = { kind: 'hidden' } | { kind: 'all' }
+    | { kind: 'groups'; collapsed: Set<string>; named: Set<string>; showActive: boolean };
 
 interface Anchor {
     left: number;
@@ -55,8 +68,11 @@ function tip(tool: ToolDef, part: boolean): string {
 }
 
 function groupWidth(group: ToolGroup, collapsed: boolean): number {
-    const n = group.tools.length;
-    return (collapsed ? MENU_W : n * BUTTON_W + (n - 1) * BUTTON_GAP) + GROUP_PAD;
+    if (collapsed) {
+        return MENU_W + GROUP_PAD;
+    }
+    const items = toolbarItems(group.tools);
+    return items.reduce((sum, item) => sum + ('family' in item ? FAMILY_W : BUTTON_W), 0) + (items.length - 1) * BUTTON_GAP + GROUP_PAD;
 }
 
 /** The free band for the toolbar between the title and the activity panel. */
@@ -79,7 +95,7 @@ function measureRoom(): { room: number; centre: number } {
 }
 
 /** Collapses groups into menus, lowest priority first, until the toolbar fits. */
-function computeLayout(groups: ToolGroup[], room: number): Layout {
+function computeLayout(groups: ToolGroup[], room: number, reserved = 0): Layout {
     if (window.innerWidth < 760) {
         return { kind: 'hidden' };
     }
@@ -93,7 +109,18 @@ function computeLayout(groups: ToolGroup[], room: number): Layout {
         collapsed.add(group.id);
     }
     if (total() <= room) {
-        return { kind: 'groups', collapsed };
+        // A menu that shows only an icon hides what is in it: name the collapsed groups while there is room.
+        const named = new Set<string>();
+        let used = total();
+        for (const group of groups.filter((g) => collapsed.has(g.id))) {
+            const width = LABEL_GAP + (group.short ?? group.label).length * LABEL_CHAR_W;
+            if (used + width <= room) {
+                named.add(group.id);
+                used += width;
+            }
+        }
+        // The name of the part being edited (`reserved` wide) is also in the tree: it only stays when it still fits.
+        return { kind: 'groups', collapsed, named, showActive: used + reserved <= room };
     }
     return room >= MENU_W + BAR_PAD + SWITCH_W ? { kind: 'all' } : { kind: 'hidden' };
 }
@@ -112,9 +139,12 @@ function useCtx(): Ctx {
     return { part, project: history, edit };
 }
 
-const CONSTRAINT_HINT = 'Pick the geometry in the view (or select it first, then press the button)';
+const CONSTRAINT_HINT = 'Pick the geometry in the view (or select it first, then press the button) · model edges and corners can be picked too';
 
 function sketchHint(tool: SketchTool): string {
+    if (tool.startsWith('m:')) {
+        return moreHint(tool);
+    }
     if (tool === 'trim') {
         return TRIM_HINTS[useSketcher.getState().editOptions.trimMode];
     }
@@ -124,15 +154,15 @@ function sketchHint(tool: SketchTool): string {
 
 const TRIM_HINTS = {
     power: 'Power trim: drag across curves to trim each where the pointer crosses · or click a piece to remove it',
-    corner: 'Corner: click two lines on the sides to keep · they are trimmed or extended to meet',
+    corner: 'Corner: click two curves on the sides to keep · they are trimmed or extended to meet',
     inside: 'Trim away inside: click two boundaries, then the curves to cut away between them',
     outside: 'Trim away outside: click two boundaries, then the curves to cut away outside them',
     closest: 'Trim to closest: click the piece of a curve to remove, up to where other curves cross it',
 };
 
-const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}`>, string> = {
+const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}` | `m:${string}`>, string> = {
     select: 'Click to select, Shift adds · drag points, lines or dimension values to move · double-click a dimension to edit · Delete removes',
-    dimension: 'Drag a line or circle outwards to dimension it · or click two items (points, lines, circles: to the centre), then where the value goes · for an angle, the side picks which angle',
+    dimension: 'Drag a line or circle outwards to dimension it · or click two items (points, lines, circles: to the centre), then where the value goes · for an angle, the side picks which angle · model edges and corners can be picked too',
     line: 'Click points · type a length (or length,angle) + Enter · click the start to close · Enter or double-click ends the chain',
     centerline: 'Click points for a construction line · type a length (or length,angle) + Enter · Enter ends the chain',
     point: 'Click to place a sketch point · it snaps to points, middles and curves',
@@ -141,12 +171,18 @@ const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}`>, string> = {
     circle: 'Click the centre, then a point · type the diameter + Enter',
     arc: 'Click start and end, then a point on the arc · type a radius + Enter',
     slot: 'Click both centres (they snap to points), then the width · type a length, then the width',
-    polygon: 'Click the centre, then a corner · sides in sketch settings',
+    polygon: 'Click the centre, then a corner (or the middle of a side, with an inscribed circle) · sides and circle in the form',
     centerRect: 'Click the centre, then a corner · type width,height + Enter',
     centerArc: 'Click the centre, then the start, then where it ends · type the radius, then the angle + Enter',
     tangentArc: 'Click the end of a line or arc, then where the arc ends · it goes on tangent from there · Enter or double-click ends',
     perimeterCircle: 'Click three points the circle passes through',
     rect3: 'Click two corners for the first side (any angle), then a point for the width',
+    midpointLine: 'Click the middle, then an end · the line grows both ways · type its length + Enter',
+    centerRect3: 'Click the centre, then the middle of a side (any angle), then a point for the width',
+    parallelogram: 'Click two corners for the first side, then the next corner · the last one closes it',
+    centerSlot: 'Click the centre, then an end centre, then the width · type the width + Enter',
+    arcSlot3: 'Click the start and end of the arc, then a point on it, then the width · type the width + Enter',
+    centerArcSlot: 'Click the arc centre, then the start, go round to the end and click, then the width · type the width + Enter',
     trim: 'Click the piece of a curve to remove, up to where other curves cross it',
     extend: 'Click near the end of a line or arc to lengthen it to the next curve',
     fillet: 'Click a corner, or two lines or arcs, to round it · type a radius + Enter to change it · options in the form',
@@ -154,6 +190,12 @@ const SKETCH_HINTS: Record<Exclude<SketchTool, `c:${string}`>, string> = {
     offset: 'Click a curve (or select curves first), then click where the copy goes · or type the distance + Enter',
     mirror: 'Click the curves to mirror, then an axis or a centre line · or press Enter and click any line',
     split: 'Click a line or arc where it splits in two · a circle: click two points',
+    ellipse: 'Click the centre, then the end of the first axis, then the second axis · type each radius + Enter',
+    partialEllipse: 'Click the centre, the end of the first axis, the second axis (the arc starts there), then go round and click where it ends',
+    spline: 'Click the points the spline runs through · double-click or Enter ends it · click its first point to close it',
+    styleSpline: 'Click the control vertices; the curve follows their polygon · double-click or Enter ends it · Curve Type in the form',
+    parabola: 'Click the focus, then the vertex, then on the parabola where it starts and where it ends',
+    conic: 'Click both ends, then the top vertex (where the end tangents meet), then click to set Rho',
 };
 
 const SKETCH_KEYS: Record<string, SketchTool> = {
@@ -175,11 +217,9 @@ function WorkspaceSwitch() {
                     title={ws === 'part' ? 'Part: sketch and edit one part\'s features' : 'Assembly: place, fasten, pattern and export parts'}
                     onClick={() => {
                         if (sketching) {
-                            // Leaving mid-sketch would lose it: ask, and stay if the answer is no.
-                            discardSketch();
-                            if (useSketcher.getState().active) {
-                                return;
-                            }
+                            // Leaving mid-sketch would lose it: the sketch bar asks, and the switch waits for a yes.
+                            discardSketch(() => setWorkspace(ws));
+                            return;
                         }
                         setWorkspace(ws);
                     }}
@@ -193,7 +233,12 @@ function WorkspaceSwitch() {
 
 /** One line under the toolbar while sketching: what the tool expects, the plane and the profile status, and the way out. */
 function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void }) {
-    const { active, stage, tool, plane, offset, edit, dof, message, notice, geometry, redundant, conflicting } = useSketcher();
+    // What the bar shows (the trim hint follows the trim mode), not the whole sketcher: pointer moves do not redraw it.
+    const { active, stage, tool, plane, offset, edit, dof, message, notice, geometry, redundant, conflicting } = useSketcher(useShallow((s) => ({
+        active: s.active, stage: s.stage, tool: s.tool, plane: s.plane, offset: s.offset, edit: s.edit, dof: s.dof, message: s.message,
+        notice: s.notice, geometry: s.geometry, redundant: s.redundant, conflicting: s.conflicting, trimMode: s.editOptions.trimMode,
+    })));
+    const asking = useDiscardAsk((a) => !!a.asking);
     const over = redundant.length > 0 || conflicting.length > 0;
     if (!active) {
         return null;
@@ -202,22 +247,37 @@ function SketchBar({ centre, onFinish }: { centre: number; onFinish: () => void 
         return (
             <div className="sk-bar" style={{ left: centre }}>
                 Choose a sketch plane, or click a flat face of the part
-                <button type="button" className="sk-exit" onClick={discardSketch} title="Leave without a sketch (Esc)">Cancel</button>
+                <button type="button" className="sk-exit" onClick={() => discardSketch()} title="Leave without a sketch (Esc)">Cancel</button>
             </div>
         );
     }
+    if (asking) {
+        return (
+            <div className="sk-bar" style={{ left: centre }} role="alertdialog" aria-label="Discard this sketch?">
+                <b>Discard this sketch?</b>
+                <span className="sk-ask" title="What you drew or changed in it will be lost.">What you drew or changed in it will be lost.</span>
+                <button type="button" className="sk-exit" onClick={confirmDiscard} title="Leave the sketch without saving it">Discard</button>
+                <button type="button" className="sk-done" onClick={keepSketch} title="Back to the sketch (Esc)" autoFocus>Keep sketching</button>
+            </div>
+        );
+    }
+    const hint = message ?? notice ?? sketchHint(tool);
     return (
         <div className="sk-bar" style={{ left: centre }}>
             <b>{edit ? 'Editing sketch' : 'Sketch'}</b>
-            <span className="sk-plane">{planeLabel(plane)}{offset ? ` ${offset > 0 ? '+' : ''}${offset} mm` : ''}</span>
-            <span className={message ? 'sk-message' : notice ? 'sk-notice' : ''}>{message ?? notice ?? sketchHint(tool)}</span>
-            <span className={`sk-dof ${dof === 0 && !over ? 'done' : ''} ${over ? 'over' : ''}`} title="Sketch status and degrees of freedom left">
-                {!geometry.curves.length ? 'empty' : dof < 0 ? '…' : over ? 'Over defined' : dof === 0 ? 'Fully defined' : `Under defined · ${dof} DOF`}
+            <span className="sk-plane">{sketchPlaneText(plane, offset)}</span>
+            <span className={message ? 'sk-message' : notice ? 'sk-notice' : ''} title={hint}>{hint}</span>
+            <span
+                className={`sk-dof ${dof === 0 && !over ? 'done' : ''} ${over ? 'over' : ''}`}
+                title={over ? 'Over defined: click to open SketchXpert' : 'Sketch status and degrees of freedom left'}
+                onClick={over ? openSketchXpert : undefined}
+            >
+                {sketchStatusText(geometry, dof, over)}
             </span>
-            <button type="button" className="sk-done" onClick={onFinish} title="Save the sketch and go back to the part (Enter)">
+            <button type="button" className="sk-done" onClick={onFinish} title="Save the sketch and go back to the part">
                 Exit sketch
             </button>
-            <button type="button" className="sk-exit" onClick={discardSketch} title="Leave the sketch without saving it">Discard</button>
+            <button type="button" className="sk-exit" onClick={() => discardSketch()} title="Leave the sketch without saving it">Discard</button>
         </div>
     );
 }
@@ -227,6 +287,7 @@ export function Toolbar() {
     const ctx = useCtx();
     const grid = useStudio((s) => s.grid);
     const edges = useStudio((s) => s.edges);
+    const perspective = useStudio((s) => s.perspective);
     const selected = useStudio((s) => s.selected);
     const history = useStudio((s) => s.history);
     const current = useStudio((s) => s.current);
@@ -235,12 +296,26 @@ export function Toolbar() {
     const sketchActive = useSketcher((s) => s.active);
     const sketchStage = useSketcher((s) => s.stage);
     const sketchTool = useSketcher((s) => s.tool);
+    // The sketch toggles' buttons show their state.
+    useSketchToggles();
+    // Dynamic mirror is a switch outside the sketcher's tool: its button follows it.
+    useSketchMore((m) => !!m.dynamicMirror);
     const showOthers = useStudio((s) => s.partView === 'inContext');
     const groups = sketchActive ? SKETCH_GROUPS : workspace === 'part' ? PART_GROUPS : ASSEMBLY_GROUPS;
     const [band, setBand] = useState(() => measureRoom());
-    const layout = computeLayout(groups, band.room);
+    // The name of the part being edited sits at the end of the bar (see .tb-active).
+    const activeNameWidth = workspace === 'part' && !sketchActive && ctx.part ? Math.min(140, ctx.part.name.length * 7) + 24 : 0;
+    const layout = computeLayout(groups, band.room, activeNameWidth);
     const [popup, setPopup] = useState<{ tool: ToolDef; anchor: Anchor } | null>(null);
     const [menu, setMenu] = useState<{ group: string; anchor: Anchor } | null>(null);
+    // The variant last used in each family is the one its button shows.
+    const [lastUsed, setLastUsed] = useState<Record<string, string>>(() => {
+        try {
+            return JSON.parse(localStorage.getItem(FAMILY_KEY) ?? '{}') as Record<string, string>;
+        } catch {
+            return {};
+        }
+    });
     // Feature forms open in the property manager in the left panel, the rest in a popup under their button.
     const slot = usePropertyManager((s) => s.slot);
     const inPanel = !!popup && usesPanel(popup.tool, workspace, sketchActive);
@@ -332,7 +407,8 @@ export function Toolbar() {
             setPopup((p) => (p?.tool.id === sketchPlaneTool.id ? null : p));
         }
         if (!sketchActive) {
-            setPopup((p) => (p?.tool.id === finishTool.id ? null : p));
+            // However the sketch ends (Exit, Discard, another project), none of its forms stays open in part mode.
+            setPopup((p) => (p && isSketchForm(p.tool) ? null : p));
         }
     }, [sketchActive, sketchStage]);
 
@@ -344,7 +420,7 @@ export function Toolbar() {
             return;
         }
         if (tool?.id === sketchPlaneTool.id && useSketcher.getState().stage === 'plane') {
-            closeSketch();
+            closeSketch(true);
         }
         if (useStudio.getState().editing && !useSketcher.getState().active) {
             clearEditing();
@@ -355,6 +431,21 @@ export function Toolbar() {
         setMenu(null);
         if (tool.soon) {
             return;
+        }
+        const family = familyOf(tool.id);
+        if (family) {
+            setLastUsed((old) => {
+                if (old[family.id] === tool.id) {
+                    return old;
+                }
+                const next = { ...old, [family.id]: tool.id };
+                try {
+                    localStorage.setItem(FAMILY_KEY, JSON.stringify(next));
+                } catch {
+                    // Private mode: the choice lasts for this visit only.
+                }
+                return next;
+            });
         }
         if (tool.needsPart && !latest.current.ctx.part) {
             // A tool that works on a part, with none selected: take the only part there is, else say what to do
@@ -371,12 +462,14 @@ export function Toolbar() {
         }
         if (tool.instant && !tool.popupIf?.(latest.current.ctx)) {
             tool.instant(latest.current.ctx);
+            noteSketchCommand(tool, latest.current.ctx);
             return;
         }
         if (useStudio.getState().editing && !useSketcher.getState().active) {
             clearEditing();
         }
         setPopup((p) => (p?.tool.id === tool.id ? null : { tool, anchor }));
+        noteSketchCommand(tool, latest.current.ctx);
     };
 
     // Other panels ask for a tool's form by id (the components list opens Pattern for a part).
@@ -394,7 +487,9 @@ export function Toolbar() {
     const openById = (id: string) => {
         const tool = ALL_TOOLS.find((t) => t.id === id)!;
         const group = groups.find((g) => g.tools.includes(tool));
+        const family = familyOf(id);
         const element = document.querySelector(`[data-tool="${id}"]`)
+            ?? (family && document.querySelector(`[data-family="${family.id}"]`))
             ?? (group && document.querySelector(`[data-group="${group.id}"]`))
             ?? document.querySelector('[data-group="all"]') ?? bar.current;
         open(tool, anchorOf(element));
@@ -413,6 +508,8 @@ export function Toolbar() {
                 }
                 if (openMenu) {
                     setMenu(null);
+                } else if (useDiscardAsk.getState().asking) {
+                    keepSketch();
                 } else if (openPopup) {
                     closePopup();
                 } else if (sk.active) {
@@ -425,7 +522,8 @@ export function Toolbar() {
                 }
                 return;
             }
-            if (typing) {
+            // While Discard asks in the sketch bar, keys go to its buttons only (Esc above keeps the sketch).
+            if (typing || useDiscardAsk.getState().asking) {
                 return;
             }
             const key = event.key.toLowerCase();
@@ -442,6 +540,17 @@ export function Toolbar() {
                         void runTool(key === 'y' || event.shiftKey ? 'redo' : 'undo');
                     }
                 }
+                // Sketch entities: copy, cut, and paste at the pointer.
+                if (sk.active && sk.stage === 'draw' && (key === 'c' || key === 'x' || key === 'v')) {
+                    event.preventDefault();
+                    if (key === 'c') {
+                        copySelection();
+                    } else if (key === 'x') {
+                        cutSelection();
+                    } else {
+                        pasteAtCursor();
+                    }
+                }
                 return;
             }
             if (event.altKey || event.ctrlKey || event.metaKey) {
@@ -455,9 +564,10 @@ export function Toolbar() {
                 }
                 if (event.key === 'Enter') {
                     event.preventDefault();
-                    // Enter ends what is in progress first; only an idle tool leaves the sketch.
-                    if (enterKey() === 'exit' && !openPopup) {
-                        openById(finishTool.id);
+                    // Enter ends what is in progress first; with nothing in progress it repeats the last command.
+                    const again = lastSketchCommand();
+                    if (enterKey() === 'repeat' && !openPopup && again) {
+                        openById(again);
                     }
                     return;
                 }
@@ -469,6 +579,11 @@ export function Toolbar() {
                 if (key === 'x') {
                     event.preventDefault();
                     toggleConstructionSelected();
+                    return;
+                }
+                if (key === 'a' && toggleLineArc()) {
+                    // A while drawing lines: the next piece is a tangent arc (or a line again).
+                    event.preventDefault();
                     return;
                 }
                 if (SKETCH_KEYS[key]) {
@@ -497,7 +612,7 @@ export function Toolbar() {
             } else if (key === 'g') {
                 useStudio.setState((s) => ({ grid: !s.grid }));
             } else if (key === 's' && useStudio.getState().workspace === 'part') {
-                startSketch(latest.current.ctx.part?.id ?? null, 'extrude');
+                startSketch(latest.current.ctx.part?.id ?? null, 'sketch');
             } else {
                 return;
             }
@@ -511,7 +626,7 @@ export function Toolbar() {
         return null;
     }
 
-    const settings: UiSettings = { grid, edges, showOthers, sketchTool: sketchActive ? sketchTool : null };
+    const settings: UiSettings = { grid, edges, perspective: sketchActive && sketchStage === 'draw' ? perspective.sketch : perspective.model, showOthers, sketchTool: sketchActive ? sketchTool : null };
     const button = (tool: ToolDef) => {
         const disabled = !!tool.soon || (!!tool.needsPart && !ctx.part);
         const on = tool.active?.(ctx, settings) ?? false;
@@ -532,13 +647,58 @@ export function Toolbar() {
             </button>
         );
     };
+    /** One button for a family: the variant in use (active, else last used), and an arrow that lists them all. */
+    const familyButton = (family: ToolFamily, tools: ToolDef[]) => {
+        const key = `family:${family.id}`;
+        const shown = tools.find((t) => t.active?.(ctx, settings)) ?? tools.find((t) => t.id === lastUsed[family.id]) ?? tools[0];
+        return (
+            <span key={key} className={`tb-family ${menu?.group === key ? 'open' : ''}`} data-family={family.id}>
+                {button(shown)}
+                <button
+                    type="button"
+                    className="tb-more"
+                    title={`${family.label}: ${tools.map((t) => t.label).join(', ')}`}
+                    aria-label={`${family.label}: all variants`}
+                    aria-haspopup="menu"
+                    onClick={(event) => {
+                        const anchor = anchorOf(event.currentTarget.parentElement);
+                        setMenu((m) => (m?.group === key ? null : { group: key, anchor }));
+                    }}
+                >
+                    <svg width="7" height="7" viewBox="0 0 8 8" aria-hidden="true">
+                        <path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                    </svg>
+                </button>
+            </span>
+        );
+    };
+    const items = (group: ToolGroup) => toolbarItems(group.tools)
+        .map((item) => ('family' in item ? familyButton(item.family, item.tools) : button(item.tool)));
+    /** What an open menu lists: every group, one group, or the variants of one family. */
+    const menuGroups = (id: string): ToolGroup[] => {
+        if (id === 'all') {
+            return groups;
+        }
+        if (!id.startsWith('family:')) {
+            return groups.filter((g) => g.id === id);
+        }
+        for (const group of groups) {
+            for (const item of toolbarItems(group.tools)) {
+                if ('family' in item && `family:${item.family.id}` === id) {
+                    return [{ id, label: item.family.label, icon: item.tools[0].icon, tools: item.tools }];
+                }
+            }
+        }
+        return [];
+    };
     const menuButton = (group: ToolGroup | null) => {
         const id = group?.id ?? 'all';
+        const named = !!group && layout.kind === 'groups' && layout.named.has(group.id);
         return (
             <button
                 key={id}
                 type="button"
-                className={`tb-btn tb-menu ${menu?.group === id ? 'open' : ''}`}
+                className={`tb-btn tb-menu ${menu?.group === id ? 'open' : ''} ${named ? 'named' : ''}`}
                 data-group={id}
                 data-tip={menu?.group === id ? undefined : group?.label ?? 'Tools'}
                 aria-label={group?.label ?? 'Tools'}
@@ -550,6 +710,7 @@ export function Toolbar() {
                 }}
             >
                 <Icon name={group?.icon ?? 'menu'} />
+                {named && <span className="tb-menu-name">{group.short ?? group.label}</span>}
                 <svg className="caret" width="7" height="7" viewBox="0 0 8 8" aria-hidden="true">
                     <path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" strokeWidth="1.4" />
                 </svg>
@@ -571,17 +732,17 @@ export function Toolbar() {
                     ? <div className="tb-group">{menuButton(null)}</div>
                     : groups.map((group) => (
                         <div key={group.id} className={`tb-group g-${group.id}`} role="group" aria-label={group.label}>
-                            {layout.collapsed.has(group.id) ? menuButton(group) : group.tools.map(button)}
+                            {layout.collapsed.has(group.id) ? menuButton(group) : items(group)}
                         </div>
                     ))}
-                {workspace === 'part' && !sketchActive && ctx.part && (
+                {workspace === 'part' && !sketchActive && ctx.part && (layout.kind !== 'groups' || layout.showActive) && (
                     <span className="tb-active" title="Part being edited">{ctx.part.name}</span>
                 )}
             </div>
             <SketchBar centre={band.centre} onFinish={() => openById(finishTool.id)} />
             {menu && (
                 <ToolMenu
-                    groups={menu.group === 'all' ? groups : groups.filter((g) => g.id === menu.group)}
+                    groups={menuGroups(menu.group)}
                     anchor={menu.anchor}
                     ctx={ctx}
                     settings={settings}
@@ -661,7 +822,7 @@ function ToolMenu(props: {
     useEffect(() => {
         const away = (event: PointerEvent) => {
             const target = event.target as HTMLElement;
-            if (!ref.current?.contains(target) && !target.closest('.tb-menu')) {
+            if (!ref.current?.contains(target) && !target.closest('.tb-menu, .tb-more')) {
                 onClose();
             }
         };

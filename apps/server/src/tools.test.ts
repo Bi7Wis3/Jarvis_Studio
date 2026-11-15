@@ -531,6 +531,44 @@ describe('reference geometry and instances', () => {
         })).toThrow(/not an earlier plane step/);
     });
 
+    it('accepts planes and axes taken from the model by value', () => {
+        const face = { fixedPlane: { origin: [0, 10, 0], normal: [0, 1, 0], xDir: [1, 0, 0] }, from: 'face' };
+        const edge = { fixedAxis: { point: [0, 10, 20], direction: [1, 0, 0] }, from: 'edge' };
+        body([
+            { op: 'plane', name: 'Plane1', definition: { kind: 'offset', base: face, distance: 2, flipNormal: true } },
+            { op: 'plane', name: 'Plane2', definition: { kind: 'angle', base: face, about: edge, angle: 30, throughAxis: true } },
+            { op: 'plane', name: 'Plane3', definition: { kind: 'tangent', cylinder: { point: [0, 0, 0], direction: [0, 1, 0], radius: 5 }, plane: 'front' } },
+            { op: 'axis', name: 'Axis1', definition: { kind: 'along', axis: edge } },
+        ]);
+        const steps = store.get().parts[0].features ?? [];
+        expect(steps.map((f) => f.op)).toEqual(['plane', 'plane', 'plane', 'axis']);
+        expect(steps[0]).toMatchObject({ definition: { base: face, flipNormal: true } });
+    });
+
+    it('keeps the picks of references that follow the model', () => {
+        const top = { at: [3, 10, 2], normal: [0, 1, 0] };
+        const front = { at: [0, 9, 20], normal: [0, 0, 1] };
+        const shape = { type: 'line', a: [0, 10, 20], b: [40, 10, 20] };
+        const face = { fixedPlane: { origin: [0, 10, 0], normal: [0, 1, 0], xDir: [1, 0, 0] }, from: 'face', pick: { face: top } };
+        const edge = { fixedAxis: { point: [20, 10, 20], direction: [1, 0, 0] }, from: 'edge', pick: { edge: [20, 10, 20], faces: [top, front], shape } };
+        const corner = { fixedPoint: [40, 10, 20], from: 'vertex', pick: { vertex: [40, 10, 20], faces: [top, front] } };
+        const cylinder = { point: [0, 0, 0], direction: [0, 1, 0], radius: 5, pick: { face: { at: [5, 2, 0], normal: [1, 0, 0] } } };
+        const definition = { kind: 'along', edge: { edge: [20, 10, 20], faces: [top, front], shape }, by: 'percent', amount: 25, index: 2 };
+        body([
+            { op: 'plane', name: 'Plane1', definition: { kind: 'offset', base: face, distance: 2 } },
+            { op: 'plane', name: 'Plane2', definition: { kind: 'angle', base: face, about: edge, angle: 30, throughAxis: true } },
+            { op: 'plane', name: 'Plane3', definition: { kind: 'parallel', base: 'top', point: corner } },
+            { op: 'plane', name: 'Plane4', definition: { kind: 'tangent', cylinder, point: [5, 2, 0] } },
+            { op: 'point', name: 'Point1', position: [20, 10, 20], definition },
+        ]);
+        const steps = store.get().parts[0].features ?? [];
+        expect(steps[0]).toMatchObject({ definition: { base: face } });
+        expect(steps[1]).toMatchObject({ definition: { base: face, about: edge } });
+        expect(steps[2]).toMatchObject({ definition: { point: corner } });
+        expect(steps[3]).toMatchObject({ definition: { cylinder } });
+        expect(steps[4]).toMatchObject({ definition });
+    });
+
     it('checks sweep sources and pattern targets', () => {
         body([{ op: 'hole', name: 'Hole', spec: { kind: 'clearance', size: 'M3' }, position: [10, 5, 0] }]);
         expect(run('features_add', {

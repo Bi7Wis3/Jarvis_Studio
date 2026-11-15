@@ -85,8 +85,10 @@ export function useKernelMesh(partId: string, withPreview = false): KernelMesh |
                 }
                 if (result) {
                     setMesh({ key, mesh: result });
-                } else if (attempt < 5) {
-                    retry = setTimeout(() => fetchMesh(attempt + 1), 800 * (attempt + 1));
+                } else if (attempt < 40) {
+                    // The server said this mesh exists, so a failed load is a server that is restarting: keep asking
+                    // (for a couple of minutes), or the part stays invisible until the page is reloaded.
+                    retry = setTimeout(() => fetchMesh(attempt + 1), Math.min(800 * (attempt + 1), 4000));
                 }
             });
         };

@@ -7,6 +7,7 @@ import { instanceTransforms } from '@jarvis/core/geometry';
 import { combineContext, type CadKernel, type MeshData } from './cad/kernel.js';
 import { combineProps, type Mat3, type MassProps, type Placement } from './cad/props.js';
 import { exportStl } from './exportStl.js';
+import { freecadTool } from './export/freecadTool.js';
 import type { MeshService } from './meshes.js';
 import { EXPORTS_DIR } from './paths.js';
 import { slug, type ProjectStore } from './store.js';
@@ -260,5 +261,6 @@ export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
                 return { text: `Saved ${filename} (${Math.round(step.length / 1024)} KB) to ${EXPORTS_DIR} and sent it to the browser.` };
             },
         },
+        freecadTool(store, host),
     ];
 }

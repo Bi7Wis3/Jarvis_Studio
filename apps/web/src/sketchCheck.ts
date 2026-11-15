@@ -46,7 +46,7 @@ function toLine(p: Pt, l: Line): number {
 /** Centre and radius of a circle or arc. */
 function roundOf(g: SketchGeometry, id: string): { c: Pt; r: number } | null {
     const curve = curveOf(g, id);
-    if (!curve || curve.kind === 'line') {
+    if (!curve || (curve.kind !== 'circle' && curve.kind !== 'arc')) {
         return null;
     }
     const c = pt(g, curve.center);
@@ -56,6 +56,10 @@ function roundOf(g: SketchGeometry, id: string): { c: Pt; r: number } | null {
 
 /** How far the constraint is from holding on this geometry; null when it cannot be measured (dangling refs). */
 export function residual(g: SketchGeometry, k: SketchConstraint): number | null {
+    // Suppressed relations and driven dimensions hold nothing.
+    if (k.suppressed || ('driven' in k && k.driven)) {
+        return null;
+    }
     switch (k.kind) {
         case 'coincident': {
             const a = pt(g, k.a);
@@ -112,6 +116,11 @@ export function residual(g: SketchGeometry, k: SketchConstraint): number | null 
             const r = roundOf(g, k.curve);
             return r ? Math.abs(Math.hypot(p[0] - r.c[0], p[1] - r.c[1]) - r.r) : null;
         }
+        case 'intersection': {
+            const p = pt(g, k.point);
+            const [la, lb] = [lineOf(g, k.a), lineOf(g, k.b)];
+            return p && la && lb ? Math.max(toLine(p, la), toLine(p, lb)) : null;
+        }
         case 'midpoint': {
             const p = pt(g, k.point);
             const l = lineOf(g, k.line);
@@ -127,7 +136,8 @@ export function residual(g: SketchGeometry, k: SketchConstraint): number | null 
             // The middle lies on the line and a-b is square to it.
             const m: Pt = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
             const u = dir(l);
-            return toLine(m, l) + Math.abs((b[0] - a[0]) * u[0] + (b[1] - a[1]) * u[1]);
+            const square = Math.abs((b[0] - a[0]) * u[0] + (b[1] - a[1]) * u[1]);
+            return k.part === 'perpendicular' ? square : k.part === 'midpoint' ? toLine(m, l) : toLine(m, l) + square;
         }
         case 'horizontalPoints':
         case 'verticalPoints': {
@@ -149,6 +159,22 @@ export function residual(g: SketchGeometry, k: SketchConstraint): number | null 
             // Both ends of the second line lie on the first.
             return la && lb ? Math.max(toLine(lb.a, la), toLine(lb.b, la)) : null;
         }
+        case 'pathTangent':
+            // Held by whichever member touches the follower at the time.
+            return null;
+        case 'equalSweep': {
+            const sweep = (id: string) => {
+                const c = curveOf(g, id);
+                const [m, s, e] = c?.kind === 'arc' ? [pt(g, c.center), pt(g, c.start), pt(g, c.end)] : [null, null, null];
+                if (!m || !s || !e) {
+                    return null;
+                }
+                const a = Math.atan2(e[1] - m[1], e[0] - m[0]) - Math.atan2(s[1] - m[1], s[0] - m[0]);
+                return ((((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) || 2 * Math.PI) * 180 / Math.PI;
+            };
+            const [a, b] = [sweep(k.a), sweep(k.b)];
+            return a !== null && b !== null ? Math.abs(a - b) : null;
+        }
         case 'fix':
         case 'fixRadius':
             // A lock holds the point or size where it is; nothing to compare against.
@@ -157,7 +183,11 @@ export function residual(g: SketchGeometry, k: SketchConstraint): number | null 
         case 'length':
         case 'angle':
         case 'radius':
-        case 'diameter': {
+        case 'diameter':
+        case 'arcLength':
+        case 'pointAngle':
+        case 'pathLength':
+        case 'rho': {
             const now = measure(g, k);
             return now === null ? null : Math.abs(now - k.value);
         }
@@ -176,6 +206,25 @@ function brokenArcs(g: SketchGeometry): string[] {
         }
         const off = Math.abs(Math.hypot(s[0] - m[0], s[1] - m[1]) - Math.hypot(e[0] - m[0], e[1] - m[1]));
         return off > RESIDUAL_TOLERANCE ? [c.id] : [];
+    });
+}
+
+/** Below this a line's length, or a circle's, arc's or ellipse's radius, counts as shrunk to nothing. */
+const COLLAPSED = 1e-7;
+
+/** Lines of no length and circles, arcs and ellipses of no radius, by curve id. */
+export function collapsedCurves(g: SketchGeometry): string[] {
+    const gap = (a: string, b: string) => {
+        const [p, q] = [pt(g, a), pt(g, b)];
+        return p && q ? Math.hypot(p[0] - q[0], p[1] - q[1]) : Infinity;
+    };
+    return g.curves.flatMap((c) => {
+        const small = c.kind === 'line' ? gap(c.a, c.b) < COLLAPSED
+            : c.kind === 'circle' ? (curveRadius(g, c.id) ?? Infinity) < COLLAPSED
+                : c.kind === 'arc' ? gap(c.center, c.start) < COLLAPSED
+                    : c.kind === 'ellipse' || c.kind === 'ellipseArc' ? gap(c.center, c.major) < COLLAPSED || gap(c.center, c.minor) < COLLAPSED
+                        : false;
+        return small ? [c.id] : [];
     });
 }
 

@@ -5,6 +5,7 @@ import {
     tipOf, wrapDegrees, type Handle, type HandleEnv, type Ray,
 } from './toolHandles';
 import type { Ctx, Values } from './toolDefs';
+import { planeDefaults, pointDefaults } from './referenceDefs';
 
 const close = (a: Vec3, b: Vec3) => a.forEach((c, i) => expect(c).toBeCloseTo(b[i], 6));
 const rect = (center: [number, number], width: number, height: number): SketchRegion => ({
@@ -267,5 +268,43 @@ describe('handle maths', () => {
         expect(pickGrip(triad1, project, [60, -2])?.grip).toEqual({ kind: 'axis', axis: 0 });
         expect(pickGrip(triad1, project, [35, -35])?.grip).toEqual({ kind: 'plane', normal: 2 });
         expect(pickGrip(triad1, project, [200, -200])).toBeNull();
+    });
+});
+
+describe('reference geometry handles', () => {
+    const p = part([]);
+
+    it('drags a plane\'s offset distance from the picked face along its normal (flipped with Flip offset)', () => {
+        const face = {
+            kind: 'face' as const, at: [0, 10, 0] as Vec3, normal: [0, 1, 0] as Vec3,
+            model: { geom: { type: 'plane' as const, origin: [0, 10, 0] as Vec3, normal: [0, 1, 0] as Vec3 }, click: [0, 10, 0] as Vec3 },
+        };
+        const v = { ...planeDefaults(), r1: [face], c1plane: 'offset', d1: '7.25' } as Values;
+        const [h] = handlesFor('plane', v, ctxOf(p), noEnv);
+        expect(h).toMatchObject({ kind: 'distance', key: 'd1', value: 7.25 });
+        if (h.kind === 'distance') {
+            // The part sits at (10, 5, 0).
+            close(h.origin, [10, 15, 0]);
+            close(h.direction, [0, 1, 0]);
+            close(tipOf(h), [10, 22.25, 0]);
+        }
+        const [flipped] = handlesFor('plane', { ...v, f1: true }, ctxOf(p), noEnv);
+        expect(flipped.kind === 'distance' && flipped.direction[1]).toBeCloseTo(-1, 9);
+        expect(handlesFor('plane', { ...v, c1plane: 'mid' }, ctxOf(p), noEnv)).toEqual([]);
+    });
+
+    it('drags a point along X, Y and Z at full precision', () => {
+        const v = pointDefaults([1.000001, 2, 3]) as Values;
+        const [h] = handlesFor('point', v, ctxOf(p), noEnv);
+        expect(h).toMatchObject({ kind: 'translate', keys: ['pos0', 'pos1', 'pos2'] });
+        if (h.kind === 'translate') {
+            close(h.position, [11.000001, 7, 3]);
+        }
+        expect(handlesFor('point', { ...v, kind: 'arcCentre' }, ctxOf(p), noEnv)).toEqual([]);
+        const drag = beginDrag(h, { kind: 'axis', axis: 0 }, ray([11, 20, 3], [0, -1, 0]), v);
+        expect(drag).not.toBeNull();
+        // An X drag of 2.5 mm with the view zoomed far in (a fine step): the value keeps its digits.
+        const next = dragValues(drag!, ray([13.5, 20, 3], [0, -1, 0]), { perPixel: 1e-6 });
+        expect(Number((next as Values).pos0)).toBeCloseTo(3.500001, 5);
     });
 });

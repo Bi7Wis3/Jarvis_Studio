@@ -1,6 +1,13 @@
 // Toolbar icons: 24-unit grid, drawn at 18 px with a 1.6 stroke in the current text colour.
 
 import type { ReactNode } from 'react';
+import { DRAW_VARIANT_ICONS } from './drawIcons';
+import { MODIFY_MORE_ICONS } from './modifyIcons';
+import { EXTRAS_ICONS } from './extrasIcons';
+import { MODEL_SKETCH_ICONS } from './modelIcons';
+import { RELATION_ICONS } from './relationIcons';
+import { WHOLE_ICONS } from './wholeIcons';
+import { DRAW_COMMAND_ICONS } from './drawCommandIcons';
 
 const PATHS: Record<string, ReactNode> = {
     sketch: (
@@ -183,6 +190,12 @@ const PATHS: Record<string, ReactNode> = {
             <rect x="8.5" y="8.5" width="7" height="7" rx="1" />
         </>
     ),
+    perspective: (
+        <>
+            <path d="M3 5l18 4v6L3 19z" />
+            <path d="M9 6.4v11.2M15 7.7v8.6" opacity="0.7" />
+        </>
+    ),
     grid: (
         <>
             <path d="M3 4h18v16H3z" />
@@ -220,6 +233,15 @@ const PATHS: Record<string, ReactNode> = {
         <>
             <path d="M6 3h8l4 4v14H6z" />
             <path d="M14 3v4h4M9 12l3-2 3 2v4l-3 2-3-2z" />
+        </>
+    ),
+    freecad: (
+        <>
+            <path d="M6 3h8l4 4v14H6z" />
+            <path d="M14 3v4h4" />
+            <circle cx="10" cy="11" r="1.3" />
+            <circle cx="10" cy="17" r="1.3" />
+            <path d="M10 12.3v3.4M12.5 11h3M12.5 17h3" />
         </>
     ),
     check: (
@@ -318,6 +340,53 @@ const PATHS: Record<string, ReactNode> = {
             <circle cx="6.9" cy="16.8" r="1.6" />
         </>
     ),
+    ellipse: (
+        <>
+            <ellipse cx="12" cy="12" rx="8.5" ry="5" />
+            <path d="M12 12h8.5M12 12V7" opacity="0.6" />
+            <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+        </>
+    ),
+    'partial-ellipse': (
+        <>
+            <path d="M20.5 12A8.5 5 0 1 1 12 7" />
+            <ellipse cx="12" cy="12" rx="8.5" ry="5" opacity="0.3" strokeDasharray="1.5 2" />
+            <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+            <circle cx="20.5" cy="12" r="1.5" />
+            <circle cx="12" cy="7" r="1.5" />
+        </>
+    ),
+    spline: (
+        <>
+            <path d="M3 17c3-9 6-9 8-4s5 5 10-6" />
+            <circle cx="3" cy="17" r="1.4" />
+            <circle cx="11" cy="13" r="1.4" />
+            <circle cx="21" cy="7" r="1.4" />
+        </>
+    ),
+    'style-spline': (
+        <>
+            <path d="M3 18C8 3 15 21 21 6" />
+            <path d="M3 18L8 4l7 16 6-14" opacity="0.45" strokeDasharray="1.5 2" />
+            <rect x="6.8" y="2.8" width="2.4" height="2.4" />
+            <rect x="13.8" y="18.8" width="2.4" height="2.4" />
+        </>
+    ),
+    parabola: (
+        <>
+            <path d="M4 5c2 10 14 10 16 0" />
+            <circle cx="12" cy="9" r="1.2" fill="currentColor" />
+            <circle cx="12" cy="12.5" r="1.4" />
+        </>
+    ),
+    conic: (
+        <>
+            <path d="M4 18Q12 0 20 18" />
+            <path d="M4 18l8-14 8 14" opacity="0.45" strokeDasharray="1.5 2" />
+            <circle cx="12" cy="4" r="1.4" />
+        </>
+    ),
+
     trim: (
         <>
             <path d="M12 3v18" opacity="0.6" />
@@ -538,6 +607,13 @@ const PATHS: Record<string, ReactNode> = {
             <path d="M6 5l4 4 8-7" />
         </>
     ),
+    ...DRAW_VARIANT_ICONS,
+    ...MODIFY_MORE_ICONS,
+    ...EXTRAS_ICONS,
+    ...MODEL_SKETCH_ICONS,
+    ...RELATION_ICONS,
+    ...WHOLE_ICONS,
+    ...DRAW_COMMAND_ICONS,
 };
 
 export type IconName = keyof typeof PATHS;

@@ -1,4 +1,4 @@
-import { anim } from './Scene';
+import { anim } from './anim';
 
 const MAX_WIDTH = 1024;
 const SETTLE_TIMEOUT_MS = 4000;

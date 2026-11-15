@@ -731,6 +731,44 @@
     background: var(--line);
 }
 
+.ctx-menu button.off {
+    color: rgba(138, 148, 166, 0.55);
+    cursor: default;
+}
+
+.ctx-menu button.off:hover {
+    background: none;
+}
+
+.ctx-menu button.open {
+    background: rgba(180, 107, 255, 0.14);
+}
+
+.ctx-menu .ctx-label {
+    flex: 1;
+}
+
+.ctx-menu .ctx-icon {
+    display: inline-flex;
+    width: 16px;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    margin-right: -6px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.ctx-head {
+    overflow: hidden;
+    padding: 4px 10px 3px;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 260px;
+}
+
 /* File menu */
 
 .fm {

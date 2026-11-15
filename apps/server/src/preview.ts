@@ -47,6 +47,24 @@ function parseCalls(input: unknown): PreviewCall[] {
     });
 }
 
+/**
+ * The part as a preview builds it: every thread step from the first step the calls add or change on is shown as its
+ * ridges on the body (`preview`), which takes a moment where building a thread takes many seconds; the real threads
+ * are built on OK. Threads before that first change are built already and come from the cache.
+ */
+export function quickThreads(part: Part, old: Part | undefined): Part {
+    const was = (old?.features ?? []).map((f) => JSON.stringify(f));
+    const features = part.features ?? [];
+    let first = features.findIndex((f, i) => was[i] !== JSON.stringify(f));
+    if (first < 0) {
+        first = features.length;
+    }
+    if (!features.some((f, i) => i >= first && f.op === 'thread' && !f.suppressed)) {
+        return part;
+    }
+    return { ...part, features: features.map((f, i) => (i >= first && f.op === 'thread' && !f.suppressed ? { ...f, preview: true } : f)) };
+}
+
 /** Runs `calls` against a copy of `project` and builds the meshes of the parts they change. */
 export async function runPreview(
     project: Project,
@@ -80,7 +98,7 @@ export async function runPreview(
     const errors: Record<string, string> = {};
     // One at a time: the kernel runs one job at a time anyway, and identical instances then share one build.
     for (const part of changed) {
-        const { key, error } = await meshes.preview(part, next);
+        const { key, error } = await meshes.preview(quickThreads(part, before.get(part.id)), next);
         if (key) {
             keys[part.id] = key;
         }

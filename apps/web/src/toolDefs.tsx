@@ -9,16 +9,30 @@ import {
     type SketchShape, type ThreadSize, type Vec3,
 } from '@jarvis/core';
 import { heatsetData, STANDARD_LENGTHS, threadData } from '@jarvis/core/fasteners';
-import { clearEditing, editItem, refit, runTool, select, setSketchHidden, setWorkspace, useStudio } from './state';
-import { loadedMeshBounds, meshByKey } from './meshes';
-import { circleOfEdge, edgePick } from './pickRefs';
+import { clearEditing, editItem, refit, runTool, select, setPerspective, setSketchHidden, setWorkspace, useStudio } from './state';
+import { loadedMeshBounds } from './meshes';
 import { captureToolCalls, type ToolCall } from './preview';
 import { RegionPickSession, useRegionPick } from './regionPick';
 import { showError } from './menus';
 import { newPart } from './newPart';
 import { addPicture, PicturePicker } from './DecalPanel';
 import { moreConstrainTools, moreDrawTools, moreModifyTools } from './sketchToolDefs';
+import { setSnapModel, useSketchModel } from './sketchModel';
+import { modelSketchTools } from './sketchModelForms';
+import { curveForms } from './sketchCurveForms';
+import { lineDirection, lineOnly, moreSketchTools, PickBoxes } from './sketchMoreForms';
+import { CONSTRAINT_TOOLS } from './constraintTools';
+import { dimensionForm } from './sketchDimForms';
+import { freecadExportTool } from './freecadExportTool';
+import { SKETCH_SETTING_FIELDS, SolveButton, sketchSettingValues, sketchSettingsOf } from './sketchSettingsForm';
+import { gridSnapStep, solvesAtOnce } from './sketchSettings';
 import { editToolForms } from './sketchEditForms';
+import { extrasDrawTools, extrasModifyTools } from './sketchExtrasTools';
+import { withPatternExtras } from './sketchPatternForms';
+import { SPLINE_OPTION_FIELDS, applySplineOptions, splineOptionValues } from './sketchSplineForms';
+import { withDrawForm } from './sketchDrawForms';
+import { drawCommandForms, drawCommandTools, modifyCommandTools } from './sketchDrawCommandForms';
+import { normalToTool, SketchNormalTo } from './sketchNormalTo';
 import type { CircularPatternOptions, LinearPatternOptions } from './sketchPattern';
 import type { Pt } from './sketchMath';
 import { evaluateTools } from './evaluateToolDefs';
@@ -32,7 +46,7 @@ import { Icon } from './icons';
 import {
     choosePlane, circularPatternSelected, closeSketch, currentSketch, finishDefaults, linearPatternSelected, patternCentre, previewPattern, redoSketch, setTool,
     sketchProfiles, startSketch, undoSketch, useSketcher, constraintTool, toggleConstructionSelected, type FinishOp, type SketchIntent,
-    type SketchTool,
+    type SketchTool, setDimensionTool, setSketchSettings, solveSketch,
 } from './sketcher';
 import { evaluate, type ConstraintTool } from './sketchGeometry';
 import { angledPlane, planeLabel } from './sketchMath';
@@ -42,6 +56,9 @@ import { valueText } from './numberText';
 import {
     axisOptions, axisValue, defaultAxis, readRevolve, revolveAxisKey, revolveStepFields, revolveValues, type RevolveOptionValues,
 } from './revolveAxis';
+import { derivedSketchTool, rapidSketchTool, sketchToggleTools, wholeModifyTools } from './sketchWholeTools';
+import { twoDToThreeDTools } from './sketch2d3dForms';
+import { askDiscard } from './sketchBar';
 
 export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
@@ -65,6 +82,8 @@ export interface Field {
     multi?: boolean;
     /** pick fields: only flat faces. */
     flat?: boolean;
+    /** pick fields: why a picked item is refused, or null to take it. */
+    accept?: (item: PickItem) => string | null;
     /** vec fields: once focused, a click on the part sets the value (pickField.ts). */
     pickable?: boolean;
 }
@@ -87,6 +106,8 @@ export interface PopupApi {
 export interface UiSettings {
     grid: boolean;
     edges: boolean;
+    /** Perspective in the view that is open: the sketch being drawn, else the 3D view. */
+    perspective: boolean;
     showOthers: boolean;
     sketchTool: SketchTool | null;
 }
@@ -148,6 +169,8 @@ export interface ToolGroup {
     tools: ToolDef[];
     /** Lower collapses into a menu first when the toolbar runs out of room; undefined never collapses. */
     collapse?: number;
+    /** A shorter name for the collapsed menu's button, where the label is long. */
+    short?: string;
 }
 
 // ---- Helpers ------------------------------------------------------------------------------------------
@@ -453,16 +476,28 @@ function beginSketch(ctx: Ctx, intent: SketchIntent): void {
 
 const DRAW_TOOLS: { id: SketchTool; label: string; key?: string; icon?: string; hint: string }[] = [
     { id: 'line', label: 'Line', key: 'L', hint: 'click points; click the start to close' },
+    { id: 'midpointLine', label: 'Midpoint line', icon: 'midpoint-line', hint: 'the middle, then an end; it grows both ways' },
     { id: 'rect', label: 'Rectangle', key: 'R', icon: 'rectangle', hint: 'two corners; type w,h' },
     { id: 'centerRect', label: 'Centre rectangle', icon: 'center-rect', hint: 'centre, then a corner; type w,h' },
     { id: 'rect3', label: '3 point rectangle', icon: 'rect-3pt', hint: 'two corners for one side at any angle, then the width' },
+    { id: 'centerRect3', label: '3 point centre rectangle', icon: 'center-rect-3pt', hint: 'centre, the middle of a side at any angle, then the width' },
+    { id: 'parallelogram', label: 'Parallelogram', icon: 'parallelogram', hint: 'two corners for one side, then the next corner' },
     { id: 'circle', label: 'Circle', key: 'C', hint: 'centre, then a point; type the diameter' },
     { id: 'perimeterCircle', label: 'Perimeter circle', icon: 'perimeter-circle', hint: 'three points on the circle' },
     { id: 'arc', label: 'Arc', key: 'A', hint: 'start, end, then a point on the arc' },
     { id: 'centerArc', label: 'Centre arc', icon: 'center-arc', hint: 'centre, start, then where it ends' },
     { id: 'tangentArc', label: 'Tangent arc', icon: 'tangent-arc', hint: 'from the end of a line or arc, tangent to it' },
     { id: 'slot', label: 'Slot', key: 'S', hint: 'two centres, then the width' },
+    { id: 'centerSlot', label: 'Centrepoint straight slot', icon: 'center-slot', hint: 'centre, an end centre, then the width' },
+    { id: 'arcSlot3', label: '3 point arc slot', icon: 'arc-slot-3pt', hint: 'start, end, a point on the arc, then the width' },
+    { id: 'centerArcSlot', label: 'Centrepoint arc slot', icon: 'center-arc-slot', hint: 'arc centre, start, round to the end, then the width' },
     { id: 'polygon', label: 'Polygon', key: 'P', hint: 'centre, then a corner' },
+    { id: 'ellipse', label: 'Ellipse', hint: 'centre, the first axis, then the second' },
+    { id: 'partialEllipse', label: 'Partial ellipse', icon: 'partial-ellipse', hint: 'centre, both axes, then round to where it ends' },
+    { id: 'spline', label: 'Spline', hint: 'points it runs through; double-click ends it' },
+    { id: 'styleSpline', label: 'Style spline (Bezier)', icon: 'style-spline', hint: 'control vertices of a Bezier or B-spline curve; double-click ends it' },
+    { id: 'parabola', label: 'Parabola', hint: 'focus, vertex, then where it starts and ends' },
+    { id: 'conic', label: 'Conic', hint: 'both ends, the top vertex, then Rho' },
 ];
 
 const sketchDrawTools: ToolDef[] = DRAW_TOOLS.map(({ id, label, key, icon, hint }) => ({
@@ -528,24 +563,29 @@ const sketchOptionsTool: ToolDef = {
     id: 'sk-options',
     label: 'Sketch settings',
     icon: 'grid',
-    hint: 'grid, snapping, polygon sides',
+    hint: 'grid, snapping, automatic relations and solve, dragging',
     fields: () => [
-        { key: 'grid', label: 'Grid step', kind: 'number', unit: 'mm', min: 0, step: 0.5 },
         { key: 'snap', label: 'Snap to grid and points', kind: 'check' },
-        { key: 'sides', label: 'Polygon sides', kind: 'number', min: 3, step: 1 },
+        { key: 'snapModel', label: 'Snap to model geometry', kind: 'check' },
+        ...SKETCH_SETTING_FIELDS,
+        ...SPLINE_OPTION_FIELDS,
     ],
     defaults: () => {
         const s = useSketcher.getState();
-        return { grid: String(s.grid), snap: s.snap, sides: String(s.sides) };
+        return { snap: s.snap, snapModel: useSketchModel.getState().snapModel, ...sketchSettingValues(s.settings), ...splineOptionValues() };
     },
     apply: (v) => attempt(async () => {
+        const settings = sketchSettingsOf(v);
+        applySplineOptions(v);
         useSketcher.setState({
-            grid: num(v, 'grid', 'Grid step', { min: 0 }),
+            grid: gridSnapStep(settings),
             snap: !!v.snap,
-            sides: Math.max(3, Math.min(64, Math.round(num(v, 'sides', 'Sides', { min: 3 })))),
         });
+        setSnapModel(!!v.snapModel);
+        setSketchSettings(settings);
         return { text: '', isError: false };
     }),
+    extra: () => <SolveButton />,
 };
 
 /**
@@ -769,15 +809,12 @@ export function finishNeedsPanel(): boolean {
     return useSketcher.getState().intent !== 'sketch';
 }
 
-/** Leaves the sketch without saving it; asks first when a new sketch has something drawn or an edited one was changed. */
-export function discardSketch(): void {
-    const { undo, geometry, edit } = useSketcher.getState();
-    const unsaved = edit ? undo.length > 0 : geometry.curves.length > 0;
-    if (unsaved && !window.confirm('Discard this sketch? What you drew or changed in it will be lost.')) {
-        return;
-    }
-    closeSketch();
-    clearEditing();
+/**
+ * Leaves the sketch without saving it; when a new sketch has something drawn or an edited one was changed, the
+ * sketch bar asks first (sketchBar.ts), and `then` runs once the sketch is left.
+ */
+export function discardSketch(then?: () => void): void {
+    askDiscard(then ?? null);
 }
 
 /** Saves the sketch and goes back to the part, without a panel. */
@@ -793,7 +830,6 @@ const finishTool: ToolDef = {
     label: 'Exit sketch',
     icon: 'finish',
     hint: 'save the sketch and go back to the part',
-    shortcut: 'Enter',
     instant: (ctx) => void exitSketchSaving(ctx),
     popupIf: () => finishNeedsPanel(),
     width: 300,
@@ -872,6 +908,10 @@ const finishTool: ToolDef = {
     },
     applyLabel: 'OK',
     apply: (v, ctx) => attempt(async () => {
+        // With Automatic solve off, leaving the sketch solves it first (as a rebuild does).
+        if (!solvesAtOnce(useSketcher.getState().settings, useSketcher.getState().geometry.curves.length) && !solveSketch()) {
+            throw new Error(useSketcher.getState().message ?? 'The sketch does not solve.');
+        }
         const { profiles, open } = sketchProfiles();
         // A sketch saved on its own may be open (a path, a guide, reference lines); a feature needs a closed area.
         const plain = v.op === 'sketch' || sketchEditTarget()?.feature?.op === 'sketch';
@@ -1341,22 +1381,7 @@ const sketchStartTools: ToolDef[] = [
     { id: 'sketch', label: 'Sketch', icon: 'sketch', hint: 'on a plane or a flat face', instant: (ctx) => beginSketch(ctx, 'sketch') },
 ];
 
-const CONSTRAINT_TOOLS: { id: ConstraintTool; label: string; hint: string }[] = [
-    { id: 'coincident', label: 'Coincident', hint: 'two points, or points and a curve' },
-    { id: 'merge', label: 'Merge points', hint: 'two or more points become one' },
-    { id: 'horizontal', label: 'Horizontal', hint: 'one or more lines, or two or more points' },
-    { id: 'vertical', label: 'Vertical', hint: 'one or more lines, or two or more points' },
-    { id: 'collinear', label: 'Collinear', hint: 'two or more lines on one line' },
-    { id: 'parallel', label: 'Parallel', hint: 'two or more lines' },
-    { id: 'perpendicular', label: 'Perpendicular', hint: 'two lines' },
-    { id: 'tangent', label: 'Tangent', hint: 'a line and an arc/circle, or two arcs' },
-    { id: 'concentric', label: 'Concentric', hint: 'two or more arcs/circles, or a point and an arc/circle' },
-    { id: 'coradial', label: 'Coradial', hint: 'two or more arcs/circles: same centre and radius' },
-    { id: 'equal', label: 'Equal', hint: 'two or more lines, or two or more arcs/circles' },
-    { id: 'midpoint', label: 'Midpoint', hint: 'a point and a line' },
-    { id: 'symmetric', label: 'Symmetric', hint: 'two points and a line' },
-    { id: 'fix', label: 'Lock', hint: 'a point, line or circle stays where it is (a circle keeps its radius) · click it again to unlock' },
-];
+export { CONSTRAINT_TOOLS };
 
 const constrainTools: ToolDef[] = [
     {
@@ -1365,7 +1390,7 @@ const constrainTools: ToolDef[] = [
         icon: 'dimension',
         hint: 'lengths, offsets, angles, radii',
         shortcut: 'D',
-        instant: () => setTool('dimension'),
+        instant: () => setDimensionTool(null),
         active: (_, s) => s.sketchTool === 'dimension',
     },
     ...CONSTRAINT_TOOLS.map(({ id, label, hint }): ToolDef => ({
@@ -1404,17 +1429,36 @@ function skipList(text: Values[string]): number[][] {
         .filter((nums) => nums.length && nums.every((n) => Number.isInteger(n) && n >= 1));
 }
 
+/** A count of instances is a whole number. */
+function whole(n: number, label: string): number {
+    if (!Number.isInteger(n)) {
+        throw new Error(`${label} must be a whole number.`);
+    }
+    return n;
+}
+
+function nonZero(n: number, label: string): number {
+    if (n === 0) {
+        throw new Error(`${label} cannot be 0.`);
+    }
+    return n;
+}
+
 function linearOptions(v: Values): LinearPatternOptions {
-    const count2 = num(v, 'count2', 'Direction 2 instances', { min: 1 });
+    const count2 = whole(num(v, 'count2', 'Direction 2 instances', { min: 1 }), 'Direction 2 instances');
+    // A direction taken from a line of the sketch follows that line.
+    const [ref1, ref2] = [lineDirection(v.dir1), lineDirection(v.dir2)];
     return {
-        count: num(v, 'count', 'Number of instances', { min: 1 }),
+        ...(ref1 !== null ? { directionLine: String(v.dir1) } : {}),
+        ...(ref2 !== null && count2 > 1 ? { directionLine2: String(v.dir2) } : {}),
+        count: whole(num(v, 'count', 'Number of instances', { min: 1 }), 'Number of instances'),
         spacing: num(v, 'spacing', 'Spacing', { positive: true }),
-        angle: num(v, 'angle', 'Angle') + (v.reverse ? 180 : 0),
+        angle: (ref1 ?? num(v, 'angle', 'Angle')) + (v.reverse ? 180 : 0),
         dimension: !!v.dimension,
         fixDirection: !!v.fix,
         count2,
         spacing2: count2 > 1 ? num(v, 'spacing2', 'Direction 2 spacing', { positive: true }) : 0,
-        angle2: num(v, 'angle2', 'Direction 2 angle') + (v.reverse2 ? 180 : 0),
+        angle2: (ref2 ?? num(v, 'angle2', 'Direction 2 angle')) + (v.reverse2 ? 180 : 0),
         dimension2: !!v.dimension2,
         dimensionAngle: !!v.between,
         skip: skipList(v.skip).filter((n) => n.length === 2).map(([i, j]) => [i - 1, j - 1] as [number, number]),
@@ -1446,13 +1490,13 @@ const linearSketchPattern: ToolDef = {
     fields: () => [
         { key: 'spacing', label: 'Spacing', kind: 'number', unit: 'mm', section: 'Direction 1' },
         { key: 'count', label: 'Number of instances', kind: 'number', min: 1, step: 1, section: 'Direction 1' },
-        { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Direction 1' },
+        { key: 'angle', label: 'Angle', kind: 'number', unit: 'deg', section: 'Direction 1', show: (v) => !v.dir1 },
         { key: 'reverse', label: 'Reverse direction', kind: 'check', section: 'Direction 1' },
         { key: 'dimension', label: 'Dimension X spacing', kind: 'check', section: 'Direction 1' },
-        { key: 'fix', label: 'Fix X-axis direction', kind: 'check', section: 'Direction 1' },
+        { key: 'fix', label: 'Fix X-axis direction', kind: 'check', section: 'Direction 1', show: (v) => !v.dir1 },
         { key: 'count2', label: 'Number of instances', kind: 'number', min: 1, step: 1, section: 'Direction 2' },
         { key: 'spacing2', label: 'Spacing', kind: 'number', unit: 'mm', section: 'Direction 2', show: (v) => Number(v.count2) > 1 },
-        { key: 'angle2', label: 'Angle', kind: 'number', unit: 'deg', section: 'Direction 2', show: (v) => Number(v.count2) > 1 && !v.between },
+        { key: 'angle2', label: 'Angle', kind: 'number', unit: 'deg', section: 'Direction 2', show: (v) => Number(v.count2) > 1 && !v.between && !v.dir2 },
         { key: 'reverse2', label: 'Reverse direction', kind: 'check', section: 'Direction 2', show: (v) => Number(v.count2) > 1 },
         { key: 'dimension2', label: 'Dimension Y spacing', kind: 'check', section: 'Direction 2', show: (v) => Number(v.count2) > 1 },
         { key: 'between', label: 'Dimension angle between axes', kind: 'check', section: 'Direction 2', show: (v) => Number(v.count2) > 1 },
@@ -1460,9 +1504,21 @@ const linearSketchPattern: ToolDef = {
     ],
     defaults: () => ({
         spacing: '20', count: '3', angle: '0', reverse: false, dimension: true, fix: true,
-        count2: '1', spacing2: '20', angle2: '90', reverse2: false, dimension2: true, between: true, skip: '',
+        count2: '1', spacing2: '20', angle2: '90', reverse2: false, dimension2: true, between: true, skip: '', dir1: '', dir2: '',
     }),
-    top: () => <p className="tb-note">Select the curves to pattern in the view (Shift adds). The instances stay tied to them.</p>,
+    top: (api) => (
+        <>
+            <p className="tb-note">Select the curves to pattern in the view (Shift adds). The instances stay tied to them.</p>
+            <PickBoxes
+                api={api}
+                idle
+                boxes={[
+                    { key: 'dir1', label: 'Direction 1 from a line or straight model edge (optional; else the angle)', accept: lineOnly },
+                    ...(Number(api.values.count2) > 1 ? [{ key: 'dir2', label: 'Direction 2 from a line (optional)', accept: lineOnly }] : []),
+                ]}
+            />
+        </>
+    ),
     extra: (api) => <PatternPreview kind="linear" values={api.values} />,
     apply: (v) => attempt(async () => {
         const error = linearPatternSelected(linearOptions(v));
@@ -1472,8 +1528,8 @@ const linearSketchPattern: ToolDef = {
 
 function circularOptions(v: Values): Omit<CircularPatternOptions, 'centre'> & { centre: Pt } {
     return {
-        count: num(v, 'count', 'Number of instances', { min: 2 }),
-        angle: num(v, 'angle', 'Spacing') * (v.reverse ? -1 : 1),
+        count: whole(num(v, 'count', 'Number of instances', { min: 2 }), 'Number of instances'),
+        angle: nonZero(num(v, 'angle', 'Spacing'), 'Spacing') * (v.reverse ? -1 : 1),
         equal: !!v.equal,
         centre: [num(v, 'centre0', 'Centre U'), num(v, 'centre1', 'Centre V')],
         dimensionRadius: !!v.radius,
@@ -1526,9 +1582,14 @@ const modifyTools: ToolDef[] = [
         instant: () => setTool(id),
         active: (_, s) => s.sketchTool === id,
     })),
-    linearSketchPattern,
-    circularSketchPattern,
+    withPatternExtras(linearSketchPattern, 'linear', linearOptions),
+    withPatternExtras(circularSketchPattern, 'circular', circularOptions),
     ...moreModifyTools,
+    ...moreSketchTools,
+    ...modifyCommandTools,
+    ...extrasModifyTools,
+    ...modelSketchTools,
+    ...wholeModifyTools,
 ];
 
 const sketchModeTools: ToolDef[] = [
@@ -1541,8 +1602,13 @@ const sketchModeTools: ToolDef[] = [
         instant: () => setTool('select'),
         active: (_, s) => s.sketchTool === 'select',
     },
-    ...sketchDrawTools,
-    ...moreDrawTools,
+    // Draw tools with options open their form (sketchDrawForms.tsx).
+    ...sketchDrawTools.map(withDrawForm),
+    ...moreDrawTools.map(withDrawForm),
+    // Text, picture and equation driven curve (sketchExtrasTools.ts).
+    ...extrasDrawTools,
+    // Belt/chain (sketchDrawCommandForms.tsx).
+    ...drawCommandTools,
     sketchOptionsTool,
     finishTool,
     {
@@ -1913,12 +1979,15 @@ const featureTools: Record<string, ToolDef> = {
         label: 'Thread',
         icon: 'thread',
         op: 'thread',
-        hint: 'printable ISO thread on a shaft or in a hole',
+        hint: 'a modelled thread on a shaft or in a hole: cut or extruded',
         needsPart: true,
         width: 310,
-        fields: () => [
+        fields: (ctx) => [
             { key: 'start', label: 'Start at', kind: 'select', section: 'Thread location',
-                options: opts(['edge', 'Circular edge (picked)'], ['point', 'Point on a +Y axis']) },
+                options: opts(['edge', 'Circular edges (picked)'], ['point', 'Point on a +Y axis']) },
+            // Several holes or shafts get the same thread in one step, each from its own edge.
+            { key: 'edges', label: 'Circular edges', kind: 'pick', entities: ['edge'], multi: true, section: 'Thread location',
+                show: (v) => v.start === 'edge' },
             { key: 'pos', label: 'Start point', kind: 'vec', unit: 'mm', section: 'Thread location', show: (v) => v.start === 'point' },
             { key: 'offset', label: 'Offset', kind: 'number', unit: 'mm', section: 'Thread location', show: (v) => v.start === 'edge' },
             { key: 'startAngle', label: 'Start angle', kind: 'number', unit: 'deg', section: 'Thread location' },
@@ -1934,8 +2003,15 @@ const featureTools: Record<string, ToolDef> = {
             { key: 'diameter', label: 'Diameter', kind: 'number', unit: 'mm', min: 0, step: 0.1, section: 'Specification',
                 show: (v) => v.start !== 'edge' || !!v.override },
             { key: 'pitch', label: 'Pitch', kind: 'number', unit: 'mm', min: 0, step: 0.05, section: 'Specification' },
+            // Cut thread only removes material (hole at tap size, shaft at the major diameter); Extrude thread adds
+            // the ridges (hole at the major diameter, shaft at the root). Older threads chose by the size they found.
+            { key: 'method', label: 'Thread method', kind: 'select', section: 'Specification', show: (v) => v.start === 'edge',
+                options: opts(['cut', 'Cut thread'], ['extrude', 'Extrude thread'], ...(edited(ctx, 'thread') && !edited(ctx, 'thread')!.method
+                    ? [['auto', 'By the size of the hole or shaft (as built)'] as [string, string]] : [])) },
             { key: 'hand', label: 'Hand', kind: 'select', options: opts(['right', 'Right-hand'], ['left', 'Left-hand']), section: 'Thread options' },
             { key: 'starts', label: 'Starts', kind: 'number', min: 1, max: 8, step: 1, section: 'Thread options' },
+            { key: 'trimStart', label: 'Trim with start face', kind: 'check', section: 'Thread options' },
+            { key: 'trimEnd', label: 'Trim with end face', kind: 'check', section: 'Thread options' },
         ],
         defaults: (ctx) => {
             const f = edited(ctx, 'thread');
@@ -1945,19 +2021,21 @@ const featureTools: Record<string, ToolDef> = {
                     return f.diameter !== undefined && Math.abs(t.major - f.diameter) < 1e-6 && Math.abs(t.pitch - f.pitch) < 1e-6;
                 });
                 return {
-                    start: f.at ? 'edge' : 'point', ...exactVec('at', f.at ?? [0, 0, 0]), edge: f.at ? 'the stored edge' : '',
+                    start: f.at ? 'edge' : 'point', edges: itemsOf(f.at ? [f.at, ...(f.alsoAt ?? [])] : [], undefined),
                     ...vecValues('pos', f.position ?? [0, 0, 0]), offset: fmt(f.offset ?? 0), startAngle: fmt(f.startAngle ?? 0),
                     end: f.revolutions !== undefined ? 'revolutions' : 'blind', length: fmt(f.length ?? 10), revolutions: fmt(f.revolutions ?? 8),
                     kind: f.kind, size: preset ?? 'custom', override: !!f.at && f.diameter !== undefined, diameter: fmt(f.diameter ?? 8),
                     pitch: fmt(f.pitch), hand: f.leftHanded ? 'left' : 'right', starts: String(f.starts ?? 1),
                     second: f.length2 !== undefined, length2: fmt(f.length2 ?? 5),
+                    method: f.method ?? 'auto', trimStart: f.trimStart ?? true, trimEnd: f.trimEnd ?? true,
                 };
             }
             const { centre: c, half: [, hy] } = partBox(ctx.part);
             return {
-                start: 'edge', ...exactVec('at', [0, 0, 0]), edge: '', ...vecValues('pos', [c[0], c[1] - hy, c[2]]), offset: '0',
+                start: 'edge', edges: [], ...vecValues('pos', [c[0], c[1] - hy, c[2]]), offset: '0',
                 startAngle: '0', end: 'blind', length: '10', revolutions: '8', kind: 'external', size: 'M8', override: false,
                 diameter: '8', pitch: '1.25', hand: 'right', starts: '1', second: false, length2: '5',
+                method: 'cut', trimStart: true, trimEnd: true,
             };
         },
         onChange: (key, v) => {
@@ -1969,15 +2047,14 @@ const featureTools: Record<string, ToolDef> = {
         top: (api) => (
             <p className="tb-note">
                 {api.values.start !== 'edge' ? 'The thread runs up +Y from the start point, as a rod or bore of its own.'
-                    : api.values.edge ? `Starts at ${api.values.edge as string}; click another circular edge to move it.`
-                        : 'Click the circular edge at the end of the shaft or hole where the thread starts.'}
+                    : 'Click the circular edge at the end of each shaft or hole to thread: each gets the same thread, from its own edge.'}
             </p>
         ),
-        extra: (api, ctx) => <ThreadEdgeListener api={api} ctx={ctx} />,
         apply: (v, ctx) => attempt(() => {
             const pitch = num(v, 'pitch', 'Pitch', { positive: true });
             const onEdge = v.start === 'edge';
-            if (onEdge && !v.edge) {
+            const edges = pickItems(v.edges).filter((i) => i.kind === 'edge').map((i) => [...i.at] as Vec3);
+            if (onEdge && edges.length === 0) {
                 throw new Error('Click the circular edge where the thread starts.');
             }
             const diameter = !onEdge || v.override ? num(v, 'diameter', 'Diameter', { positive: true }) : undefined;
@@ -1994,61 +2071,31 @@ const featureTools: Record<string, ToolDef> = {
                 kind: v.kind,
                 pitch,
                 ...(diameter !== undefined ? { diameter } : {}),
-                ...(onEdge ? { at: vec(v, 'at', 'Edge') } : { position: vec(v, 'pos', 'Start') }),
+                ...(onEdge ? { at: edges[0], ...(edges.length > 1 ? { alsoAt: edges.slice(1) } : {}) } : { position: vec(v, 'pos', 'Start') }),
                 ...(revolutions !== undefined ? { revolutions } : { length }),
                 ...(offset ? { offset } : {}),
                 ...(length2 !== undefined ? { length2 } : {}),
                 ...(startAngle ? { startAngle } : {}),
                 ...(v.hand === 'left' ? { leftHanded: true } : {}),
                 ...(starts > 1 ? { starts } : {}),
+                ...(onEdge && (v.method === 'cut' || v.method === 'extrude') ? { method: v.method } : {}),
+                ...(v.trimStart ? {} : { trimStart: false }),
+                ...(v.trimEnd ? {} : { trimEnd: false }),
             };
             if (ctx.edit?.feature) {
                 // An update merges fields: what the form left out is cleared explicitly.
                 Object.assign(feature, {
-                    diameter: diameter ?? null, at: onEdge ? feature.at : null, position: onEdge ? null : feature.position,
+                    diameter: diameter ?? null, at: onEdge ? feature.at : null, alsoAt: feature.alsoAt ?? null,
+                    position: onEdge ? null : feature.position,
                     revolutions: revolutions ?? null, length: length ?? null, offset, startAngle, leftHanded: v.hand === 'left', starts,
-                    length2: length2 ?? null,
+                    length2: length2 ?? null, method: feature.method ?? null, trimStart: v.trimStart ? null : false,
+                    trimEnd: v.trimEnd ? null : false,
                 });
             }
             return saveFeature(ctx, feature);
         }),
     },
 };
-
-/**
- * Takes the thread's start from a circular edge clicked on the part in the view (or already selected when a new
- * thread opens): a point on the edge, stored as `at`, which the kernel resolves to the edge on every rebuild.
- */
-function ThreadEdgeListener({ api, ctx }: { api: PopupApi; ctx: Ctx }) {
-    const picked = useStudio((s) => s.picked);
-    const [seen] = useState(() => (ctx.edit ? picked : null));
-    useEffect(() => {
-        const partId = ctx.part?.id;
-        const entity = picked === seen ? undefined : [...picked].reverse().find((p) => p.kind === 'edge' && p.partId === partId);
-        const key = entity && useStudio.getState().meshes.keys[entity.partId];
-        if (!entity || !key) {
-            return;
-        }
-        let live = true;
-        void meshByKey(key).then((mesh) => {
-            if (!live || !mesh) {
-                return;
-            }
-            const lines = mesh.edges.getAttribute('position').array;
-            const at = edgePick(lines, mesh.segEdge, entity.index);
-            const circle = circleOfEdge(lines, mesh.segEdge, entity.index);
-            if (!at) {
-                return;
-            }
-            const edge = circle?.full ? `the Ø${fmt(circle.radius * 2)} mm circular edge` : 'the picked edge (not a full circle: pick another)';
-            api.set({ start: 'edge', ...exactVec('at', at as Vec3), edge });
-        });
-        return () => {
-            live = false;
-        };
-    }, [picked]);
-    return null;
-}
 
 const solidTools: ToolDef[] = [
     sketchOpTool('extrude'),
@@ -2321,6 +2368,11 @@ export const VIEWS: { id: string; label: string; key?: string; azimuth: number; 
     { id: 'right', label: 'Right', key: '3', azimuth: 90, elevation: 0 },
     { id: 'left', label: 'Left', azimuth: -90, elevation: 0 },
     { id: 'back', label: 'Back', azimuth: 180, elevation: 0 },
+    // From below, the front at the top of the screen; Trimetric and Dimetric look from the front, right and above as
+    // Isometric does (SOLIDWORKS_REFERENCE E3).
+    { id: 'bottom', label: 'Bottom', azimuth: 0, elevation: -89 },
+    { id: 'trimetric', label: 'Trimetric', azimuth: 35, elevation: 20 },
+    { id: 'dimetric', label: 'Dimetric', azimuth: 20.7048, elevation: 19.4712 },
 ];
 
 export async function setView(azimuth: number, elevation: number): Promise<void> {
@@ -2357,6 +2409,7 @@ const viewsTool: ToolDef = {
                     {view.key && <kbd>{view.key}</kbd>}
                 </button>
             ))}
+            <SketchNormalTo />
         </div>
     ),
 };
@@ -2369,6 +2422,22 @@ const gridTool: ToolDef = {
     shortcut: 'G',
     instant: () => useStudio.setState((s) => ({ grid: !s.grid })),
     active: (_, s) => s.grid,
+};
+/** The view a Perspective choice is for: the sketch being drawn (flat by default), else the 3D view. */
+export const perspectiveView = (): 'sketch' | 'model' => {
+    const s = useSketcher.getState();
+    return s.active && s.stage === 'draw' ? 'sketch' : 'model';
+};
+const perspectiveTool: ToolDef = {
+    id: 'perspective',
+    label: 'Perspective',
+    icon: 'perspective',
+    hint: 'off: a flat view without perspective. Sketching and the 3D view each keep their own choice',
+    instant: () => {
+        const view = perspectiveView();
+        setPerspective(view, !useStudio.getState().perspective[view]);
+    },
+    active: (_, s) => s.perspective,
 };
 const edgesTool: ToolDef = {
     id: 'edges',
@@ -2492,6 +2561,7 @@ const exportTools: ToolDef[] = [
         applyLabel: 'Export',
         apply: () => runTool('export_step', {}),
     },
+    freecadExportTool,
     checkTool,
 ];
 
@@ -2544,21 +2614,31 @@ export const noEditTool: ToolDef = {
 };
 
 export const PART_GROUPS: ToolGroup[] = [
-    { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchStartTools },
+    { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: [...sketchStartTools, derivedSketchTool, rapidSketchTool] },
     { id: 'solid', label: 'Solid', icon: 'extrude', collapse: 4, tools: solidTools },
-    { id: 'reference', label: 'Reference geometry', icon: 'ref-plane', collapse: 2, tools: referenceTools },
+    { id: 'reference', label: 'Reference geometry', short: 'Planes', icon: 'ref-plane', collapse: 2, tools: referenceTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [linearPatternTool, circularPatternTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
-    { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, othersTool, sketchesTool, sketchVisibilityTool] },
+    { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, perspectiveTool, othersTool, sketchesTool, sketchVisibilityTool] },
     { id: 'inspect', label: 'Inspect', icon: 'check', collapse: 1, tools: [checkTool, ...evaluateTools] },
     { id: 'history', label: 'History', icon: 'undo', tools: historyTools },
 ];
 
+// Sketch mode. Selecting and leaving the sketch always stay on the bar; what is drawn, modified and constrained are
+// groups of their own, so a narrow window turns each into a named menu instead of hiding every tool in one.
+const SKETCH_ALWAYS = ['sk-select', 'sk-finish', 'sk-cancel'];
+const SKETCH_SETUP = ['sk-options', 'sk-snaps'];
+const sketchTools = (ids: string[]) => ids.flatMap((id) => sketchModeTools.filter((t) => t.id === id));
+
 export const SKETCH_GROUPS: ToolGroup[] = [
-    { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchModeTools },
-    { id: 'modify', label: 'Modify', icon: 'trim', collapse: 1, tools: modifyTools },
-    { id: 'constrain', label: 'Constrain', icon: 'dimension', collapse: 2, tools: constrainTools },
-    { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, othersTool] },
+    { id: 'sketch', label: 'Sketch', icon: 'sketch', tools: sketchTools(SKETCH_ALWAYS) },
+    { id: 'draw', label: 'Draw', icon: 'line', collapse: 4,
+        tools: sketchModeTools.filter((t) => !SKETCH_ALWAYS.includes(t.id) && !SKETCH_SETUP.includes(t.id)) },
+    { id: 'modify', label: 'Modify', icon: 'trim', collapse: 2, tools: modifyTools },
+    { id: 'constrain', label: 'Dimensions and relations', short: 'Relations', icon: 'dimension', collapse: 3, tools: constrainTools },
+    { id: 'view', label: 'View and snaps', short: 'View', icon: 'views', collapse: 1,
+        tools: [viewsTool, fitTool, perspectiveTool, othersTool, ...sketchTools(SKETCH_SETUP), ...sketchToggleTools, rapidSketchTool] },
+    { id: '2d-to-3d', label: '2D to 3D', short: '2D to 3D', icon: 'add-front', collapse: 0, tools: twoDToThreeDTools },
     { id: 'history', label: 'History', icon: 'undo', tools: sketchHistoryTools },
 ];
 
@@ -2567,7 +2647,7 @@ export const ASSEMBLY_GROUPS: ToolGroup[] = [
     { id: 'transform', label: 'Transform', icon: 'move', collapse: 4, tools: transformTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool, explodeTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
-    { id: 'view', label: 'View', icon: 'views', collapse: 5, tools: [viewsTool, fitTool, gridTool, edgesTool, labelsTool] },
+    { id: 'view', label: 'View', icon: 'views', collapse: 5, tools: [viewsTool, fitTool, gridTool, edgesTool, perspectiveTool, labelsTool] },
     { id: 'export', label: 'Export', icon: 'stl', collapse: 1, tools: exportTools },
     { id: 'history', label: 'History', icon: 'undo', tools: historyTools },
 ];
@@ -2577,6 +2657,10 @@ export const ALL_TOOLS: ToolDef[] = [
     ...new Map([...PART_GROUPS, ...SKETCH_GROUPS, ...ASSEMBLY_GROUPS].flatMap((g) => g.tools).map((t) => [t.id, t])).values(),
     sketchPlaneTool,
     noEditTool,
+    ...curveForms,
+    dimensionForm,
+    ...drawCommandForms,
+    normalToTool,
 ];
 
 /** The editor for a history item: a feature tool by op, or a create tool by the base body's shape kind. */

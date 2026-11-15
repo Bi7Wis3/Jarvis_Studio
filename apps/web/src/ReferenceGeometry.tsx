@@ -1,8 +1,9 @@
 // Reference planes, axes and points of the active part drawn in the 3D view: planes as translucent bordered
 // rectangles, axes as dash-dot lines, points as small crosses, each with its name. Hidden with the history tree's eye
-// (or a right-click), like sketches. A click picks the step: as the sketch plane while one is being chosen, else for
-// the open tool form (see refPickPatch). While Revolve or the Axis tool is open, the lines of its sketch are drawn
-// too, to click as the axis.
+// (or the right-click menu), like sketches. A click picks the step: as the sketch plane while one is being chosen, else into
+// the open form's active reference box (or see refPickPatch). While the Plane, Axis or Point form is open, the base
+// planes are drawn too, to click, with a see-through preview of what the form makes and marks on its picks (vertices,
+// typed points, cylinder axes). While Revolve or the Axis tool is open, the lines of its sketch are drawn, to click.
 
 import { useMemo, useRef, useState } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
@@ -14,9 +15,24 @@ import { anim } from './Scene';
 import { Label, v3 } from './SketchDrawing';
 import { partMatrix, planePickerSize } from './SketchLayer';
 import { choosePlane, useSketcher } from './sketcher';
-import { setSketchHidden, useStudio } from './state';
+import { useStudio } from './state';
+import { offerTarget } from './viewMenu';
 import { useToolSession } from './toolSession';
-import { axisDefinition, linePickTarget, planeDefinition, refPickPatch, type RefValues } from './referenceDefs';
+import { usePickSession, type PickItem } from './pickField';
+import {
+    axisDefinition, linePickTarget, planeCount, planeDefinition, pointSteps, refItem, refPickPatch, stepItem, type RefValues,
+} from './referenceDefs';
+
+/** Sends a clicked reference to the open form's active box, if that box takes references; true when it did. */
+function pickIntoBox(partId: string, item: PickItem | null): boolean {
+    const picks = usePickSession.getState();
+    const box = picks.boxes.find((b) => b.key === picks.active);
+    if (!item || item.kind !== 'ref' || !picks.pick || picks.partId !== partId || !box?.entities.includes('ref')) {
+        return false;
+    }
+    picks.pick(item, (i) => i.kind === 'ref' && i.ref === item.ref);
+    return true;
+}
 
 const COLOR = '#7fb2ff';
 const HOVER = '#c48bff';
@@ -52,6 +68,10 @@ function usePick(part: Part, step: Feature) {
                 choosePlane({ planeRef: step.id }, 0);
                 return;
             }
+            if (pickIntoBox(part.id, stepItem(step))) {
+                e.stopPropagation();
+                return;
+            }
             const session = useToolSession.getState();
             const patch = session.set ? refPickPatch(session.toolId, session.values as RefValues, step.op, step.id) : null;
             if (patch) {
@@ -59,11 +79,8 @@ function usePick(part: Part, step: Feature) {
                 session.set!(patch);
             }
         },
-        onContextMenu: (e: { stopPropagation: () => void; nativeEvent: MouseEvent }) => {
-            e.stopPropagation();
-            e.nativeEvent.preventDefault();
-            setSketchHidden(part.id, step.id, true);
-        },
+        // The view's right-click menu (viewMenu.tsx): Sketch, Normal to, Edit, Hide.
+        onContextMenu: () => offerTarget({ kind: 'reference', partId: part.id, featureId: step.id }),
     };
     return { hover, handlers };
 }
@@ -98,6 +115,67 @@ function PlaneItem({ part, step, before, size, chosen }: { part: Part; step: Fea
                 renderOrder={13}
             />
             <Label at={[-h, h]} className="plane">{step.name ?? step.id}</Label>
+        </group>
+    );
+}
+
+/** A base plane, drawn faintly while a reference form is open, to click into its box. */
+function BasePlane({ part, name, size, chosen }: { part: Part; name: 'top' | 'front' | 'right'; size: number; chosen: boolean }) {
+    const [hover, setHover] = useState(false);
+    const matrix = useMemo(() => {
+        const p = resolvePlane(name, []);
+        return frameMatrix(p.origin, p.xDir, cross(p.normal, p.xDir), p.normal);
+    }, [name]);
+    const h = size / 2;
+    const color = hover ? HOVER : chosen ? CHOSEN : COLOR;
+    const item = refItem(name);
+    return (
+        <group matrixAutoUpdate={false} matrix={matrix}>
+            <mesh
+                renderOrder={11}
+                onPointerOver={() => setHover(true)}
+                onPointerOut={() => setHover(false)}
+                onClick={(e) => {
+                    if (e.delta <= CLICK_SLOP_PX && pickIntoBox(part.id, item)) {
+                        e.stopPropagation();
+                    }
+                }}
+            >
+                <planeGeometry args={[size, size]} />
+                <meshBasicMaterial color={color} transparent opacity={hover ? 0.18 : chosen ? 0.12 : 0.04} depthWrite={false} side={DoubleSide} />
+            </mesh>
+            <Line points={[[-h, -h, 0], [h, -h, 0], [h, h, 0], [-h, h, 0], [-h, -h, 0]]} color={color} lineWidth={1}
+                transparent opacity={hover || chosen ? 0.8 : 0.3} renderOrder={12} />
+            {(hover || chosen) && <Label at={[-h, h]} className="plane">{item.kind === 'ref' ? item.label : name}</Label>}
+        </group>
+    );
+}
+
+/** Marks on the open form's picks the model does not show: vertices and typed points as dots, cylinder axes as lines. */
+function PickMarks({ items, size }: { items: { item: PickItem; at?: Vec3 }[]; size: number }) {
+    const s = size / 60;
+    return (
+        <group>
+            {items.map(({ item, at }, i) => {
+                const g = item.kind === 'ref' ? null : item.model?.geom;
+                const dot = at ?? (item.kind === 'vertex' ? item.at : g?.type === 'circle' ? g.centre : null);
+                if (dot) {
+                    return (
+                        <mesh key={i} position={dot} raycast={() => null} renderOrder={20}>
+                            <sphereGeometry args={[s * 0.8, 12, 8]} />
+                            <meshBasicMaterial color={CHOSEN} depthTest={false} transparent opacity={0.95} />
+                        </mesh>
+                    );
+                }
+                if (g?.type === 'cylinder' || g?.type === 'cone') {
+                    const half = size / 3;
+                    const a = g.point.map((c, k) => c - g.direction[k] * half) as Vec3;
+                    const b = g.point.map((c, k) => c + g.direction[k] * half) as Vec3;
+                    return <Line key={i} points={[a, b]} color={CHOSEN} lineWidth={1.6} dashed dashSize={size / 30} gapSize={size / 80}
+                        depthTest={false} renderOrder={20} />;
+                }
+                return null;
+            })}
         </group>
     );
 }
@@ -237,20 +315,31 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
     const values = useToolSession((s) => s.values);
     const toolId = useToolSession((s) => s.toolId);
     const editing = useToolSession((s) => s.ctx?.edit?.feature?.id ?? null);
-    // The Plane or Axis form's plane or axis as it stands, drawn as a live preview.
-    const draft = useMemo((): Feature | null => {
+    // The Plane, Axis or Point form's planes, axis or points as they stand, drawn as a live preview.
+    const drafts = useMemo((): Feature[] => {
         try {
+            const v = values as RefValues;
             if (toolId === 'plane') {
-                return { id: DRAFT, name: 'Preview', op: 'plane', definition: planeDefinition(values as RefValues) };
+                const count = editing ? 1 : Math.max(1, Math.min(50, planeCount(v)));
+                return Array.from({ length: count }, (_, i): Feature => ({
+                    id: DRAFT, name: count > 1 ? `Preview ${i + 1}` : 'Preview', op: 'plane', definition: planeDefinition(v, i + 1),
+                }));
             }
             if (toolId === 'axis') {
-                return { id: DRAFT, name: 'Preview', op: 'axis', definition: axisDefinition(values as RefValues) };
+                return [{ id: DRAFT, name: 'Preview', op: 'axis', definition: axisDefinition(v) }];
+            }
+            if (toolId === 'point') {
+                return pointSteps(v, !!editing).map(({ position }): Feature => ({ id: DRAFT, name: 'Preview', op: 'point', position }));
             }
         } catch {
-            return null;
+            return [];
         }
-        return null;
-    }, [toolId, values]);
+        return [];
+    }, [toolId, values, editing]);
+    // What the open form's boxes hold: steps to highlight, picks to mark.
+    const boxItems = useMemo(() => Object.entries(values).flatMap(([key, value]) => (Array.isArray(value)
+        ? (value as unknown[]).flatMap((item) => (typeof item === 'object' && item !== null && 'kind' in item ? [{ key, item: item as PickItem }] : []))
+        : [])), [values]);
     const outer = useRef<Group>(null);
     const matrix = useMemo(() => partMatrix(part), [part?.position.join(), part?.rotation.join()]);
     useFrame(() => {
@@ -264,12 +353,25 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
     const size = planePickerSize(part) * 0.6;
     // Steps the open form refers to are drawn highlighted.
     const chosen = new Set(Object.values(values).flatMap((v) => (typeof v === 'string' ? [v, v.replace(/^axis:/, '')] : [])));
+    for (const { item } of boxItems) {
+        if (item.kind === 'ref') {
+            chosen.add(item.ref.replace(/^(plane|axis|point):/, ''));
+        }
+    }
+    const referenceForm = toolId === 'plane' || toolId === 'axis' || toolId === 'point';
+    const marks = boxItems.flatMap(({ key, item }): { item: PickItem; at?: Vec3 }[] => {
+        if (item.kind === 'ref' && item.ref === 'xyz') {
+            const at = [0, 1, 2].map((i) => Number(values[`${key}p${i}`])) as Vec3;
+            return at.every(Number.isFinite) ? [{ item, at }] : [];
+        }
+        return item.kind === 'ref' ? [] : [{ item }];
+    });
     return (
         <group ref={outer}>
             <group matrixAutoUpdate={false} matrix={matrix}>
                 {features.map((f, i) => {
-                    // A plane or axis being edited is drawn as the form's preview instead.
-                    if (f.suppressed || (f.id === editing && f.op !== 'point') || hiddenSet.has(`${part.id}/${f.id}`)) {
+                    // A plane, axis or point being edited is drawn as the form's preview instead.
+                    if (f.suppressed || f.id === editing || hiddenSet.has(`${part.id}/${f.id}`)) {
                         return null;
                     }
                     const before = features.slice(0, i);
@@ -285,13 +387,19 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
                             return null;
                     }
                 })}
-                {draft && (() => {
+                {drafts.length > 0 && (() => {
                     const at = editing ? features.findIndex((f) => f.id === editing) : -1;
                     const before = (at >= 0 ? features.slice(0, at) : features).filter((f) => !f.suppressed);
-                    return draft.op === 'plane'
-                        ? <PlaneItem part={part} step={draft} before={before} size={size} chosen />
-                        : <AxisItem part={part} step={draft} before={before} size={size} chosen />;
+                    return drafts.map((draft, i) => (draft.op === 'plane'
+                        ? <PlaneItem key={i} part={part} step={draft} before={before} size={size} chosen />
+                        : draft.op === 'axis'
+                            ? <AxisItem key={i} part={part} step={draft} before={before} size={size} chosen />
+                            : draft.op === 'point' ? <PointItem key={i} part={part} step={draft} size={size} chosen /> : null));
                 })()}
+                {referenceForm && (['top', 'front', 'right'] as const).map((name) => (
+                    <BasePlane key={name} part={part} name={name} size={size} chosen={chosen.has(name)} />
+                ))}
+                {referenceForm && <PickMarks items={marks} size={size} />}
                 <SketchLinePicker part={part} />
             </group>
         </group>

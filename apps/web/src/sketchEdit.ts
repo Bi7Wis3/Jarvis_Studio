@@ -4,12 +4,21 @@
 
 import type { SketchConstraint, SketchCurve, SketchGeometry } from '@jarvis/core';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, pointOf } from './solver';
-import { addConstraint, addRect, constraintRefs, geometryEntities, newId, placePoint, type NewConstraint, type PointRef } from './sketchGeometry';
-import { dist, type NewEntity, type Pt } from './sketchMath';
+import { addConstraint, addRect, constraintRefs, extentHeld, geometryEntities, newId, placePoint, type NewConstraint, type PointRef } from './sketchGeometry';
+import { dist, entityPoints, type NewEntity, type Pt } from './sketchMath';
 import { intersections } from './snapping';
+import { CURVE_NOUN, curveEndIds, curvePointIds, holdsPoints, isExtra, mapCurvePoints } from './sketchCurves';
+import { isModelLock, sketchLockSource } from './sketchModel';
+import { withoutRepeatedSymmetry } from './sketchLock';
+import { cutsAlong, extendCurve, extendRefusal, geomOfCurve, splitCurve, trimCurve } from './sketchCut';
+import { chainHasCurves, curveChain, curveSideDistance, offsetCurveChains } from './sketchCurveOffset';
+import { endlessEnds, isEndless, trimEndless } from './sketchInfinite';
+
 
 /** A curve resolved to coordinates, as the snapping intersection maths takes it. */
-type Shape = Parameters<typeof intersections>[0];
+type AnyShape = Parameters<typeof intersections>[0];
+/** Lines, circles and arcs: the curves the edit tools themselves change. */
+type Shape = Exclude<AnyShape, { kind: 'poly' }>;
 
 export type EditResult = { g: SketchGeometry } | { error: string };
 
@@ -31,18 +40,65 @@ const unit = (p: Pt, q: Pt): Pt => {
 
 /** The points a curve is built on (same as in sketchGeometry, which does not export it). */
 export function curvePoints(c: SketchCurve): string[] {
-    return c.kind === 'line' ? [c.a, c.b] : c.kind === 'circle' ? [c.center] : [c.center, c.start, c.end];
+    return curvePointIds(c);
 }
 
-/** The two end points of a line or arc; none for a circle. */
+/** The two end points of an open curve; none for a circle or ellipse. */
 function endsOf(c: SketchCurve): string[] {
-    return c.kind === 'line' ? [c.a, c.b] : c.kind === 'arc' ? [c.start, c.end] : [];
+    return curveEndIds(c);
+}
+
+/**
+ * Says that an edit tool does not handle a curve kind yet (ellipses, splines, parabolas, conics), or null. Trim and
+ * Split take every kind; Extend every kind with a natural path past its ends (not splines).
+ */
+export function notForCurve(tool: string, c: SketchCurve | undefined): string | null {
+    if (['Trim', 'Split', 'Offset', 'Fillet', 'Chamfer'].includes(tool) && c?.kind === 'styleSpline' && c.weights?.some((w) => w !== 1)) {
+        return `${tool} does not work on rational style splines (with control vertex weights) yet: make it non-rational in its form first.`;
+    }
+    if (isEndless(c) && tool !== 'Trim') {
+        return `${tool} does not work on infinite lines: trim them to a length first.`;
+    }
+    if (tool === 'Trim' || tool === 'Split') {
+        return null;
+    }
+    if (tool === 'Extend') {
+        return extendRefusal(c);
+    }
+    if (!c || !isExtra(c)) {
+        return null;
+    }
+    return `${tool} does not work on ${CURVE_NOUN[c.kind]}s yet.`;
+}
+
+/** Whether a curve was copied in from the model or another sketch (its points carry those locks; sketchModel.ts). */
+function takenFromModel(g: SketchGeometry, c: SketchCurve): boolean {
+    const ids = curvePoints(c);
+    const locked = new Set(g.constraints.flatMap((k) => (k.kind === 'fix' && (isModelLock(k) || sketchLockSource(k)) ? [k.point] : [])));
+    return ids.length > 0 && ids.every((id) => locked.has(id));
 }
 
 /** Coordinates of a curve (as in snapping, which does not export it). */
+/** A curve as other curves meet it: ellipses, splines, parabolas and conics as a fine polyline (then held on by the solver). */
+export function crossingShapeOf(g: SketchGeometry, c: SketchCurve): AnyShape {
+    if (isExtra(c)) {
+        const e = geometryEntities({ ...g, curves: [c] })[0];
+        return { id: c.id, kind: 'poly', points: e ? entityPoints(e) : [] };
+    }
+    return shapeOf(g, c);
+}
+
+/** Coordinates of a line, circle or arc (any other curve: the chord between its ends; edit tools refuse those first). */
 export function shapeOf(g: SketchGeometry, c: SketchCurve): Shape {
+    if (isExtra(c)) {
+        const e = geometryEntities({ ...g, curves: [c] })[0];
+        const pts = e ? entityPoints(e) : [[0, 0] as Pt];
+        return { id: c.id, kind: 'line', a: pts[0], b: pts[pts.length - 1] };
+    }
     if (c.kind === 'line') {
-        return { id: c.id, kind: 'line', a: P(g, c.a), b: P(g, c.b) };
+        // An infinite line meets others along its whole reach.
+        const [a, b] = endlessEnds(P(g, c.a), P(g, c.b), c.endless);
+        return { id: c.id, kind: 'line', a, b };
     }
     const centre = P(g, c.center);
     if (c.kind === 'circle') {
@@ -139,44 +195,14 @@ interface Cut {
     point?: string;
 }
 
-/** Where other curves cross or touch the curve, sorted along it; its own ends are left out. */
+/**
+ * Where other curves cross or touch a line, arc or circle (exactly, whatever their kind), sorted along it; its own
+ * ends are left out. t as paramOf: 0..1 along a line, the angle from an arc's start, from +u round a circle.
+ */
 function cutsOn(g: SketchGeometry, c: SketchCurve): Cut[] {
-    const s = shapeOf(g, c);
-    const own = new Set(curvePoints(c));
-    const ends = endsOf(c).map((id) => P(g, id));
-    const cuts: Cut[] = [];
-    const add = (cut: Cut) => {
-        if (ends.some((e) => dist(e, cut.at) < SAME)) {
-            return;
-        }
-        const same = cuts.findIndex((k) => dist(k.at, cut.at) < SAME);
-        if (same < 0) {
-            cuts.push(cut);
-        } else if (cut.point && !cuts[same].point) {
-            cuts[same] = cut;
-        }
-    };
-    for (const other of g.curves) {
-        if (other.id === c.id) {
-            continue;
-        }
-        const os = shapeOf(g, other);
-        for (const p of intersections(s, os)) {
-            add({ t: paramOf(s, p), at: p, by: other.id });
-        }
-        // Ends of other curves lying on this one (a T): caught even when rounding puts them a hair off.
-        for (const id of endsOf(other)) {
-            const q = P(g, id);
-            if (!own.has(id) && distanceTo(s, q) < 1e-4) {
-                const t = paramOf(s, q);
-                const inside = s.kind === 'line' ? t > 0 && t < 1 : s.sweep === undefined || t < s.sweep;
-                if (inside) {
-                    add({ t, at: q, by: other.id, point: id });
-                }
-            }
-        }
-    }
-    return cuts.sort((a, b) => a.t - b.t);
+    const geom = geomOfCurve(g, c);
+    const from = geom?.kind === 'circle' && geom.from !== undefined ? geom.from : 0;
+    return cutsAlong(g, c).map((k) => ({ ...k, t: k.t - from }));
 }
 
 export interface TrimOptions {
@@ -202,6 +228,13 @@ export function trimAt(g: SketchGeometry, curveId: string, at: Pt, opts: TrimOpt
     if (!c) {
         return null;
     }
+    if (isEndless(c)) {
+        // An infinite line or ray: its pieces keep running on where it did (sketchInfinite.ts).
+        return trimEndless(g, curveId, at, { geomOf: geomOfCurve }, !!opts.construction);
+    }
+    if (isExtra(c)) {
+        return trimCurve(g, c, at, opts);
+    }
     const s = shapeOf(g, c);
     const all = cutsOn(g, c);
     const cuts = opts.by ? all.filter((k) => opts.by!.includes(k.by)) : all;
@@ -226,7 +259,7 @@ export function trimAt(g: SketchGeometry, curveId: string, at: Pt, opts: TrimOpt
             return cut.point;
         }
         const r = newPoint(out, cut.at);
-        out = addConstraint(r.g, { kind: 'pointOnCurve', point: r.id, curve: cut.by }).g;
+        out = holdsPoints(r.g, cut.by) ? addConstraint(r.g, { kind: 'pointOnCurve', point: r.id, curve: cut.by }).g : r.g;
         return r.id;
     };
 
@@ -285,6 +318,7 @@ export function trimAt(g: SketchGeometry, curveId: string, at: Pt, opts: TrimOpt
         out = dropConstraints(out, (k) => (k.kind === 'length' && k.line === c.id) || (k.kind === 'midpoint' && k.line === c.id)
             || (k.kind === 'equal' && (k.a === c.id || k.b === c.id)));
     }
+    out = dropConstraints(out, (k) => extentHeld(k, c.id));
     out = dropOnOwnEnds(out, second ? [c.id, second] : [c.id]);
     return { g: dropUnused(out, [first, last]), removed };
 }
@@ -292,14 +326,20 @@ export function trimAt(g: SketchGeometry, curveId: string, at: Pt, opts: TrimOpt
 // ---- Split --------------------------------------------------------------------------------------------
 
 /**
- * Splits a line or arc in two at the point nearest `at`, with a split point both pieces share (they stay in line, or
- * on one circle). A circle needs two split points (`at2`) and becomes two arcs. A line's length, middle and equal
- * length no longer hold and go (`dropped`).
+ * Splits a curve in two at the point nearest `at`, with a split point both pieces share (they stay in line, or on
+ * one circle, ellipse or parabola; other kinds are cut into exact pieces, sketchCut.ts). A circle, ellipse or closed
+ * spline needs two split points (`at2`). A line's length, middle and equal length no longer hold and go (`dropped`).
  */
 export function splitAt(g: SketchGeometry, curveId: string, at: Pt, at2?: Pt): { g: SketchGeometry; point: string; dropped: number } | { error: string } {
     const c = curveOf(g, curveId);
     if (!c) {
-        return { error: 'Pick a line, arc or circle.' };
+        return { error: 'Pick a curve.' };
+    }
+    if (isEndless(c)) {
+        return { error: notForCurve('Split', c)! };
+    }
+    if (isExtra(c)) {
+        return splitCurve(g, c, at, at2);
     }
     const s = shapeOf(g, c);
     const onCurve = (p: Pt): Pt => (s.kind === 'line'
@@ -324,7 +364,7 @@ export function splitAt(g: SketchGeometry, curveId: string, at: Pt, at2?: Pt): {
         out = putCurve(out, { id: second, kind: 'line', a: r.id, b: c.b, ...construction });
         const before = out.constraints.length;
         out = dropConstraints(out, (k) => (k.kind === 'length' && k.line === c.id) || (k.kind === 'midpoint' && k.line === c.id)
-            || (k.kind === 'equal' && (k.a === c.id || k.b === c.id)));
+            || (k.kind === 'equal' && (k.a === c.id || k.b === c.id)) || extentHeld(k, c.id));
         const dropped = before - out.constraints.length;
         // In line: the far end of the second piece stays on the first.
         out = addConstraint(out, { kind: 'pointOnCurve', point: c.b, curve: c.id }).g;
@@ -333,7 +373,12 @@ export function splitAt(g: SketchGeometry, curveId: string, at: Pt, at2?: Pt): {
     if (c.kind === 'arc') {
         out = putCurve(out, { ...c, end: r.id });
         out = putCurve(out, { id: second, kind: 'arc', center: c.center, start: r.id, end: c.end, ...construction });
-        return { g: out, point: r.id, dropped: 0 };
+        const before = out.constraints.length;
+        out = dropConstraints(out, (k) => extentHeld(k, c.id));
+        return { g: out, point: r.id, dropped: before - out.constraints.length };
+    }
+    if (c.kind !== 'circle') {
+        return { error: notForCurve('Split', c) ?? 'Pick a line, arc or circle.' };
     }
     if (!at2) {
         return { error: 'A circle is split at two points: click the second.' };
@@ -360,76 +405,13 @@ export interface ExtendPlan {
     dropped: number;
 }
 
-/** Lengthens the line or arc at its end nearer `at` to the next curve it meets. */
+/**
+ * Lengthens the curve at its end nearer `at`, along its natural path (a line on, an arc round its circle, a partial
+ * ellipse round its ellipse, a parabola or conic along itself), to the next curve it meets; splines are not extended.
+ */
 export function extendAt(g: SketchGeometry, curveId: string, at: Pt): ExtendPlan | null {
     const c = curveOf(g, curveId);
-    if (!c || c.kind === 'circle') {
-        return null;
-    }
-    const [first, last] = endsOf(c);
-    const end = dist(P(g, first), at) <= dist(P(g, last), at) ? first : last;
-    // An end that other curves share cannot move away from them.
-    if (g.curves.some((k) => k.id !== c.id && curvePoints(k).includes(end))) {
-        return null;
-    }
-    const others = g.curves.filter((k) => k.id !== c.id).map((k) => shapeOf(g, k));
-    const from = P(g, end);
-    let hit: { at: Pt; by: string; d: number } | null = null;
-    let added: NewEntity | null = null;
-    if (c.kind === 'line') {
-        const dir = unit(P(g, end === c.a ? c.b : c.a), from);
-        const ray: Shape = { id: 'ray', kind: 'line', a: [from[0] + dir[0] * 1e-6, from[1] + dir[1] * 1e-6], b: [from[0] + dir[0] * 1e6, from[1] + dir[1] * 1e6] };
-        for (const o of others) {
-            for (const p of intersections(ray, o)) {
-                const d = dist(from, p);
-                if (d > SAME && (!hit || d < hit.d)) {
-                    hit = { at: p, by: o.id, d };
-                }
-            }
-        }
-        if (hit) {
-            added = { kind: 'line', a: from, b: hit.at };
-        }
-    } else {
-        const s = shapeOf(g, c) as Extract<Shape, { kind: 'circle' }>;
-        const circle: Shape = { id: 'circle', kind: 'circle', c: s.c, r: s.r };
-        const gap = TAU - s.sweep!;
-        const a0 = angleOf(s.c, from);
-        for (const o of others) {
-            for (const p of intersections(circle, o)) {
-                const a = angleOf(s.c, p);
-                // Going on past the end (counter-clockwise), or back past the start (clockwise), but not round into itself.
-                const d = end === c.end ? norm(a - a0) : norm(a0 - a);
-                if (d > 1e-6 && d < gap - 1e-6 && (!hit || d < hit.d)) {
-                    hit = { at: p, by: o.id, d };
-                }
-            }
-        }
-        if (hit) {
-            const a1 = angleOf(s.c, hit.at);
-            const [x, y] = end === c.end ? [a0, a0 + hit.d] : [a1, a1 + hit.d];
-            added = { kind: 'arc', a: polar(s.c, s.r, x), b: polar(s.c, s.r, y), m: polar(s.c, s.r, (x + y) / 2) };
-        }
-    }
-    if (!hit || !added) {
-        return null;
-    }
-    const target = hit;
-    let out: SketchGeometry = { ...g, points: g.points.map((p) => (p.id === end ? { ...p, u: target.at[0], v: target.at[1] } : p)) };
-    // What held the end where it was would pull it back: its locks, dimensions, the curves it was held on (e.g. where
-    // a trim cut it) and points coincident with it; as with Trim, a line's length, middle and equal length go too.
-    const before = out.constraints.length;
-    out = dropConstraints(out, (k) => (k.kind === 'fix' && k.point === end)
-        || (k.kind === 'distance' && (k.a === end || k.b === end))
-        || (k.kind === 'pointOnCurve' && k.point === end)
-        || (k.kind === 'coincident' && (k.a === end || k.b === end))
-        || (k.kind === 'midpoint' && k.point === end)
-        || (k.kind === 'symmetric' && (k.a === end || k.b === end))
-        || (c.kind === 'line' && ((k.kind === 'length' && k.line === c.id) || (k.kind === 'midpoint' && k.line === c.id)
-            || (k.kind === 'equal' && (k.a === c.id || k.b === c.id)))));
-    const dropped = before - out.constraints.length;
-    out = addConstraint(out, { kind: 'pointOnCurve', point: end, curve: target.by }).g;
-    return { g: out, added, dropped };
+    return c ? extendCurve(g, c, at) : null;
 }
 
 // ---- Fillet and chamfer -------------------------------------------------------------------------------
@@ -496,7 +478,7 @@ function cutBack(g: SketchGeometry, corner: Corner, ends: Pt[]): { g: SketchGeom
     const lineIds = corner.lines.map((l) => l.line.id);
     // Their lengths, middles and equal lengths change.
     out = dropConstraints(out, (k) => ((k.kind === 'length' || k.kind === 'midpoint') && lineIds.includes(k.line))
-        || (k.kind === 'equal' && (lineIds.includes(k.a) || lineIds.includes(k.b))));
+        || (k.kind === 'equal' && (lineIds.includes(k.a) || lineIds.includes(k.b))) || lineIds.some((id) => extentHeld(k, id)));
     return { g: out, ids };
 }
 
@@ -649,6 +631,9 @@ type Moved =
 
 /** Signed distance of p from the chain: positive on the left of the way it runs (inside a counter-clockwise loop). */
 export function sideDistance(g: SketchGeometry, curveId: string, p: Pt, allowed?: ReadonlySet<string>): number {
+    if (chainHasCurves(g, curveId, allowed)) {
+        return curveSideDistance(g, curveId, p, allowed);
+    }
     const { segments } = chainOf(g, curveId, allowed);
     let best: { d: number; signed: number } | null = null;
     for (const s of segments) {
@@ -747,6 +732,8 @@ export interface OffsetOptions {
     /** Construction geometry: turn the originals (base) and / or the offsets into construction. */
     baseConstruction?: boolean;
     offsetConstruction?: boolean;
+    /** A preview: offsets of ellipses, splines, parabolas and conics are fitted quickly, to a coarser tolerance. */
+    preview?: boolean;
 }
 
 /** The chains to offset: one per picked curve, or only through picked curves when Select chain is off. */
@@ -774,6 +761,23 @@ function chainsOf(g: SketchGeometry, curveIds: string[], chain: boolean): { segm
 export function offsetEntities(g: SketchGeometry, curveIds: string[], o: OffsetOptions): EditResult & { created?: string[] } {
     if (Math.abs(o.distance) < 1e-6) {
         return { error: 'Type a distance above zero.' };
+    }
+    const endless = curveIds.map((id) => curveOf(g, id)).find((c) => isEndless(c));
+    if (endless) {
+        return { error: notForCurve('Offset', endless)! };
+    }
+    const allowedIds = o.chain === false ? new Set(curveIds) : undefined;
+    // Chains with ellipses, splines, parabolas or conics: offsets that are rebuilt from them (sketchCurveOffset.ts).
+    const curvy = curveIds.filter((id) => curveOf(g, id) && chainHasCurves(g, id, allowedIds));
+    if (curvy.length) {
+        const inCurvy = new Set(curvy.flatMap((id) => curveChain(g, id, allowedIds).parts.map((p) => p.curve.id)));
+        const plain = curveIds.filter((id) => !inCurvy.has(id));
+        const first = plain.length ? offsetEntities(g, plain, o) : { g, created: [] as string[] };
+        if ('error' in first) {
+            return first;
+        }
+        const r = offsetCurveChains(first.g, curvy, o);
+        return 'error' in r ? r : { g: r.g, created: [...(first.created ?? []), ...r.created] };
     }
     const chains = chainsOf(g, curveIds, o.chain !== false);
     if (!chains.length) {
@@ -832,7 +836,8 @@ export function offsetEntities(g: SketchGeometry, curveIds: string[], o: OffsetO
                 return r;
             }
             const { moved } = r;
-            const construction = (c: SketchCurve) => !!c.construction || !!o.offsetConstruction;
+            // A base copied in from the model is construction itself, but its offset is ordinary geometry.
+            const construction = (c: SketchCurve) => (!!c.construction && !takenFromModel(g, c)) || !!o.offsetConstruction;
             if (segments[0].curve.kind === 'circle') {
                 const circle = segments[0].curve;
                 const m = moved[0] as Extract<Moved, { kind: 'circle' }>;
@@ -953,7 +958,7 @@ export function offsetEntities(g: SketchGeometry, curveIds: string[], o: OffsetO
 
 /** What the offset would draw, for the preview. */
 export function offsetPreview(g: SketchGeometry, curveIds: string[], o: OffsetOptions): NewEntity[] {
-    const r = offsetEntities(g, curveIds, o);
+    const r = offsetEntities(g, curveIds, { ...o, preview: true });
     if ('error' in r) {
         return [];
     }
@@ -1027,7 +1032,12 @@ export function mirrorCurves(g: SketchGeometry, curveIds: string[], about: strin
         const construction = c.construction ? { construction: true } : {};
         // Images first: they add points to `out`.
         let copy: SketchCurve;
-        if (c.kind === 'line') {
+        if (isExtra(c)) {
+            for (const p of curvePoints(c)) {
+                image(p);
+            }
+            copy = { ...mapCurvePoints(c, image, true), id: newId('c', out) };
+        } else if (c.kind === 'line') {
             const [a, b] = [image(c.a), image(c.b)];
             copy = { id: newId('c', out), kind: 'line', a, b, ...construction };
         } else if (c.kind === 'circle') {
@@ -1043,7 +1053,13 @@ export function mirrorCurves(g: SketchGeometry, curveIds: string[], about: strin
         created.push(copy.id);
     }
     if (keepOriginals) {
-        return { g: withConstraints(out, extra), created };
+        const held = withConstraints(out, extra);
+        if (!curves.some(isExtra)) {
+            return { g: held, created };
+        }
+        // Ellipses and parabolas hold some of their points on the curve already: no relation may repeat that.
+        const had = new Set(out.constraints.map((k) => k.id));
+        return { g: withoutRepeatedSymmetry(held, held.constraints.filter((k) => k.kind === 'symmetric' && !had.has(k.id)).map((k) => k.id)), created };
     }
     // Copy off: the originals go; the mirrored curves take over the relations and dimensions among them.
     const curveMap = new Map(curves.map((c, i) => [c.id, created[i]]));
@@ -1116,7 +1132,7 @@ function carried(c: NewConstraint, t: Transform): NewConstraint | null {
         return q % 2 ? { ...c, kind: c.kind === 'horizontal' ? 'vertical' : 'horizontal' } : c;
     }
     // Relations and angles hold under any of these transforms.
-    if (!('value' in c) || c.kind === 'angle') {
+    if (!('value' in c) || c.kind === 'angle' || c.kind === 'pointAngle') {
         return c;
     }
     const f = t.kind === 'scale' ? t.factor : 1;
@@ -1132,7 +1148,8 @@ function carried(c: NewConstraint, t: Transform): NewConstraint | null {
 /** A constraint without its id (and label position), with its references renamed. */
 function renamed(c: SketchConstraint, rename: (id: string) => string): NewConstraint {
     return Object.fromEntries(Object.entries(c).filter(([key]) => key !== 'id' && key !== 'at')
-        .map(([key, v]) => [key, typeof v === 'string' && key !== 'kind' && key !== 'axis' ? rename(v) : v])) as NewConstraint;
+        .map(([key, v]) => [key, typeof v === 'string' && key !== 'kind' && key !== 'axis' ? rename(v)
+            : Array.isArray(v) ? v.map((x) => (typeof x === 'string' ? rename(x) : x)) : v])) as NewConstraint;
 }
 
 export interface TransformResult {
@@ -1184,9 +1201,9 @@ export function transformEntities(g: SketchGeometry, ids: string[], t: Transform
         const id = copy ? newId('c', out) : c.id;
         map.set(c.id, id);
         const p = (x: string) => map.get(x) ?? x;
-        const next: SketchCurve = c.kind === 'line' ? { ...c, id, a: p(c.a), b: p(c.b) }
-            : c.kind === 'circle' ? { ...c, id, center: p(c.center), radius: c.radius * f }
-                : { ...c, id, center: p(c.center), start: p(c.start), end: p(c.end) };
+        const next: SketchCurve = c.kind === 'circle' ? { ...c, id, center: p(c.center), radius: c.radius * f }
+            : { ...mapCurvePoints(c, p), id };
+
         out = putCurve(out, next);
         created.push(id);
     }

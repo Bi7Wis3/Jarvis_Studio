@@ -3,6 +3,7 @@
 
 import type { Feature, Sketch, SketchPlane, SketchPlaneName, SketchProfile, SketchSegment, Vec3 } from '@jarvis/core';
 import { resolvePlane } from '@jarvis/core/reference';
+import { ellipseAxes, ellipsePoints, reverseSegment, segmentMiddle, segmentPoints } from '@jarvis/core/curves';
 
 export type Pt = [number, number];
 
@@ -12,7 +13,11 @@ export type Entity =
     | { id: string; kind: 'rect'; a: Pt; b: Pt; radius?: number }
     | { id: string; kind: 'circle'; c: Pt; r: number }
     | { id: string; kind: 'slot'; a: Pt; b: Pt; r: number }
-    | { id: string; kind: 'polygon'; points: Pt[] };
+    | { id: string; kind: 'polygon'; points: Pt[] }
+    /** Ellipse: centre, the end of one axis and the other radius. */
+    | { id: string; kind: 'ellipse'; c: Pt; major: Pt; minor: number }
+    /** Partial ellipse, spline, parabola or conic from a to b: `seg` is its exact path segment, `m` a point halfway. */
+    | { id: string; kind: 'curve'; a: Pt; b: Pt; m: Pt; seg: SketchSegment };
 
 /** An entity before it gets its id. */
 export type NewEntity = Entity extends infer E ? (E extends Entity ? Omit<E, 'id'> : never) : never;
@@ -231,7 +236,16 @@ export function entityPoints(e: Entity): Pt[] {
             return slotPoints(e.a, e.b, e.r);
         case 'polygon':
             return [...e.points, e.points[0]];
+        case 'ellipse':
+            return ellipsePoints(ellipseAxes(e.c, e.major, e.minor));
+        case 'curve':
+            return [e.a, ...segmentPoints(e.a, e.seg, 64)];
     }
+}
+
+/** A curve entity from its exact segment. */
+export function curveEntity(id: string, a: Pt, seg: SketchSegment): Extract<Entity, { kind: 'curve' }> {
+    return { id, kind: 'curve', a, b: seg.to, m: segmentMiddle(a, seg), seg };
 }
 
 function segmentDistance(p: Pt, a: Pt, b: Pt): number {
@@ -265,7 +279,7 @@ export function regularPolygon(c: Pt, vertex: Pt, sides: number): Pt[] {
 
 // ---- Profiles -----------------------------------------------------------------------------------------
 
-type Chainable = Extract<Entity, { kind: 'line' | 'arc' }>;
+type Chainable = Extract<Entity, { kind: 'line' | 'arc' | 'curve' }>;
 
 /** Closed loops formed by lines and arcs, as `path` profiles; open chains are reported separately. */
 function chainLoops(segments: Chainable[]): { profiles: SketchProfile[]; open: number } {
@@ -312,8 +326,11 @@ function chainLoops(segments: Chainable[]): { profiles: SketchProfile[]; open: n
     return { profiles, open };
 }
 
-function toSegment(s: Chainable, reversed: boolean): SketchSegment {
+export function toSegment(s: Chainable, reversed: boolean): SketchSegment {
     const to = reversed ? s.a : s.b;
+    if (s.kind === 'curve') {
+        return reversed ? reverseSegment(s.a, s.seg) : s.seg;
+    }
     return s.kind === 'line' ? { kind: 'line', to } : { kind: 'arc', to, through: arcMidpoint(s.a, s.m, s.b) };
 }
 
@@ -325,7 +342,15 @@ export function entitiesToProfiles(entities: Entity[]): { profiles: SketchProfil
         switch (e.kind) {
             case 'line':
             case 'arc':
+            case 'curve':
                 chainable.push(e);
+                break;
+            case 'ellipse':
+                if (e.minor > EPS && dist(e.c, e.major) > EPS) {
+                    const axes = ellipseAxes(e.c, e.major, e.minor);
+                    const major: Pt = [e.c[0] + axes.a * Math.cos(axes.angle), e.c[1] + axes.a * Math.sin(axes.angle)];
+                    profiles.push({ kind: 'ellipse', center: e.c, major, minor: axes.b });
+                }
                 break;
             case 'rect': {
                 const width = Math.abs(e.b[0] - e.a[0]);
@@ -377,12 +402,15 @@ export function sketchToEntities(sketch: Sketch): Entity[] {
             case 'polygon':
                 out.push({ id: entityId(), kind: 'polygon', points: p.points });
                 break;
+            case 'ellipse':
+                out.push({ id: entityId(), kind: 'ellipse', c: p.center, major: p.major, minor: p.minor });
+                break;
             case 'path': {
                 let at = p.start;
                 for (const s of p.segments) {
                     out.push(s.kind === 'line'
                         ? { id: entityId(), kind: 'line', a: at, b: s.to }
-                        : { id: entityId(), kind: 'arc', a: at, b: s.to, m: s.through });
+                        : s.kind === 'arc' ? { id: entityId(), kind: 'arc', a: at, b: s.to, m: s.through } : curveEntity(entityId(), at, s));
                     at = s.to;
                 }
                 if (!same(at, p.start)) {
@@ -407,15 +435,20 @@ export function profilePoints(p: SketchProfile): Pt[] {
             return slotPoints(p.from, p.to, p.radius).slice(0, -1);
         case 'polygon':
             return p.points;
+        case 'ellipse':
+            return ellipsePoints(ellipseAxes(p.center, p.major, p.minor)).slice(0, -1);
         case 'path': {
             const out: Pt[] = [p.start];
             let at = p.start;
             for (const s of p.segments) {
                 if (s.kind === 'line') {
                     out.push(s.to);
-                } else {
+                } else if (s.kind === 'arc') {
                     out.push(...arcPoints(at, s.through, s.to, 32).slice(1));
+                } else {
+                    out.push(...segmentPoints(at, s, 48));
                 }
+
                 at = s.to;
             }
             return out;
@@ -452,12 +485,17 @@ export function inside(p: Pt, polygon: Pt[]): boolean {
 export function nestProfiles(profiles: SketchProfile[]): { outer: Pt[]; holes: Pt[][] }[] {
     const loops = profiles.map((p) => {
         const points = profilePoints(p);
-        return { points, size: Math.abs(area(points)), parent: -1, depth: 0 };
+        const us = points.map((q) => q[0]);
+        const vs = points.map((q) => q[1]);
+        // Its bounds: a point outside them is outside it, without the full test.
+        const box = [Math.min(...us), Math.max(...us), Math.min(...vs), Math.max(...vs)];
+        return { points, box, size: Math.abs(area(points)), parent: -1, depth: 0 };
     });
+    const inBox = (p: Pt, b: number[]) => p[0] >= b[0] && p[0] <= b[1] && p[1] >= b[2] && p[1] <= b[3];
     loops.forEach((loop, i) => {
         let best = -1;
         loops.forEach((other, j) => {
-            if (i !== j && other.size > loop.size && inside(loop.points[0], other.points)
+            if (i !== j && other.size > loop.size && inBox(loop.points[0], other.box) && inside(loop.points[0], other.points)
                 && (best < 0 || other.size < loops[best].size)) {
                 best = j;
             }

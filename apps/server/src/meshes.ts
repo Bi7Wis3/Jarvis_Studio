@@ -161,7 +161,12 @@ export class MeshService {
     }
 
     private publish(status: MeshStatus): void {
-        this.status = status;
-        this.changed(status);
+        // Where each part's reference steps found the model, from the mesh it shows now.
+        const followed = Object.fromEntries(Object.entries(status.keys).flatMap(([id, key]) => {
+            const found = key ? this.meshes.get(key)?.followed : undefined;
+            return found ? [[id, found]] : [];
+        }));
+        this.status = Object.keys(followed).length ? { ...status, followed } : { keys: status.keys, errors: status.errors };
+        this.changed(this.status);
     }
 }

@@ -2,7 +2,8 @@
 // the position a tool should take from a click (a hole's centre, a line's midpoint, a vertex). Plain arrays in,
 // plain numbers out, all in the part's own frame. Edge and face ordinals as in picking.ts.
 
-import { nearestEdge, type P3 } from './picking';
+import type { ModelEntityPick } from '@jarvis/core';
+import { facePlane, nearestEdge, type P3 } from './picking';
 
 export interface FacePickRef {
     at: P3;
@@ -389,4 +390,330 @@ export function positionFromPick(kind: 'vertex' | 'edge' | 'face', data: {
         }
     }
     return { position: best };
+}
+
+// ---- Reference geometry from a click: what the Plane, Axis and Point forms take from the model, by value -------
+
+/**
+ * The geometry of a picked entity as it is now: a flat face's plane (outward normal), a cylindrical or conical
+ * face's axis (and a cylinder's radius), a straight edge's ends, a circular edge's circle (with the arc's ends), a
+ * vertex. Other faces and curves are `surface` / `curve`: they have no plane or axis.
+ */
+export type ModelGeom =
+    | { type: 'plane'; origin: P3; normal: P3 }
+    | { type: 'cylinder'; point: P3; direction: P3; radius: number }
+    | { type: 'cone'; point: P3; direction: P3 }
+    | { type: 'surface' }
+    | { type: 'line'; a: P3; b: P3 }
+    | { type: 'circle'; centre: P3; normal: P3; radius: number; full: boolean; start: P3; end: P3 }
+    | { type: 'curve' }
+    | { type: 'vertex'; at: P3 };
+
+export interface ModelPick {
+    geom: ModelGeom;
+    /** Where it was clicked (part frame). */
+    click: P3;
+    /** A face's centre: the area centroid of its triangles. */
+    centre?: P3;
+    /** An edge's or a vertex's faces (a point inside each, near it, and its outward normal), so the kernel can follow it. */
+    faces?: FacePickRef[];
+    /** A stored step's own pick, kept when the step is saved again without picking anew (see referenceDefs.ts). */
+    pick?: ModelEntityPick;
+    /** An older step's reference kept by value: it does not follow the model. */
+    fixed?: boolean;
+}
+
+/**
+ * Coordinates from the float32 mesh to 1e-5 mm, ten times finer than the finest value the app shows, so a face at
+ * y = 10 gives 10 and not 9.9999995.
+ */
+const clean = (p: P3): P3 => p.map((c) => Math.round(c * 1e5) / 1e5 + 0) as P3;
+const cleanLength = (l: number): number => Math.round(l * 1e5) / 1e5;
+/** A unit direction with float noise on near-zero components removed (a face facing +Y gives exactly [0, 1, 0]). */
+const cleanDir = (d: P3): P3 => unit(d.map((c) => (Math.abs(c) < 1e-6 ? 0 : c)) as P3);
+
+function faceTriangleList(positions: ArrayLike<number>, indices: ArrayLike<number>, triFace: ArrayLike<number>, face: number): [P3, P3, P3][] {
+    const out: [P3, P3, P3][] = [];
+    for (let t = 0; t < triFace.length; t++) {
+        if (triFace[t] === face) {
+            out.push([0, 1, 2].map((k) => at3(positions, indices[t * 3 + k] * 3)) as [P3, P3, P3]);
+        }
+    }
+    return out;
+}
+
+/** Area centroid of a face's triangles. */
+export function faceCentre(positions: ArrayLike<number>, indices: ArrayLike<number>, triFace: ArrayLike<number>, face: number): P3 | null {
+    let area = 0;
+    let sum: P3 = [0, 0, 0];
+    for (const [a, b, c] of faceTriangleList(positions, indices, triFace, face)) {
+        const w = len(cross(sub(b, a), sub(c, a))) / 2;
+        area += w;
+        sum = add(sum, scale(add(add(a, b), c), w / 3));
+    }
+    return area > 0 ? scale(sum, 1 / area) : null;
+}
+
+/** Edges that run along the face's boundary (their ends and middle lie on its triangles). */
+function boundaryEdges(tris: [P3, P3, P3][], edges: ArrayLike<number>, segEdge: ArrayLike<number>, tolerance: number): number[] {
+    const onFace = (p: P3) => tris.some(([a, b, c]) => dist(p, closestOnTriangle(p, a, b, c)) <= tolerance);
+    const ordinals = new Set<number>();
+    for (let i = 0; i < segEdge.length; i++) {
+        ordinals.add(segEdge[i]);
+    }
+    return [...ordinals].filter((edge) => {
+        const points = edgePolyline(edges, segEdge, edge);
+        return points.length > 1 && onFace(points[0]) && onFace(points[points.length - 1]) && onFace(pointAlong(points, 0.5));
+    });
+}
+
+const det3 = (a: number[][]): number => a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+    - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
+
+/** Solves the 3x3 system m x = r (Cramer), or null when singular. */
+function solve3(m: number[][], r: number[]): P3 | null {
+    const d = det3(m);
+    if (!(Math.abs(d) > 1e-300)) {
+        return null;
+    }
+    return [0, 1, 2].map((k) => det3(m.map((row, i) => row.map((v, j) => (j === k ? r[i] : v)))) / d) as P3;
+}
+
+/** A cylinder fitted to vertices and their normals (all perpendicular to its axis); null when they do not say. */
+function cylinderFromNormals(points: P3[], normals: P3[]): { point: P3; direction: P3 } | null {
+    const ns = normals.map(unit);
+    let seed: P3 = [0, 0, 0];
+    for (const n of ns) {
+        const c = cross(ns[0], n);
+        if (len(c) > len(seed)) {
+            seed = c;
+        }
+    }
+    if (len(seed) < 1e-6) {
+        return null;
+    }
+    // Smallest eigenvector of the normals' scatter, by inverse iteration from the cross product of two of them.
+    const m = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    for (const n of ns) {
+        for (let i = 0; i < 3; i++) {
+            for (let j = 0; j < 3; j++) {
+                m[i][j] += n[i] * n[j] + (i === j ? 1e-12 : 0);
+            }
+        }
+    }
+    let direction = unit(seed);
+    for (let k = 0; k < 4; k++) {
+        const next = solve3(m, direction);
+        if (!next) {
+            break;
+        }
+        direction = unit(next);
+    }
+    // p = c + r n across the axis: unknowns c (two coordinates in u, v) and r, by least squares.
+    const u = unit(Math.abs(direction[0]) < 0.9 ? cross(direction, [1, 0, 0]) : cross(direction, [0, 1, 0]));
+    const v = cross(direction, u);
+    const a = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const b = [0, 0, 0];
+    points.forEach((p, i) => {
+        const rows = [[1, 0, dot(ns[i], u)], [0, 1, dot(ns[i], v)]];
+        const rhs = [dot(p, u), dot(p, v)];
+        rows.forEach((row, k) => {
+            for (let r = 0; r < 3; r++) {
+                b[r] += row[r] * rhs[k];
+                for (let c = 0; c < 3; c++) {
+                    a[r][c] += row[r] * row[c];
+                }
+            }
+        });
+    });
+    const fit = solve3(a, b);
+    return fit ? { point: add(scale(u, fit[0]), scale(v, fit[1])), direction } : null;
+}
+
+/**
+ * The axis of a face of revolution: through the centres of its circular boundary edges (two distinct centres give
+ * the direction, else the circle's normal); without circles, a cylinder fitted to the vertex normals. Then every
+ * vertex is checked: a constant distance from the axis is a cylinder (radius given), one changing linearly along
+ * it a cone (radius null). Null for any other face.
+ */
+export function revolutionOfFace(positions: ArrayLike<number>, normals: ArrayLike<number>, indices: ArrayLike<number>,
+    triFace: ArrayLike<number>, face: number, edges: ArrayLike<number>, segEdge: ArrayLike<number>):
+    { point: P3; direction: P3; radius: number | null } | null {
+    const used = new Set<number>();
+    for (let t = 0; t < triFace.length; t++) {
+        if (triFace[t] === face) {
+            for (let k = 0; k < 3; k++) {
+                used.add(indices[t * 3 + k]);
+            }
+        }
+    }
+    const vertices = [...used].map((i) => at3(positions, i * 3));
+    if (vertices.length < 4) {
+        return null;
+    }
+    const centroid = scale(vertices.reduce(add, [0, 0, 0] as P3), 1 / vertices.length);
+    const tol = fitTolerance(Math.max(...vertices.map((p) => dist(p, centroid))));
+    const tris = faceTriangleList(positions, indices, triFace, face);
+    const circles = boundaryEdges(tris, edges, segEdge, tol)
+        .map((e) => circleOfEdge(edges, segEdge, e)).filter((c): c is NonNullable<typeof c> => !!c);
+    let axis: { point: P3; direction: P3 } | null;
+    if (circles.length > 0) {
+        const point = circles[0].centre;
+        const other = circles.find((c) => dist(c.centre, point) > tol);
+        axis = { point, direction: other ? unit(sub(other.centre, point)) : circles[0].normal };
+    } else {
+        axis = cylinderFromNormals(vertices, [...used].map((i) => at3(normals, i * 3)));
+    }
+    if (!axis) {
+        return null;
+    }
+    const { point, direction } = axis;
+    const samples = vertices.map((p) => {
+        const rel = sub(p, point);
+        const h = dot(rel, direction);
+        return { h, r: len(sub(rel, scale(direction, h))) };
+    });
+    const mean = samples.reduce((s, q) => s + q.r, 0) / samples.length;
+    if (mean > tol && samples.every((q) => Math.abs(q.r - mean) <= fitTolerance(mean))) {
+        return { point, direction, radius: mean };
+    }
+    const low = samples.reduce((m, q) => (q.h < m.h ? q : m));
+    const high = samples.reduce((m, q) => (q.h > m.h ? q : m));
+    if (high.h - low.h > tol) {
+        const slope = (high.r - low.r) / (high.h - low.h);
+        if (Math.abs(slope) > 1e-3 && samples.every((q) => Math.abs(low.r + slope * (q.h - low.h) - q.r) <= tol)) {
+            return { point, direction, radius: null };
+        }
+    }
+    return null;
+}
+
+/** The mesh arrays modelPick reads (as pickField's PickMesh). */
+interface MeshArrays {
+    positions: ArrayLike<number>;
+    normals: ArrayLike<number>;
+    indices: ArrayLike<number>;
+    triFace: ArrayLike<number>;
+    edges: ArrayLike<number>;
+    segEdge: ArrayLike<number>;
+}
+
+/**
+ * The faces that meet at the given points (all of them on each face's triangles): for each, a point inside it on the
+ * triangle nearest the points' middle, and its outward normal there. How the kernel finds an edge or a vertex again
+ * when it has moved with its faces.
+ */
+export function facesAt(mesh: MeshArrays, points: P3[]): FacePickRef[] {
+    const { positions, normals, indices, triFace } = mesh;
+    if (points.length === 0) {
+        return [];
+    }
+    const middle = scale(points.reduce(add, [0, 0, 0] as P3), 1 / points.length);
+    const size = Math.max(1, ...points.map((p) => len(p)));
+    const tol = Math.max(1e-3, size * 1e-5);
+    // Per face: whether each point lies on it, and its triangle nearest the middle.
+    const faces = new Map<number, { on: boolean[]; best: number; d: number }>();
+    for (let t = 0; t < triFace.length; t++) {
+        const [a, b, c] = [0, 1, 2].map((k) => at3(positions, indices[t * 3 + k] * 3));
+        const face = triFace[t];
+        let entry = faces.get(face);
+        const hits = points.map((p) => dist(p, closestOnTriangle(p, a, b, c)) <= tol);
+        if (!entry && !hits.some(Boolean)) {
+            continue;
+        }
+        if (!entry) {
+            entry = { on: points.map(() => false), best: -1, d: Infinity };
+            faces.set(face, entry);
+        }
+        hits.forEach((hit, i) => {
+            entry!.on[i] ||= hit;
+        });
+        const d = dist(middle, closestOnTriangle(middle, a, b, c));
+        if (d < entry.d) {
+            entry.d = d;
+            entry.best = t;
+        }
+    }
+    const out: FacePickRef[] = [];
+    for (const entry of faces.values()) {
+        if (!entry.on.every(Boolean) || entry.best < 0) {
+            continue;
+        }
+        const corners = [0, 1, 2].map((k) => indices[entry.best * 3 + k] * 3);
+        const [a, b, c] = corners.map((i) => at3(positions, i));
+        const winding = unit(cross(sub(b, a), sub(c, a)));
+        const smooth = unit(corners.map((i) => at3(normals, i)).reduce(add, [0, 0, 0] as P3));
+        const normal = len(smooth) > 0 ? smooth : winding;
+        out.push({ at: clean(scale(add(add(a, b), c), 1 / 3)), normal: cleanDir(normal) });
+    }
+    return out;
+}
+
+/** Points along an edge that tell its faces apart from others: its ends and middle (a third and two thirds round a closed one). */
+function edgeSamples(points: P3[]): P3[] {
+    if (points.length < 2) {
+        return points;
+    }
+    return isClosed(points) ? [pointAlong(points, 0), pointAlong(points, 1 / 3), pointAlong(points, 2 / 3)]
+        : [points[0], pointAlong(points, 0.5), points[points.length - 1]];
+}
+
+/** What a click on a face, an edge or a vertex (`at`: its position) gives the reference forms. */
+export function modelPick(mesh: MeshArrays, entity: { kind: 'edge' | 'face'; index: number } | { kind: 'vertex'; at: P3 }, click: P3): ModelPick | null {
+    const { positions, normals, indices, triFace, edges, segEdge } = mesh;
+    if (entity.kind === 'vertex') {
+        return { geom: { type: 'vertex', at: clean(entity.at) }, click, faces: facesAt(mesh, [entity.at]) };
+    }
+    if (entity.kind === 'edge') {
+        const points = edgePolyline(edges, segEdge, entity.index);
+        const faces = facesAt(mesh, edgeSamples(points));
+        const circle = circleOfEdge(edges, segEdge, entity.index);
+        if (circle) {
+            return {
+                geom: {
+                    type: 'circle', centre: clean(circle.centre), normal: cleanDir(circle.normal), radius: cleanLength(circle.radius),
+                    full: circle.full, start: clean(points[0]), end: clean(points[points.length - 1]),
+                },
+                click,
+                faces,
+            };
+        }
+        const line = lineOfEdge(edges, segEdge, entity.index);
+        return { geom: line ? { type: 'line', a: clean(line.a), b: clean(line.b) } : { type: 'curve' }, click, faces };
+    }
+    const centre = faceCentre(positions, indices, triFace, entity.index);
+    if (!centre) {
+        return null;
+    }
+    const flat = facePlane(positions, indices, triFace, entity.index);
+    if (flat.planar && flat.normal) {
+        // Outward as the vertex normals say (the winding normal normally agrees).
+        const ref = facePick(positions, normals, indices, triFace, entity.index);
+        const normal = ref?.normal && dot(ref.normal, flat.normal) < 0 ? scale(flat.normal, -1) : flat.normal;
+        return { geom: { type: 'plane', origin: clean(centre), normal: cleanDir(normal) }, click, centre: clean(centre) };
+    }
+    const axis = revolutionOfFace(positions, normals, indices, triFace, entity.index, edges, segEdge);
+    if (!axis) {
+        return { geom: { type: 'surface' }, click, centre: clean(centre) };
+    }
+    // The axis point level with the face centre, so the axis is drawn by the face.
+    const point = clean(add(axis.point, scale(axis.direction, dot(sub(centre, axis.point), axis.direction))));
+    const direction = cleanDir(axis.direction);
+    return {
+        geom: axis.radius === null ? { type: 'cone', point, direction } : { type: 'cylinder', point, direction, radius: cleanLength(axis.radius) },
+        click,
+        centre: clean(centre),
+    };
+}
+
+/** The end of an edge within `tolerance` of the click, or null: a click there picks the vertex. */
+export function vertexAtClick(edges: ArrayLike<number>, segEdge: ArrayLike<number>, edge: number, click: P3, tolerance: number): P3 | null {
+    const ends = edgeEnds(edges, segEdge, edge);
+    if (!ends) {
+        return null;
+    }
+    const [a, b] = ends;
+    const da = dist(a, click);
+    const db = dist(b, click);
+    return Math.min(da, db) <= tolerance ? (da <= db ? a : b) : null;
 }

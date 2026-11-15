@@ -1,14 +1,22 @@
 // 2D sketches on a plane of the part frame (Y up), turned into faces and then extruded or revolved.
 
 import {
-    addHolesInFace, assembleWire, basicFaceExtrusion, cast, getOC, localGC, loft, makeCircle, makeCompound, makeFace,
-    makeLine, makeThreePointArc, measureDistanceBetween, measureVolume, revolution, Vector, type Edge, type Face,
+    addHolesInFace, assembleWire, basicFaceExtrusion, cast, Edge, getOC, localGC, loft, makeCircle, makeCompound, makeEllipse,
+    makeBezierCurve, makeEllipseArc, makeFace, makeLine, makeThreePointArc,
+ measureDistanceBetween, measureVolume, revolution, Vector, type Face,
     type Shape3D, type Wire,
 } from 'replicad';
 import type {
-    ExtrudeDirection, ExtrudeEnd, ExtrudeSide, Feature, RevolveAxis, RevolveType, Sketch, SketchPlaneName, SketchProfile, SketchRegion, Vec3,
+    ExtrudeDirection, ExtrudeEnd, ExtrudeSide, Feature, RevolveAxis, RevolveType, Sketch, SketchPlaneName, SketchProfile, SketchRegion, SketchSegment, Vec3,
 } from '@jarvis/core';
 import { resolvePlane, resolveRevolveAxis } from '@jarvis/core/reference';
+import {
+    bsplineAt, conicAt, conicWeight, ellipseAt, ellipseAxes, ellipseParam, ellipsePoints, ellipseSweep, reverseSegment, segmentShape, splinePoints,
+    type EllipseAxes, type SplineShape,
+} from '@jarvis/core/curves';
+import { knotMultiplicities, knotVector, nurbsAt, solveSpline } from '@jarvis/core/splines';
+
+type SplineSegment = Extract<SketchSegment, { kind: 'spline' }>;
 
 type P2 = [number, number];
 
@@ -104,9 +112,69 @@ function sampleArc(a: P2, m: P2, b: P2): P2[] {
     });
 }
 
-type Piece = { kind: 'line'; from: P2; to: P2 } | { kind: 'arc'; from: P2; through: P2; to: P2 } | { kind: 'circle'; centre: P2; radius: number };
+type Piece = { kind: 'line'; from: P2; to: P2 } | { kind: 'arc'; from: P2; through: P2; to: P2 } | { kind: 'circle'; centre: P2; radius: number }
+    | { kind: 'ellipse'; ellipse: EllipseAxes }
+    /** Elliptical arc; `from` and `to` are its exact ends on the ellipse. */
+    | { kind: 'ellipseArc'; from: P2; to: P2; ellipse: EllipseAxes; ccw: boolean }
+    /** Spline through points; closed when it ends where it starts. */
+    | { kind: 'spline'; from: P2; to: P2; through: P2[]; startHandle?: P2; endHandle?: P2; shape?: SplineSegment }
+    /** Style spline: control vertices from `from` through `poles` to `to` (knots and weights as the segment's). */
+    | { kind: 'bspline'; from: P2; to: P2; poles: P2[]; degree: number; knots?: number[]; weights?: number[] }
+    | { kind: 'conic'; from: P2; to: P2; apex: P2; rho: number };
 
 const same = (a: P2, b: P2): boolean => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6;
+
+/** The same piece run the other way. */
+function reversePiece(p: Piece): Piece {
+    switch (p.kind) {
+        case 'circle':
+        case 'ellipse':
+            return p;
+        case 'ellipseArc':
+            return { ...p, from: p.to, to: p.from, ccw: !p.ccw };
+        case 'spline':
+            return {
+                ...p, from: p.to, to: p.from, through: [...p.through].reverse(), startHandle: p.endHandle, endHandle: p.startHandle,
+                shape: p.shape && (reverseSegment(p.from, p.shape) as SplineSegment),
+            };
+        case 'bspline':
+            return {
+                ...p, from: p.to, to: p.from, poles: [...p.poles].reverse(),
+                knots: p.knots && [...p.knots].reverse().map((k) => 1 - k), weights: p.weights && [...p.weights].reverse(),
+            };
+        default:
+            return { ...p, from: p.to, to: p.from };
+    }
+}
+
+/** An ellipse from a profile or segment, checked. */
+function ellipseOf(center: P2, major: P2, minor: number): EllipseAxes {
+    const e = ellipseAxes(center, major, minor);
+    if (!(e.b > 1e-9)) throw new Error('an ellipse needs two radii above zero');
+    return e;
+}
+
+/**
+ * Pieces next to an elliptical arc start and end exactly where the arc does (its ends are put exactly on the
+ * ellipse): a neighbour's end a hair away would leave the wire open.
+ */
+function joinEllipseArcs(out: Piece[], closed: boolean): Piece[] {
+    const n = out.length;
+    const near = (a: P2, b: P2) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-3;
+    out.forEach((p, i) => {
+        if (p.kind !== 'ellipseArc' || n < 2) return;
+        const [pi, ni] = [(i - 1 + n) % n, (i + 1) % n];
+        const prev = i > 0 || closed ? out[pi] : null;
+        const next = i < n - 1 || closed ? out[ni] : null;
+        if (prev && 'to' in prev && prev.kind !== 'ellipseArc' && near(prev.to, p.from)) {
+            out[pi] = { ...prev, to: p.from };
+        }
+        if (next && 'from' in next && next.kind !== 'ellipseArc' && near(next.from, p.to)) {
+            out[ni] = { ...next, from: p.to };
+        }
+    });
+    return out;
+}
 
 /** A profile as line, arc or full-circle pieces in sketch coordinates. */
 function pieces(profile: SketchProfile, open = false): Piece[] {
@@ -114,6 +182,8 @@ function pieces(profile: SketchProfile, open = false): Piece[] {
         case 'circle':
             if (!(profile.radius > 0)) throw new Error('radius must be positive');
             return [{ kind: 'circle', centre: profile.center, radius: profile.radius }];
+        case 'ellipse':
+            return [{ kind: 'ellipse', ellipse: ellipseOf(profile.center, profile.major, profile.minor) }];
         case 'rect': {
             const { center: [cx, cy], width: w, height: h } = profile;
             if (!(w > 0 && h > 0)) throw new Error('width and height must be positive');
@@ -161,8 +231,45 @@ function pieces(profile: SketchProfile, open = false): Piece[] {
             const out: Piece[] = [];
             let current = profile.start;
             for (const segment of profile.segments ?? []) {
-                if (same(current, segment.to)) {
+                if (same(current, segment.to) && segment.kind !== 'spline') {
                     if (segment.kind === 'arc') throw new Error('an arc starts and ends at the same point');
+                    if (segment.kind !== 'line') throw new Error(`an ${segment.kind === 'ellipse' ? 'elliptical arc' : 'conic'} starts and ends at the same point`);
+                    continue;
+                }
+                if (segment.kind === 'ellipse') {
+                    const e = ellipseOf(segment.center, segment.major, segment.minor);
+                    const [from, to] = [current, segment.to].map((p): P2 => {
+                        const q = ellipseAt(e, ellipseParam(e, p));
+                        if (Math.hypot(q[0] - p[0], q[1] - p[1]) > 1e-3) throw new Error('an elliptical arc ends off its ellipse');
+                        return q;
+                    });
+                    out.push({ kind: 'ellipseArc', from, to, ellipse: e, ccw: segment.ccw !== false });
+                    current = segment.to;
+                    continue;
+                }
+                if (segment.kind === 'spline') {
+                    const through = segment.through ?? [];
+                    if (same(current, segment.to) && through.length < 2) throw new Error('a closed spline needs at least 3 points');
+                    out.push({ kind: 'spline', from: current, to: segment.to, through, startHandle: segment.startHandle, endHandle: segment.endHandle, shape: segment });
+                    current = segment.to;
+                    continue;
+                }
+                if (segment.kind === 'bspline') {
+                    const count = (segment.poles?.length ?? 0) + 2;
+                    if (!(Number.isInteger(segment.degree) && segment.degree >= 1 && segment.degree < count && segment.degree <= 25)) {
+                        throw new Error(`a style spline of ${count} control vertices cannot be of degree ${segment.degree}`);
+                    }
+                    if (segment.weights && (segment.weights.length !== count || !segment.weights.every((w) => w > 0 && Number.isFinite(w)))) {
+                        throw new Error('a style spline needs one weight above zero for each control vertex');
+                    }
+                    out.push({ kind: 'bspline', from: current, to: segment.to, poles: segment.poles, degree: segment.degree, knots: segment.knots, weights: segment.weights });
+                    current = segment.to;
+                    continue;
+                }
+                if (segment.kind === 'conic') {
+                    if (!(segment.rho > 0 && segment.rho < 1)) throw new Error('a conic\'s Rho must be between 0 and 1');
+                    out.push({ kind: 'conic', from: current, to: segment.to, apex: segment.apex, rho: segment.rho });
+                    current = segment.to;
                     continue;
                 }
                 if (segment.kind === 'arc') {
@@ -177,15 +284,16 @@ function pieces(profile: SketchProfile, open = false): Piece[] {
             }
             if (open) {
                 if (out.length === 0) throw new Error('path has no segments');
-                return out;
+                return joinEllipseArcs(out, false);
             }
             if (!same(current, profile.start)) {
                 out.push({ kind: 'line', from: current, to: profile.start });
             }
-            if (out.length < 2 || (out.length === 2 && out.every((p) => p.kind === 'line'))) {
+            const closedSpline = out.length === 1 && out[0].kind === 'spline' && same(out[0].from, out[0].to);
+            if ((out.length < 2 && !closedSpline) || (out.length === 2 && out.every((p) => p.kind === 'line'))) {
                 throw new Error('path does not enclose an area');
             }
-            return out;
+            return joinEllipseArcs(out, true);
         }
     }
 }
@@ -212,6 +320,21 @@ function outline(ps: Piece[]): P2[] {
             }
         } else if (p.kind === 'line') {
             out.push(p.to);
+        } else if (p.kind === 'ellipse') {
+            out.push(...ellipsePoints(p.ellipse, ARC_SAMPLES * 4).slice(0, -1));
+        } else if (p.kind === 'ellipseArc') {
+            const { start, sweep } = ellipseSweep(p.ellipse, p.from, p.to, p.ccw);
+            const n = Math.max(ARC_SAMPLES, Math.ceil((Math.abs(sweep) / Math.PI) * ARC_SAMPLES * 2));
+            for (let i = 1; i <= n; i++) out.push(ellipseAt(p.ellipse, start + (sweep * i) / n));
+        } else if (p.kind === 'spline') {
+            const closed = same(p.from, p.to);
+            out.push(...splinePoints([p.from, ...p.through, ...(closed ? [] : [p.to])], closed, ARC_SAMPLES, splineShapeOf(p)));
+        } else if (p.kind === 'bspline') {
+            const poles = [p.from, ...p.poles, p.to];
+            const n = Math.max(ARC_SAMPLES * 2, poles.length * 12);
+            for (let i = 1; i <= n; i++) out.push(p.weights ? nurbsAt(poles, p.degree, i / n, p.knots, p.weights) : bsplineAt(poles, p.degree, i / n, p.knots));
+        } else if (p.kind === 'conic') {
+            for (let i = 1; i <= ARC_SAMPLES * 2; i++) out.push(conicAt(p.from, p.apex, p.to, p.rho, i / (ARC_SAMPLES * 2)));
         } else {
             out.push(...sampleArc(p.from, p.through, p.to));
         }
@@ -284,10 +407,111 @@ function inside(point: P2, poly: P2[]): boolean {
     return result;
 }
 
+/** A direction in the sketch plane, in the part frame. */
+function dir3d(frame: SketchFrame, angle: number): Vec3 {
+    const [c, s] = [Math.cos(angle), Math.sin(angle)];
+    return [frame.u[0] * c + frame.v[0] * s, frame.u[1] * c + frame.v[1] * s, frame.u[2] * c + frame.v[2] * s];
+}
+
+/** OpenCascade points array (1-based) of sketch points on the frame. */
+function pointArray(frame: SketchFrame, pts: P2[]) {
+    const oc = getOC();
+    const array = new oc.NCollection_Array1_gp_Pnt(1, pts.length);
+    pts.forEach((p, i) => array.SetValue(i + 1, new oc.gp_Pnt(...to3d(frame, p))));
+    return array;
+}
+
+/** The handles, held curvatures and spans of a spline piece (@jarvis/core/splines). */
+function splineShapeOf(p: Extract<Piece, { kind: 'spline' }>): SplineShape {
+    return { ...(p.shape ? segmentShape(p.shape) : {}), start: p.startHandle, end: p.endHandle };
+}
+
+/**
+ * The spline as one exact cubic B-spline edge: its Bezier pieces joined at knots spaced by their parameter spans (the
+ * chord lengths unless stored), so the curvature continuous joins can lose their extra knots again (single knots
+ * inside); a join at a handle stays as it is (C1 or only tangent).
+ */
+function splineEdge(frame: SketchFrame, p: Extract<Piece, { kind: 'spline' }>): Edge {
+    const oc = getOC();
+    const closed = same(p.from, p.to);
+    const points = [p.from, ...p.through, ...(closed ? [p.from] : [p.to])];
+    const { poles, spans } = solveSpline(points, closed, splineShapeOf(p));
+    const pieces = (poles.length - 1) / 3;
+    const knots = new oc.NCollection_Array1_double(1, pieces + 1);
+    const mults = new oc.NCollection_Array1_int(1, pieces + 1);
+    let t = 0;
+    for (let i = 0; i <= pieces; i++) {
+        knots.SetValue(i + 1, t);
+        mults.SetValue(i + 1, i === 0 || i === pieces ? 4 : 3);
+        if (i < pieces) t += spans[i];
+    }
+    const curve = new oc.Geom_BSplineCurve(pointArray(frame, poles), knots, mults, 3, false);
+    for (let i = pieces; i >= 2; i--) {
+        curve.RemoveKnot(i, 1, 1e-9);
+    }
+    return new Edge(new oc.BRepBuilderAPI_MakeEdge(curve).Edge());
+}
+
+/**
+ * A style spline as its exact curve: the Bezier curve of its control vertices, or the clamped B-spline of its degree
+ * (its own knots, else evenly spaced ones); rational with the weights of its control vertices.
+ */
+function bsplineEdge(frame: SketchFrame, p: Extract<Piece, { kind: 'bspline' }>): Edge {
+    const poles = [p.from, ...p.poles, p.to];
+    const oc = getOC();
+    const weights = p.weights && p.weights.length === poles.length ? p.weights : null;
+    const weightArray = () => {
+        const array = new oc.NCollection_Array1_double(1, poles.length);
+        weights!.forEach((w, i) => array.SetValue(i + 1, w));
+        return array;
+    };
+    if (p.degree === poles.length - 1) {
+        if (!weights) {
+            return makeBezierCurve(poles.map((q) => to3d(frame, q)));
+        }
+        const bezier = new oc.Geom_BezierCurve(pointArray(frame, poles), weightArray());
+        return new Edge(new oc.BRepBuilderAPI_MakeEdge(bezier).Edge());
+    }
+    const { knots: distinct, mults: counts } = knotMultiplicities(knotVector(poles.length, p.degree, p.knots));
+    const knots = new oc.NCollection_Array1_double(1, distinct.length);
+    const mults = new oc.NCollection_Array1_int(1, distinct.length);
+    distinct.forEach((k, i) => {
+        knots.SetValue(i + 1, k);
+        mults.SetValue(i + 1, counts[i]);
+    });
+    const curve = weights
+        ? new oc.Geom_BSplineCurve(pointArray(frame, poles), weightArray(), knots, mults, p.degree, false, true)
+        : new oc.Geom_BSplineCurve(pointArray(frame, poles), knots, mults, p.degree, false);
+    return new Edge(new oc.BRepBuilderAPI_MakeEdge(curve).Edge());
+}
+
+/** The conic as an exact rational quadratic Bezier edge. */
+function conicEdge(frame: SketchFrame, p: Extract<Piece, { kind: 'conic' }>): Edge {
+    const oc = getOC();
+    const weights = new oc.NCollection_Array1_double(1, 3);
+    [1, conicWeight(p.rho), 1].forEach((w, i) => weights.SetValue(i + 1, w));
+    const curve = new oc.Geom_BezierCurve(pointArray(frame, [p.from, p.apex, p.to]), weights);
+    return new Edge(new oc.BRepBuilderAPI_MakeEdge(curve).Edge());
+}
+
 function wireOf(frame: SketchFrame, ps: Piece[]): Wire {
     const edges: Edge[] = ps.map((p) => {
         if (p.kind === 'circle') return makeCircle(p.radius, to3d(frame, p.centre), frame.normal);
         if (p.kind === 'line') return makeLine(to3d(frame, p.from), to3d(frame, p.to));
+        if (p.kind === 'ellipse') {
+            const e = p.ellipse;
+            return makeEllipse(e.a, e.b, to3d(frame, e.center), frame.normal, dir3d(frame, e.angle));
+        }
+        if (p.kind === 'ellipseArc') {
+            // OpenCascade runs an ellipse counter-clockwise about the plane normal: a clockwise arc is built from its end.
+            const e = p.ellipse;
+            const { start, sweep } = ellipseSweep(e, p.from, p.to, p.ccw);
+            const [a0, a1] = sweep >= 0 ? [start, start + sweep] : [start + sweep, start];
+            return makeEllipseArc(e.a, e.b, a0, a1, to3d(frame, e.center), frame.normal, dir3d(frame, e.angle));
+        }
+        if (p.kind === 'spline') return splineEdge(frame, p);
+        if (p.kind === 'bspline') return bsplineEdge(frame, p);
+        if (p.kind === 'conic') return conicEdge(frame, p);
         return makeThreePointArc(to3d(frame, p.from), to3d(frame, p.through), to3d(frame, p.to));
     });
     return assembleWire(edges);
@@ -446,7 +670,7 @@ function axisName(axis: RevolveAxis): string {
     if (axis === 'u') return 'Sketch U (horizontal) axis';
     if (axis === 'v') return 'Sketch V (vertical) axis';
     if (typeof axis === 'string') return `${axis.toUpperCase()} axis`;
-    return 'line' in axis ? 'axis line' : `axis "${axis.axisRef}"`;
+    return 'line' in axis ? 'axis line' : 'axisRef' in axis ? `axis "${axis.axisRef}"` : 'picked axis';
 }
 
 /** OpenCascade's validity check (an axis outside the sketch plane can still pass through the profile). */
@@ -858,9 +1082,9 @@ export function pathWire(sketch: Sketch, near?: Vec3): { wire: Wire; line: [Vec3
     // An open path runs from its end nearer `near` (the profile), so the sweep starts at the profile.
     const first = ps[0];
     const last = ps[ps.length - 1];
-    if (near && first.kind !== 'circle' && last.kind !== 'circle'
+    if (near && 'from' in first && 'to' in last
         && Math.hypot(...sub(to3d(frame, last.to), near)) < Math.hypot(...sub(to3d(frame, first.from), near)) - 1e-9) {
-        ps = ps.reverse().map((p) => (p.kind === 'circle' ? p : { ...p, from: p.to, to: p.from }));
+        ps = ps.reverse().map(reversePiece);
     }
     const only = ps.length === 1 && ps[0].kind === 'line' ? ps[0] : null;
     return { wire: wireOf(frame, ps), line: only ? [to3d(frame, only.from), to3d(frame, only.to)] : null };

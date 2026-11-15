@@ -56,7 +56,7 @@
     top: 58px;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 4;
+    z-index: 45;
     display: flex;
     align-items: center;
     gap: 10px;
@@ -111,12 +111,20 @@
     border-radius: 4px;
     color: var(--text);
     font: 10.5px ui-monospace, Menlo, monospace;
-    text-transform: uppercase;
 }
 
+/* The hint, cut short where the bar is narrow; hovering it shows the whole text (its title). */
 .sk-bar > span:nth-child(3) {
     overflow: hidden;
     text-overflow: ellipsis;
+    pointer-events: auto;
+}
+
+/* Discard's question: the text gives way before the buttons do. */
+.sk-bar .sk-ask {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: auto;
 }
 
 .sk-count {
@@ -233,6 +241,41 @@
     width: 5px;
     height: 5px;
 }
+
+/* Inferred relations and the further snaps: a small sign beside the cursor shows what the click will add. */
+.sk-label.snap.parallel span,
+.sk-label.snap.perpendicular span,
+.sk-label.snap.tangent span,
+.sk-label.snap.angle span,
+.sk-label.snap.length span,
+.sk-label.snap.horizontal span,
+.sk-label.snap.vertical span {
+    position: relative;
+    border-color: #ffd166;
+}
+
+.sk-label.snap.parallel span::after,
+.sk-label.snap.perpendicular span::after,
+.sk-label.snap.tangent span::after,
+.sk-label.snap.angle span::after,
+.sk-label.snap.length span::after,
+.sk-label.snap.horizontal span::after,
+.sk-label.snap.vertical span::after {
+    position: absolute;
+    top: -14px;
+    left: 9px;
+    color: #ffd166;
+    font: 700 11px Inter, system-ui, sans-serif;
+    white-space: nowrap;
+}
+
+.sk-label.snap.parallel span::after { content: '∥'; }
+.sk-label.snap.perpendicular span::after { content: '⊥'; }
+.sk-label.snap.tangent span::after { content: 'T'; }
+.sk-label.snap.angle span::after { content: '∠'; }
+.sk-label.snap.length span::after { content: '↔'; }
+.sk-label.snap.horizontal span::after { content: 'H'; }
+.sk-label.snap.vertical span::after { content: 'V'; }
 
 @media (max-width: 1180px) {
     .sk-bar {
@@ -425,8 +468,83 @@
     width: max-content;
 }
 
+/* Relations list: Suppressed and Driven per row. */
+.sk-row-check {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    color: var(--muted);
+    font-size: 10.5px;
+    cursor: pointer;
+}
+
+.sk-row-check input {
+    margin: 0;
+}
+
+.sk-state.unsolved {
+    color: #ff9aa5;
+}
+
+.sk-state.suppressed {
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* Suppressed relations and dimensions: shown, but they hold nothing. */
+.sk-glyph.suppressed,
+.sk-dim.suppressed {
+    opacity: 0.45;
+    text-decoration: line-through;
+}
+
+/* Add Relations: one button per relation that fits the selection. */
+.sk-relation-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 4px 0;
+}
+
+/* Driven (reference) dimensions: grey, they only report the size. */
+.sk-dim.driven {
+    color: #aab3bf;
+    border-style: dashed;
+}
+
+/* Make this dimension driven | Leave this dimension driving. */
+.sk-dim-choice {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 6px;
+}
+
+.sk-dim-choice small {
+    position: static;
+    padding: 0 0 4px;
+    background: none;
+    color: var(--muted);
+}
+
+.sk-dim-choice button {
+    padding: 3px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text);
+    font: 500 11px Inter, system-ui, sans-serif;
+    text-align: left;
+    cursor: pointer;
+}
+
+.sk-dim-choice button:hover,
+.sk-dim-choice button:focus {
+    border-color: var(--accent-2);
+}
+
 .sk-dof {
     padding: 1px 7px;
+    pointer-events: auto;
     border: 1px solid rgba(90, 169, 255, 0.5);
     border-radius: 4px;
     color: #9fcbff;

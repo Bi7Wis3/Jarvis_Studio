@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import opencascade from 'replicad-opencascadejs';
 import {
     assembleWire, basicFaceExtrusion, cast, genericSweep, getOC, makeBox, makeBSplineApproximation, makeCircle,
-    makeCompound, makeCylinder, makeFace, makeHelix, makeLine, makePolygon, makeSphere, makeThreePointArc,
+    makeCompound, makeCylinder, makeFace, makeLine, makePolygon, makeSphere, makeThreePointArc,
     localGC, makeAx3, measureVolume, Plane, revolution, setOC, Solid, twistExtrude, Vector, Wire, type Edge, type Face, type Shape3D,
 } from 'replicad';
 import type {
@@ -21,7 +21,15 @@ import { runScript } from './script.js';
 import { pickTolerance, planeOfFace, resolveEdges, resolveFaces } from './refs.js';
 import { chamferEdges, draftFaces, filletEdges, shellFaces, type ChamferSpec } from './applied.js';
 import { resolveAxis, resolvePlane } from '@jarvis/core/reference';
+import { derivedSketch } from '@jarvis/core/derived';
 import { relativePlacement, type CombineContext } from './context.js';
+import { followStep } from './followRefs.js';
+import {
+    externalRidge, ghostMesh, internalRidge, ridgeMesh, threadFeature, threadKey, threadMouthChamfer, threadMouths, threadsUnder,
+    type Ridge, type RidgeSpec, type ThreadAxis, type ThreadGhost,
+} from './thread.js';
+
+export { threadEdge } from './thread.js';
 import {
     extrudeRange, extrudeSketch, extrudeTool, isPlainExtrude, loftSketches, pathWire, revolveSketch, sweepProfile, throughRange,
     type SketchFrame,
@@ -41,8 +49,6 @@ export function meshTolerance(shape: Shape3D): { tolerance: number; angularToler
 
 const EPS = 1e-3;
 const TAN30 = Math.tan(Math.PI / 6);
-/** Thread ridges overlap their core / wall by this much so they are one connected body. */
-const THREAD_OVERLAP = 0.02;
 
 let ocReady: Promise<void> | null = null;
 
@@ -301,69 +307,6 @@ function orientDown(shape: Shape3D, direction: Vec3): Shape3D {
 }
 
 // ---- Threads ------------------------------------------------------------------------------------------------
-
-/** Analytic description of a swept thread ridge, so fasteners can be meshed without OpenCascade's mesher. */
-interface RidgeSpec {
-    pitch: number;
-    rBase: number;
-    rCrest: number;
-    wBase: number;
-    wCrest: number;
-    y0: number;
-    height: number;
-    /** Helix advance per turn when it differs from the pitch (multi-start threads). */
-    lead?: number;
-    leftHanded?: boolean;
-}
-
-interface Ridge {
-    shape: Shape3D;
-    spec: RidgeSpec;
-}
-
-/**
- * A helical ISO-style ridge (60 degree flanks) swept around the Y axis, from y0 up by `height` (helix travel).
- * The profile runs radially from `rBase` (buried in the core or wall) to `rCrest`, with the given axial widths.
- */
-function threadRidge(spec: RidgeSpec): Ridge {
-    const { pitch, rBase, rCrest, wBase, wCrest, y0, height } = spec;
-    const helix = makeHelix(spec.lead ?? pitch, height, rBase, [0, 0, 0], [0, 0, 1], !!spec.leftHanded);
-    const profile = makePolygon([
-        [rBase, 0, -wBase / 2], [rCrest, 0, -wCrest / 2], [rCrest, 0, wCrest / 2], [rBase, 0, wBase / 2],
-    ]);
-    const ridge = genericSweep(profile.outerWire(), helix, { frenet: true });
-    // Built along Z; turn Z onto Y (right-handed thread is preserved by a rotation).
-    return { shape: asSolid(ridge, 'thread sweep').rotate(-90, [0, 0, 0], [1, 0, 0]).translate(0, y0, 0), spec };
-}
-
-/** External thread ridge for a major radius, inside the zone [yLow, yHigh]; null if the zone is too short. */
-function externalRidge(pitch: number, rMajor: number, rRoot: number, yLow: number, yHigh: number,
-    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): Ridge | null {
-    const rBase = rRoot - THREAD_OVERLAP;
-    const wCrest = pitch / 8;
-    const wBase = wCrest + 2 * (rMajor - rBase) * TAN30;
-    const y0 = yLow + wBase / 2 + 0.01;
-    const height = yHigh - wBase / 2 - 0.01 - y0;
-    if (height < pitch || wBase >= pitch * 0.98) {
-        return null;
-    }
-    return threadRidge({ pitch, rBase, rCrest: rMajor, wBase, wCrest, y0, height, ...hand });
-}
-
-/** Internal thread ridge in a bore of radius rMajor, inside [yLow, yHigh]; null if too short. */
-function internalRidge(pitch: number, rMajor: number, yLow: number, yHigh: number,
-    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): Ridge | null {
-    const rBase = rMajor + THREAD_OVERLAP;
-    const rCrest = rMajor - (1.0825 * pitch) / 2;
-    const wCrest = pitch / 4;
-    const wBase = wCrest + 2 * (rBase - rCrest) * TAN30;
-    const y0 = yLow + wBase / 2 + 0.01;
-    const height = yHigh - wBase / 2 - 0.01 - y0;
-    if (height < pitch || wBase >= pitch * 0.98) {
-        return null;
-    }
-    return threadRidge({ pitch, rBase, rCrest, wBase, wCrest, y0, height, ...hand });
-}
 
 /** Fastener compounds: the body and its thread ridges, meshed analytically by meshSolid. */
 const threaded = new WeakMap<Shape3D, { body: Shape3D; ridges: RidgeSpec[] }>();
@@ -844,179 +787,6 @@ function cutChecked(shape: Shape3D, tool: Shape3D, what: string): Shape3D {
     return result;
 }
 
-/** ISO metric: the minor (tap drill) diameter is the major diameter less 1.0825 x pitch. */
-const MINOR_DEPTH = 1.0825;
-
-/** Centre, unit normal and radius of a circular edge. */
-function circleOf(edge: Edge): { centre: Vec3; normal: Vec3; radius: number } {
-    const oc = getOC();
-    const [r, gc] = localGC();
-    try {
-        const circle = r(r(new oc.BRepAdaptor_Curve(edge.wrapped)).Circle());
-        const loc = r(circle.Location());
-        const dir = r(r(circle.Axis()).Direction());
-        return { centre: [loc.X(), loc.Y(), loc.Z()], normal: [dir.X(), dir.Y(), dir.Z()], radius: circle.Radius() };
-    } finally {
-        gc();
-    }
-}
-
-/**
- * The full-circle end of a cylindrical face that a thread was picked on. When the mouth has been chamfered or rounded
- * since (the picked edge is gone), the nearest end of a cylinder the pick still lies on: the thread then starts
- * behind the chamfer.
- */
-function threadStart(shape: Shape3D, at: Vec3): { edge: Edge; face: Face } {
-    const cylinders = shape.faces.filter((f) => f.geomType === 'CYLINDRE');
-    const ends = (edge: Edge): boolean => edge.geomType === 'CIRCLE' && edge.isClosed;
-    let picked: Edge | null = null;
-    try {
-        [picked] = resolveEdges(shape, [at]);
-    } catch {
-        picked = null;
-    }
-    if (picked && ends(picked)) {
-        const exact = picked;
-        const face = cylinders.find((f) => f.edges.some((e) => e.isSame(exact)));
-        if (face) {
-            return { edge: exact, face };
-        }
-    }
-    const tolerance = pickTolerance(shape);
-    let best: { edge: Edge; face: Face; gap: number } | null = null;
-    for (const face of cylinders) {
-        for (const edge of face.edges.filter(ends)) {
-            const { centre, normal, radius } = circleOf(edge);
-            const rel = sub3(at, centre);
-            const k = dot3(rel, normal);
-            const gap = Math.abs(k);
-            const off = Math.hypot(...sub3(rel, [normal[0] * k, normal[1] * k, normal[2] * k]));
-            if (Math.abs(off - radius) <= tolerance && gap <= radius && (!best || gap < best.gap)) {
-                best = { edge, face, gap };
-            }
-        }
-    }
-    if (!best) {
-        throw new Error(picked && !ends(picked)
-            ? 'the thread needs the circular edge at the end of a shaft or hole; the picked edge is not a full circle'
-            : 'the thread needs the circular edge at the end of a shaft or hole, and it is no longer on the part; pick it again');
-    }
-    return best;
-}
-
-/**
- * Where a thread picked on a circular edge sits: the edge's centre, the unit axis pointing from the edge into its
- * cylindrical face, the edge radius, how far the cylinder runs from the edge, and whether it is a hole.
- */
-function threadEdge(shape: Shape3D, at: Vec3): { centre: Vec3; axis: Vec3; radius: number; reach: number; hole: boolean } {
-    const { edge, face } = threadStart(shape, at);
-    const { centre, normal, radius } = circleOf(edge);
-    // The face's centre of mass lies on the axis halfway along it: that gives the side and the length.
-    const mid = face.center.toTuple() as Vec3;
-    const along = dot3(sub3(mid, centre), normal);
-    const axis: Vec3 = along < 0 ? [-normal[0], -normal[1], -normal[2]] : normal;
-    // On a point of the face, the outward normal points away from the axis on a shaft and toward it in a hole.
-    const onFace = face.pointOnSurface(0.5, 0.5).toTuple() as Vec3;
-    const rel = sub3(onFace, centre);
-    const k = dot3(rel, axis);
-    const radial = sub3(rel, [axis[0] * k, axis[1] * k, axis[2] * k]);
-    const outward = face.normalAt(onFace).toTuple() as Vec3;
-    return { centre, axis, radius, reach: 2 * Math.abs(along), hole: dot3(outward, radial) < 0 };
-}
-
-/** Turns a solid built along +Y from the origin onto `axis` (unit) at `origin`, first turning it `angle` degrees about Y. */
-function placeOnAxis(solid: Shape3D, origin: Vec3, axis: Vec3, angle: number): Shape3D {
-    let out = angle ? solid.rotate(angle, [0, 0, 0], [0, 1, 0]) : solid;
-    out = orientDown(out, [-axis[0], -axis[1], -axis[2]]);
-    return out.translate(origin);
-}
-
-function threadFeature(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>, print: PrintSettings): Shape3D {
-    const { pitch } = f;
-    const starts = f.starts ?? 1;
-    if (!(Number.isInteger(starts) && starts >= 1 && starts <= 8)) {
-        throw new Error('thread starts must be a whole number from 1 to 8');
-    }
-    const lead = pitch * starts;
-    let origin: Vec3 = f.position ?? [0, 0, 0];
-    let axis: Vec3 = [0, 1, 0];
-    let diameter = f.diameter;
-    let reach = Infinity;
-    if (f.at) {
-        const edge = threadEdge(shape, f.at);
-        if (edge.hole !== (f.kind === 'internal')) {
-            throw new Error(edge.hole ? 'the picked edge is on a hole: use an internal thread'
-                : 'the picked edge is on a shaft: use an external thread');
-        }
-        ({ centre: origin, axis, reach } = edge);
-        diameter ??= f.kind === 'external' ? 2 * edge.radius : 2 * edge.radius + MINOR_DEPTH * pitch;
-    }
-    if (diameter === undefined) {
-        throw new Error('thread needs a diameter, or the circular edge where it begins');
-    }
-    // Direction 2 is the same thread carried on the other way from its start: it starts that much earlier.
-    const back = f.at ? f.length2 ?? 0 : 0;
-    if (!(back >= 0)) {
-        throw new Error('thread direction 2 depth must be positive');
-    }
-    const offset = (f.offset ?? 0) - back;
-    if (!Number.isFinite(offset)) {
-        throw new Error('thread offset must be a number');
-    }
-    origin = [origin[0] + axis[0] * offset, origin[1] + axis[1] * offset, origin[2] + axis[2] * offset];
-    if (f.revolutions !== undefined && !(f.revolutions > 0)) {
-        throw new Error('thread revolutions must be positive');
-    }
-    const forward = f.revolutions !== undefined ? f.revolutions * lead : f.length;
-    const asked = forward === undefined ? undefined : forward + back;
-    if (!(pitch > 0 && asked !== undefined && asked >= pitch && diameter > 2 * pitch)) {
-        throw new Error('thread needs pitch > 0, length >= pitch and diameter > 2 x pitch');
-    }
-    const length = asked;
-    // On a picked edge the thread may start before the edge (a negative offset, so it runs in at full depth) or be
-    // asked longer than the hole or shaft: it is trimmed to the cylinder, as with its end faces in SolidWorks.
-    // `trim` is the part kept, measured along the thread from where it starts.
-    let trim: [number, number] | null = null;
-    if (f.at) {
-        const from = Math.max(offset, 0);
-        const to = Math.min(offset + asked, reach);
-        if (to - from < pitch - 1e-6) {
-            throw new Error(`the thread misses the cylinder: it is ${fmtMm(reach)} long from the edge, `
-                + `the thread runs from ${fmtMm(offset)} to ${fmtMm(offset + asked)} along it`);
-        }
-        if (offset < -1e-6 || offset + asked > reach + 1e-6) {
-            trim = [from - offset, to - offset];
-        }
-    }
-    const [low, high] = trim ?? [0, length];
-    const trimmed = (piece: Shape3D, radius: number): Shape3D => (trim
-        ? asSolid(piece.intersect(cylinderY(radius, trim[0], trim[1])), 'trimmed thread') : piece);
-    const hand = { lead, leftHanded: !!f.leftHanded };
-    const at = (s: Shape3D): Shape3D => placeOnAxis(s, origin, axis, f.startAngle ?? 0);
-    /** The ridge and its copies for the other starts, evenly around the axis. */
-    const ridges = (ridge: Ridge): Shape3D => fuseAll(Array.from({ length: starts },
-        (_, i) => (i ? ridge.shape.clone().rotate((360 * i) / starts, [0, 0, 0], [0, 1, 0]) : ridge.shape)));
-    if (f.kind === 'external') {
-        const rMaj = diameter / 2;
-        const rRoot = rMaj - 0.6134 * pitch;
-        const ridge = externalRidge(pitch, rMaj, rRoot, 0, length, hand);
-        if (!ridge) {
-            throw new Error('thread is too short for its pitch');
-        }
-        const rod = asSolid(cylinderY(rRoot, 0, length).fuse(ridges(ridge), { simplify: false }), 'threaded rod');
-        const turned = shape.cut(at(revolve([[rRoot - 0.05, low], [rMaj + 0.05, low], [rMaj + 0.05, high],
-            [rRoot - 0.05, high]])));
-        return asSolid(turned.fuse(at(trimmed(rod, rMaj + pitch))), 'thread');
-    }
-    const rMaj = (diameter + print.holeTolerance) / 2;
-    const ridge = internalRidge(pitch, rMaj, 0, length, hand);
-    if (!ridge) {
-        throw new Error('thread is too short for its pitch');
-    }
-    const bored = shape.cut(at(cylinderY(rMaj, low, high)));
-    return asSolid(bored.fuse(at(trimmed(ridges(ridge), rMaj + pitch)), { simplify: false }), 'thread');
-}
-
 const fmtMm = (mm: number): string => `${Math.round(mm * 1e6) / 1e6} mm`;
 
 /** The edges a fillet or chamfer picked in the view: its picked edges, and every edge of its picked faces. */
@@ -1028,49 +798,7 @@ function pickedEdges(shape: Shape3D, f: { at?: Vec3[]; faces?: FacePickRef[]; ta
     return edges.filter((edge, i) => edges.findIndex((other) => other.isSame(edge)) === i);
 }
 
-interface ThreadAxis {
-    point: Vec3;
-    dir: Vec3;
-    radius: number;
-    pitch: number;
-}
-
-/** Where a thread step runs on the body it is cut into. */
-function threadAxis(shape: Shape3D, f: Extract<Feature, { op: 'thread' }>): ThreadAxis {
-    if (!f.at) {
-        return { point: f.position ?? [0, 0, 0], dir: [0, 1, 0], radius: (f.diameter ?? 0) / 2, pitch: f.pitch };
-    }
-    const edge = threadEdge(shape, f.at);
-    return { point: edge.centre, dir: edge.axis, radius: f.diameter !== undefined ? f.diameter / 2 : edge.radius, pitch: f.pitch };
-}
-
-/**
- * The ids of the threads that a picked edge of the step runs around: an end of the threaded hole or shaft. Beside a
- * cut thread the wall pinches out between the helical faces, so the kernel cannot fillet or chamfer there.
- */
-function threadsUnder(shape: Shape3D, f: { at?: Vec3[]; faces?: FacePickRef[]; tangent?: boolean },
-    threads: Map<string, ThreadAxis>): string[] {
-    if (threads.size === 0 || !(f.at?.length || f.faces?.length)) {
-        return [];
-    }
-    let edges: Vec3[][];
-    try {
-        edges = pickedEdges(shape, f).map((edge) => [edge.startPoint, edge.pointAt(0.5), edge.endPoint].map((p) => p.toTuple() as Vec3));
-    } catch {
-        return [];
-    }
-    const tolerance = pickTolerance(shape);
-    // An edge is on the thread when it stays at about the thread's radius from its axis: the mouth circle, at the major
-    // or minor radius give or take the print clearance, or a piece of the ridge that crosses it.
-    return [...threads].filter(([, axis]) => edges.some((points) => points.every((p) => {
-        const rel = sub3(p, axis.point);
-        const k = dot3(rel, axis.dir);
-        const off = Math.hypot(...sub3(rel, [axis.dir[0] * k, axis.dir[1] * k, axis.dir[2] * k]));
-        return Math.abs(off - axis.radius) <= axis.pitch + tolerance;
-    }))).map(([id]) => id);
-}
-
-function applyToBody(shape: Shape3D, f: Extract<Feature, { op: 'fillet' | 'chamfer' | 'shell' | 'thread' }>,
+function applyToBody(shape: Shape3D, f: Extract<Feature, { op: 'fillet' | 'chamfer' | 'shell' }>,
     print: PrintSettings): Shape3D {
     switch (f.op) {
         case 'fillet':
@@ -1101,8 +829,6 @@ function applyToBody(shape: Shape3D, f: Extract<Feature, { op: 'fillet' | 'chamf
                 return shellFaces(shape, f.thickness, faces, { outward: f.outward });
             }
             return shell(shape, f.thickness, f.open ?? []);
-        case 'thread':
-            return threadFeature(shape, f, print);
     }
 }
 
@@ -1161,6 +887,8 @@ interface BuildState {
     sketches: Map<string, Sketch>;
     /** Where each thread built so far runs: a point on its axis, the axis, its nominal radius and pitch. */
     threads: Map<string, ThreadAxis>;
+    /** Threads a preview shows without building them (see ThreadGhost). */
+    ghosts: ThreadGhost[];
     context?: CombineContext;
     /** Parts being built, outermost first, to catch combine cycles. */
     stack: string[];
@@ -1626,6 +1354,22 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
         case 'fillet':
         case 'chamfer': {
             const body = needBody(shape);
+            if (f.op === 'chamfer' && f.at?.length && state.threads.size) {
+                // The end of a thread is chamfered as a cut; any other picked edges go to the kernel as usual.
+                const mouths = threadMouths(body, f.at, state.threads);
+                if (mouths.some((m) => m)) {
+                    const rest = f.at.filter((_, i) => !mouths[i]);
+                    let out = rest.length || f.faces?.length ? applyToBody(body, { ...f, at: rest }, state.print) : body;
+                    const done: { thread: ThreadAxis; s: number }[] = [];
+                    for (const m of mouths) {
+                        if (m && !done.some((d) => d.thread === m.thread && Math.abs(d.s - m.s) < 1e-6)) {
+                            out = threadMouthChamfer(out, m.thread, m.s, f);
+                            done.push(m);
+                        }
+                    }
+                    return out;
+                }
+            }
             try {
                 return applyToBody(body, f, state.print);
             } catch (e) {
@@ -1661,10 +1405,10 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
         case 'shell':
             return applyToBody(needBody(shape), f, state.print);
         case 'thread': {
-            const body = needBody(shape);
-            const threaded = applyToBody(body, f, state.print);
-            state.threads.set(f.id, threadAxis(body, f));
-            return threaded;
+            const made = threadFeature(needBody(shape), f, state.print);
+            made.axes.forEach((axis, i) => state.threads.set(threadKey(f.id, i), axis));
+            state.ghosts.push(...made.ghosts);
+            return made.shape;
         }
         case 'mirror':
             return mirror(shape, f, state);
@@ -1688,6 +1432,8 @@ export interface PartialBuild {
     shape: Shape3D | null;
     /** Why the build stopped, naming the failing feature; null on success. */
     error: string | null;
+    /** Reference steps whose references taken from the model were found again, as found (by step id). */
+    followed?: Record<string, Feature>;
 }
 
 // The body after each step, kept so that a build which shares its first steps with an earlier one (editing a later
@@ -1695,6 +1441,9 @@ export interface PartialBuild {
 interface Prefix {
     shape: Shape3D | null;
     threads: [string, ThreadAxis][];
+    ghosts: ThreadGhost[];
+    /** The reference steps followed so far (by index), as found. */
+    followed: [number, Feature][];
 }
 
 const PREFIX_LIMIT = 48;
@@ -1711,12 +1460,13 @@ function prefixKeys(part: PartSpec, print: PrintSettings, history: boolean, cont
     });
 }
 
-function remember(key: string, shape: Shape3D | null, threads: Map<string, ThreadAxis>): void {
+function remember(key: string, shape: Shape3D | null, threads: Map<string, ThreadAxis>, ghosts: ThreadGhost[],
+    followed: Map<number, Feature>): void {
     if (prefixes.has(key)) {
         return;
     }
     // A copy of the handle: steps may dispose of the body they are given.
-    prefixes.set(key, { shape: shape ? shape.clone() : null, threads: [...threads] });
+    prefixes.set(key, { shape: shape ? shape.clone() : null, threads: [...threads], ghosts: [...ghosts], followed: [...followed] });
     while (prefixes.size > PREFIX_LIMIT) {
         const oldest = prefixes.keys().next().value as string;
         prefixes.get(oldest)?.shape?.delete();
@@ -1730,11 +1480,15 @@ function remember(key: string, shape: Shape3D | null, threads: Map<string, Threa
  */
 export function buildPartial(part: PartSpec, print: PrintSettings, context?: CombineContext, stack?: string[]): PartialBuild {
     let shape: Shape3D | null = null;
-    const features = part.features ?? [];
+    // A copy: reference steps are replaced by themselves as found on the body (followRefs.ts) for the steps after them.
+    const features = [...(part.features ?? [])];
+    const followed = new Map<number, Feature>();
+    const found = (): Record<string, Feature> => Object.fromEntries([...followed.values()].map((f) => [f.id, f]));
     // Reference steps build nothing, so they do not count as a history for the default edge softening.
     const history = features.some((f) => !f.suppressed && !['sketch', 'plane', 'axis', 'point'].includes(f.op));
     const state: BuildState = {
-        print, features, index: 0, sketches: new Map(), threads: new Map(), context, stack: stack ?? (context ? [context.self] : []),
+        print, features, index: 0, sketches: new Map(), threads: new Map(), ghosts: [], context,
+        stack: stack ?? (context ? [context.self] : []),
     };
     // Start from the longest run of first steps that was built before.
     const keys = prefixKeys(part, print, history, context);
@@ -1746,6 +1500,11 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
             prefixes.set(keys[index], hit);
             shape = hit.shape ? hit.shape.clone() : null;
             state.threads = new Map(hit.threads);
+            state.ghosts = [...hit.ghosts];
+            for (const [i, step] of hit.followed) {
+                features[i] = step;
+                followed.set(i, step);
+            }
             start = index + 1;
         }
     }
@@ -1764,26 +1523,52 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
         // Sketch steps resolve even when suppressed: suppressing a sketch hides it, not the features using it.
         if (feature.op === 'sketch') {
             try {
-                state.sketches.set(feature.id, concrete(feature.sketch, before(state)));
+                // A derived sketch takes the parent's contents, on its own plane.
+                const own = feature.sketch.derived ? derivedSketch(feature.sketch, state.sketches.get(feature.sketch.derived.from)) : feature.sketch;
+                state.sketches.set(feature.id, concrete(own, before(state)));
             } catch (e) {
                 if (!feature.suppressed && index >= start) {
-                    return { shape, error: `${label}: ${errorMessage(e)}` };
+                    return { shape, error: `${label}: ${errorMessage(e)}`, followed: found() };
                 }
             }
             continue;
+        }
+        // References taken from the model are found again on the body as it is here (suppressed too: later steps may use them).
+        if (index >= start) {
+            try {
+                const next = followStep(shape, feature);
+                if (next !== feature) {
+                    features[index] = next;
+                    followed.set(index, next);
+                }
+            } catch (e) {
+                if (!feature.suppressed) {
+                    return { shape, error: `${label}: ${errorMessage(e)}`, followed: found() };
+                }
+            }
         }
         if (feature.suppressed || index < start) {
             continue;
         }
         try {
-            const next = applyFeature(shape, feature, state);
+            const next = applyFeature(shape, features[index], state);
             shape = next && normalizeSolid(next, 'the result');
         } catch (e) {
-            return { shape, error: `${label}: ${errorMessage(e)}` };
+            return { shape: withGhosts(shape, state.ghosts), error: `${label}: ${errorMessage(e)}`, followed: found() };
         }
-        remember(keys[index], shape, state.threads);
+        remember(keys[index], shape, state.threads, state.ghosts, followed);
     }
-    return { shape, error: null };
+    return { shape: withGhosts(shape, state.ghosts), error: null, followed: found() };
+}
+
+/** Solids of preview builds and the threads shown on them without being built, meshed by meshSolid. */
+const ghosted = new WeakMap<Shape3D, ThreadGhost[]>();
+
+function withGhosts(shape: Shape3D | null, ghosts: ThreadGhost[]): Shape3D | null {
+    if (shape && ghosts.length) {
+        ghosted.set(shape, ghosts);
+    }
+    return shape;
 }
 
 /** Builds the part's solid; throws an Error naming the failing feature, or if the part has no body. */
@@ -1883,103 +1668,8 @@ function meshWithOpenCascade(shape: Shape3D): MeshData {
     return { positions, normals: Float32Array.from(mesh.normals), indices, edges, triFace, segEdge };
 }
 
-/** Exact helical mesh of a thread ridge: four strips (smooth within, sharp between) and two end caps. */
-function ridgeMesh(spec: RidgeSpec): MeshData {
-    const { pitch, rBase, rCrest, wBase, wCrest, y0, height } = spec;
-    const turns = height / pitch;
-    const steps = Math.max(8, Math.ceil(turns * Math.ceil((2 * Math.PI) / ANGULAR_TOLERANCE)));
-    const profile: P2[] = [[rBase, -wBase / 2], [rCrest, -wCrest / 2], [rCrest, wCrest / 2], [rBase, wBase / 2]];
-    const sweep = 2 * Math.PI * turns;
-    // Z-up helix turned onto Y: (x, y, z) -> (x, z, -y), then lifted by y0.
-    const point = (i: number, j: number): Vec3 => {
-        const theta = (sweep * i) / steps;
-        const [r, dz] = profile[j % 4];
-        return [r * Math.cos(theta), y0 + (pitch * theta) / (2 * Math.PI) + dz, -r * Math.sin(theta)];
-    };
-    const tangent = (i: number, j: number): Vec3 => {
-        const theta = (sweep * i) / steps;
-        const r = profile[j % 4][0];
-        return [-r * Math.sin(theta), pitch / (2 * Math.PI), -r * Math.cos(theta)];
-    };
-    const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-    const unit = (v: Vec3): Vec3 => {
-        const l = Math.hypot(...v) || 1;
-        return [v[0] / l, v[1] / l, v[2] / l];
-    };
-    const positions: number[] = [];
-    const normals: number[] = [];
-    const indices: number[] = [];
-    const edges: number[] = [];
-    const triFace: number[] = [];
-    const segEdge: number[] = [];
-    for (let j = 0; j < 4; j++) {
-        const start = positions.length / 3;
-        for (let i = 0; i <= steps; i++) {
-            const a = point(i, j);
-            const d = point(i, j + 1);
-            const n = unit(cross(sub(d, a), tangent(i, j)));
-            positions.push(...a, ...d);
-            normals.push(...n, ...n);
-            if (i > 0) {
-                edges.push(...point(i - 1, j), ...a);
-                segEdge.push(j);
-            }
-        }
-        for (let i = 0; i < steps; i++) {
-            const a = start + i * 2;
-            const d = a + 1;
-            const b = a + 2;
-            const c = a + 3;
-            indices.push(a, d, c, a, c, b);
-            triFace.push(j, j);
-        }
-    }
-    // Faces: the four strips, then the two caps; edges: the four helices, then each cap's four sides.
-    const cap = (i: number, order: number[], face: number): void => {
-        const start = positions.length / 3;
-        const [p0, p1, p2] = order.map((j) => point(i, j));
-        const n = unit(cross(sub(p1, p0), sub(p2, p0)));
-        for (const j of order) {
-            positions.push(...point(i, j));
-            normals.push(...n);
-        }
-        indices.push(start, start + 1, start + 2, start, start + 2, start + 3);
-        triFace.push(face, face);
-        for (let j = 0; j < 4; j++) {
-            edges.push(...point(i, j), ...point(i, j + 1));
-            segEdge.push(4 + (face - 4) * 4 + j);
-        }
-    };
-    // Caps run against the strips' edges so the whole surface is consistently wound.
-    cap(0, [3, 2, 1, 0], 4);
-    cap(steps, [0, 1, 2, 3], 5);
-    // Make the winding outward (the profile's direction depends on internal vs external threads).
-    let volume = 0;
-    for (let k = 0; k < indices.length; k += 3) {
-        const [a, b, c] = [indices[k], indices[k + 1], indices[k + 2]].map((v) => positions.slice(v * 3, v * 3 + 3) as Vec3);
-        volume += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
-    }
-    if (volume < 0) {
-        for (let k = 0; k < indices.length; k += 3) {
-            [indices[k + 1], indices[k + 2]] = [indices[k + 2], indices[k + 1]];
-        }
-        for (let k = 0; k < normals.length; k++) {
-            normals[k] = -normals[k];
-        }
-    }
-    return {
-        positions: Float32Array.from(positions),
-        normals: Float32Array.from(normals),
-        indices: Uint32Array.from(indices),
-        edges: Float32Array.from(edges),
-        triFace: Uint32Array.from(triFace),
-        segEdge: Uint32Array.from(segEdge),
-    };
-}
-
 function mergeMeshes(meshes: MeshData[]): MeshData {
-    const total = (key: keyof MeshData): number => meshes.reduce((n, m) => n + m[key].length, 0);
+    const total = (key: Exclude<keyof MeshData, 'followed'>): number => meshes.reduce((n, m) => n + m[key].length, 0);
     const out: MeshData = {
         positions: new Float32Array(total('positions')),
         normals: new Float32Array(total('normals')),
@@ -2031,5 +1721,6 @@ export function meshSolid(shape: Shape3D): MeshData {
     if (thread) {
         return mergeMeshes([meshWithOpenCascade(thread.body), ...thread.ridges.map(ridgeMesh)]);
     }
-    return meshWithOpenCascade(shape);
+    const ghosts = ghosted.get(shape);
+    return ghosts ? mergeMeshes([meshWithOpenCascade(shape), ...ghosts.map(ghostMesh)]) : meshWithOpenCascade(shape);
 }

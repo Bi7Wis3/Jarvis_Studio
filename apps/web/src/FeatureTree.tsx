@@ -9,6 +9,8 @@ import wasmUrl from '@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url';
 import { Icon } from './icons';
 import { ContextMenu, InlineInput, showError, tool, type MenuEntry } from './menus';
 import { editItem, runTool, setRollback, setSketchHidden, setWorkspace, useStudio } from './state';
+import { editSketchPlane } from './sketchPlaneEdit';
+import { derivedEntries } from './sketchWholeTools';
 import { deletionIds, dependants, suppressUpdates, unsuppressUpdates } from './historyOps';
 import {
     errorText, failingFeature, featureIcon, featureName, featureSummary, shapeIcon, shapeSummary, sketchEdits, REFERENCE_OPS, stepRefs,
@@ -24,6 +26,9 @@ import {
     buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, nodeSketch, reorderIds, treeGuides, type TreeNode,
 } from './featureTree';
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
+import { basePlaneEntries, featureStepExtras, referenceStepEntries, sketchStepEntries } from './contextMenus';
+import { appActions, menuContext } from './viewMenu';
+import { treeClipboardKey } from './sketchPasteSketch';
 
 /** Stands for "no expand state saved yet" for a part. */
 const UNSAVED = '\u0000';
@@ -365,6 +370,14 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         { label: 'Roll back to here', onSelect: () => placeCount(k), disabled: k === shownCount },
         { label: 'Roll to end', onSelect: () => placeCount(total), disabled: shownCount === total },
     ];
+    /** Entries shared with the view's right-click menu (contextMenus.tsx): what a sketch, plane or feature offers. */
+    const sharedEntries = (feature: Feature): MenuEntry[] => {
+        const more = feature.op === 'sketch' ? sketchStepEntries(part, feature.id, menuContext(), appActions, true)
+            : feature.op === 'plane' || feature.op === 'axis' || feature.op === 'point'
+                ? referenceStepEntries(part, feature.id, menuContext(), appActions, true)
+                : featureStepExtras(appActions);
+        return more.length ? ['separator', ...more] : [];
+    };
     const nodeMenu = (node: TreeNode): MenuEntry[] => {
         const feature = node.stepId ? byId.get(node.stepId) : undefined;
         if (!feature) {
@@ -385,6 +398,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         return [
             ...(feature.op === 'sketch' ? [] : [{ label: 'Edit feature', onSelect: () => editItem(part.id, feature.id) }]),
             ...edits.map((e) => ({ label: e.label, onSelect: () => editItem(part.id, e.id) })),
+            ...(feature.op === 'sketch' ? [{ label: 'Edit sketch plane', onSelect: () => editSketchPlane(part.id, feature.id) }] : []),
+            ...derivedEntries(part.id, feature),
             ...(feature.suppressed ? [
                 { label: 'Unsuppress', onSelect: () => suppress(feature, false) },
                 {
@@ -393,6 +408,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     disabled: !dependants(features, feature.id).some((f) => f.suppressed),
                 },
             ] : [{ label: 'Suppress', onSelect: () => suppress(feature, true) }]),
+            ...sharedEntries(feature),
             'separator',
             ...rollEntries(node.index),
             'separator',
@@ -417,7 +433,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             case 'body':
                 return [{ label: 'Edit body', onSelect: () => editItem(part.id, null) }];
             case 'fixed':
-                return entry.plane ? [{ label: 'Sketch on this plane', onSelect: () => sketchOn(entry.plane!) }]
+                return entry.plane ? [{ label: 'Sketch on this plane', onSelect: () => sketchOn(entry.plane!) }, ...basePlaneEntries(part, entry.plane, appActions)]
                     : entry.key === MATERIAL ? [{ label: 'Edit material', hint: 'double-click', onSelect: editMaterial }] : [];
             case 'node':
                 return nodeMenu(entry.node);
@@ -436,6 +452,13 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         list.current?.querySelector(`[data-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'nearest' });
     };
     const onKey = (event: KeyboardEvent<HTMLOListElement>) => {
+        // Ctrl+C on a sketch copies the whole sketch; Ctrl+V on a plane pastes it there (sketchPasteSketch.ts).
+        if (event.target === event.currentTarget && (event.ctrlKey || event.metaKey) && !event.altKey
+            && treeClipboardKey(event.key.toLowerCase(), part, nodeOf(current)?.stepId ?? null, (entries.find((e) => e.key === current) as { plane?: 'front' | 'top' | 'right' } | undefined)?.plane ?? null, showError)) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
         if (event.target !== event.currentTarget || event.altKey || event.ctrlKey || event.metaKey) {
             return;
         }

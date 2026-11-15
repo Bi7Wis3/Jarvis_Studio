@@ -1,36 +1,64 @@
 // The constrained sketch on its plane: curves coloured by constraint state, points, constraint glyphs,
 // driving dimensions with leaders and editable values, the entity in progress, and pointer input.
 
-import { useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react';
+import { modelPlaneClick } from './sketchModelPick';
+import { useSketchModel } from './sketchModel';
+import { memo, useEffect, useMemo, useRef, type ReactNode, type RefObject } from 'react';
 import { useThree, type ThreeEvent } from '@react-three/fiber';
-import { Html, Line } from '@react-three/drei';
-import { DoubleSide, MathUtils, Plane, Raycaster, Vector2, Vector3, type Group, type PerspectiveCamera } from 'three';
+import { Html } from '@react-three/drei';
+import { useShallow } from 'zustand/react/shallow';
+import { DoubleSide, Plane, Raycaster, Vector2, Vector3, type Camera, type Group, type PerspectiveCamera } from 'three';
 import type { SketchConstraint, SketchGeometry } from '@jarvis/core';
-import type { CameraControlsImpl } from '@react-three/drei';
+import { CameraControlsImpl } from '@react-three/drei';
 import { AXIS_U, AXIS_V, curveOf, isDimension, measure, pointOf } from './solver';
-import { arcMiddle, constraintRefs, dimensionFromPicks, geometryEntities, rectCorners3, tangentArcThrough, tangentAt } from './sketchGeometry';
+import { arcMiddle, broughtIn, constraintRefs, geometryEntities, rectCorners3, tangentArcThrough, tangentAt } from './sketchGeometry';
+import { pixelSizeAt, rayFromCamera } from './viewProjection';
 import { shownText } from './numberText';
-import { definedEntities } from './sketchStatus';
+import { drawPreview } from './sketchDrawVariants';
 import { circleThrough, dist, entityPoints, regularPolygon, type Entity, type NewEntity, type Pt } from './sketchMath';
-import {
-    applyDimension, cancelDimension, dimensionAnchor, editDimension, endChain, isEditTool, moveLabel, selectConstraint, setDimText, sketchClick,
-    sketchDown, sketchMove, sketchUp, useSketcher,
-} from './sketcher';
+import { conicDraftEntity, conicDraftText, conicGuides, isConicTool } from './sketchConics';
+import { moreDimensionLines, moreDimensionText } from './sketchDimDraw';
 
-const FREE = '#5aa9ff';
-const FIXED = '#f2f5f9';
-const CONSTRUCTION = '#ffb347';
-const SELECTED = '#c48bff';
-const PICKED = '#ffd166';
-const CONFLICT = '#ff5d6c';
-/** Over defined: geometry a redundant relation refers to (SolidWorks shows it yellow). */
-const OVER = '#f0e14a';
+
+import {
+    applyDimension, cancelDimension, dimensionAnchor, editDimension, endChain, isEditTool, moveLabel, openDimensionForm,
+    selectConstraint, setDimText, sketchClick, sketchDown, sketchMove, sketchUp, useSketcher,
+} from './sketcher';
+import { useSketchMore } from './sketchMoreTools';
+import { zonedPreview } from './sketchTangentZones';
+import { MoreDrawing } from './sketchMoreDrawing';
+import { ItemsDrawing } from './sketchItemsDrawing';
+import { PathDrawing } from './sketchPathDrawing';
+import { ModifyDragDrawing } from './sketchModifyDrawing';
+import { Instant2dDrawing } from './sketchInstant2dDrawing';
+import { viewPress } from './sketchViewPress';
+import { contourAltClick } from './sketchContours';
+import { partFaceHit, rapidClick } from './sketchRapid';
+import { DimExtrasDrawing, DrivenChoice } from './sketchDimExtrasDrawing';
+import { smartDimension } from './sketchDimTools';
+import { DimensionValue } from './sketchDimTolerance';
+import { LineBatch, type BatchLine } from './sketchBatch';
+import { CONFLICT, entityLine, OVER, SELECTED, SketchShapes } from './sketchShapes';
+import { SplineOverlays } from './sketchSplineDrawing';
+import { FullyDefineGhosts } from './sketchFullyDefineGhosts';
+
+const DRIVEN = '#8d96a3';
 const DRAFT = '#35e0ff';
 const SNAP_PX = 10;
 const CLICK_SLOP_PX = 4;
+const ORIGIN_3D = new Vector3();
 
-/** Screen position to sketch coordinates and mm per pixel there; set by the Catcher while a sketch is open. */
-let planePoint: (clientX: number, clientY: number) => { p: Pt; perPx: number } | null = () => null;
+/** Screen position to sketch coordinates, mm per pixel there and the point in the scene; set by the Catcher while a sketch is open. */
+let planePoint: (clientX: number, clientY: number) => { p: Pt; perPx: number; world: Vector3 } | null = () => null;
+
+/** The point of the open sketch's plane under a screen position, in the scene (what the view turns about there). */
+export const sketchPlaneAt = (clientX: number, clientY: number): Vector3 | null => planePoint(clientX, clientY)?.world ?? null;
+
+/** A screen point in the open sketch and the pick distance there, as a click uses them (for the right-click menu). */
+export function sketchPointAt(clientX: number, clientY: number): { p: Pt; tolerance: number } | null {
+    const hit = planePoint(clientX, clientY);
+    return hit ? { p: hit.p, tolerance: SNAP_PX * hit.perPx } : null;
+}
 
 export const v3 = ([u, v]: Pt, z = 0): [number, number, number] => [u, v, z];
 
@@ -47,13 +75,9 @@ export function Label({ at, children, className = '' }: { at: Pt; children: Reac
 }
 
 export function EntityLine({ entity, color, dashed, width = 1.6 }: { entity: NewEntity; color: string; dashed?: boolean; width?: number }) {
-    const points = useMemo(() => entityPoints(entity as Entity).map((p) => v3(p)), [JSON.stringify(entity)]);
-    if (points.length < 2) {
-        return null;
-    }
-    return (
-        <Line points={points} color={color} lineWidth={width} dashed={dashed} dashSize={2} gapSize={1.5} depthTest={false} renderOrder={20} />
-    );
+    // A batch of one: its material outlives changes of the entity (see sketchBatch.tsx).
+    const lines = useMemo(() => [entityLine(entity, color, width, !!dashed)], [JSON.stringify(entity), color, width, dashed]);
+    return <LineBatch lines={lines} />;
 }
 
 /** What the entity in progress would be with the cursor as its next point (`sweep`: a centre arc's turn so far). */
@@ -98,6 +122,8 @@ function draftEntity(tool: string, draft: Pt[], cursor: Pt, sides: number, sweep
             const r = length ? Math.abs((b[0] - a[0]) * (a[1] - cursor[1]) - (a[0] - cursor[0]) * (b[1] - a[1])) / length : 0;
             return { kind: 'slot', a, b, r: Math.max(r, 0.1) };
         }
+        default:
+            return isConicTool(tool) ? conicDraftEntity(tool, draft, cursor, sweep) : null;
     }
     return null;
 }
@@ -129,6 +155,8 @@ function draftText(e: NewEntity): string | null {
             return `${fmt(dist(e.a, e.b))} · W${fmt(e.r * 2)}`;
         case 'polygon':
             return `${e.points.length} sides`;
+        default:
+            return null;
     }
 }
 
@@ -148,6 +176,10 @@ function arrow(tip: Pt, dir: Pt, size: number): [number, number, number][][] {
 
 /** Leader, extension lines and arrows of a dimension, given where its label sits. */
 function dimensionLines(g: SketchGeometry, c: SketchConstraint, at: Pt, size: number): [number, number, number][][] {
+    const more = moreDimensionLines(g, c, at, size);
+    if (more) {
+        return more;
+    }
     const linear = (a: Pt, b: Pt, axis?: 'u' | 'v'): [number, number, number][][] => {
         let p: Pt;
         let q: Pt;
@@ -200,7 +232,7 @@ function dimensionLines(g: SketchGeometry, c: SketchConstraint, at: Pt, size: nu
         case 'radius':
         case 'diameter': {
             const curve = curveOf(g, c.curve);
-            if (!curve || curve.kind === 'line') {
+            if (!curve || (curve.kind !== 'circle' && curve.kind !== 'arc')) {
                 return [];
             }
             const centre = P(g, curve.center);
@@ -271,6 +303,10 @@ function dimensionLines(g: SketchGeometry, c: SketchConstraint, at: Pt, size: nu
 }
 
 function dimensionText(c: Extract<SketchConstraint, { value: number }>): string {
+    const more = moreDimensionText(c);
+    if (more) {
+        return more;
+    }
     switch (c.kind) {
         case 'angle':
             return `${fmt(c.value)}°`;
@@ -283,120 +319,162 @@ function dimensionText(c: Extract<SketchConstraint, { value: number }>): string 
     }
 }
 
-/** Driving dimensions: leaders and arrows, and their values (drag to move, click to select, double-click to edit). */
-function Dimensions({ size }: { size: number }) {
-    const { geometry: g, labels, selection, conflicting, redundant, dimDraft } = useSketcher();
+type Grab = { id: string; du: number; dv: number; x: number; y: number; moved: boolean } | null;
+
+/** One dimension's value: drag to move, click to select, double-click to edit. Redrawn only when its own look changes. */
+const DimensionLabel = memo(function DimensionLabel({ c, u, v, className, title, grab }: {
+    c: Extract<SketchConstraint, { value: number }>; u: number; v: number; className: string; title: string; grab: { current: Grab };
+}) {
+    const id = c.id;
+    return (
+        <Html position={[u, v, 0]} center zIndexRange={[32, 0]} className="sk-label">
+            <button
+                type="button"
+                className={className}
+                title={title}
+                onPointerDown={(e) => {
+                    e.stopPropagation();
+                    const hit = e.button === 0 ? planePoint(e.clientX, e.clientY) : null;
+                    if (hit) {
+                        e.currentTarget.setPointerCapture(e.pointerId);
+                        grab.current = { id, du: u - hit.p[0], dv: v - hit.p[1], x: e.clientX, y: e.clientY, moved: false };
+                    }
+                }}
+                onPointerMove={(e) => {
+                    const held = grab.current;
+                    if (held?.id !== id || (!held.moved && Math.hypot(e.clientX - held.x, e.clientY - held.y) <= CLICK_SLOP_PX)) {
+                        return;
+                    }
+                    held.moved = true;
+                    const hit = planePoint(e.clientX, e.clientY);
+                    if (hit) {
+                        moveLabel(id, [hit.p[0] + held.du, hit.p[1] + held.dv]);
+                    }
+                }}
+                onPointerUp={(e) => {
+                    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                        e.currentTarget.releasePointerCapture(e.pointerId);
+                    }
+                    // A drag is not a click: keep the flag for the click that follows, then drop it.
+                    if (!grab.current?.moved) {
+                        grab.current = null;
+                    }
+                }}
+                onPointerCancel={() => {
+                    grab.current = null;
+                }}
+                onClick={(e) => {
+                    if (grab.current?.moved) {
+                        grab.current = null;
+                        return;
+                    }
+                    selectConstraint(id, e.shiftKey);
+                    if (!e.shiftKey) {
+                        openDimensionForm(id);
+                    }
+                }}
+                onDoubleClick={() => editDimension(id)}
+            >
+                <DimensionValue c={c} text={dimensionText(c)} />
+            </button>
+        </Html>
+    );
+});
+
+/** Driving dimensions: leaders and arrows (one batch), and their values. */
+const Dimensions = memo(function Dimensions({ size }: { size: number }) {
+    const { geometry: g, labels, selection, conflicting, redundant, editing } = useSketcher(useShallow((s) => ({
+        geometry: s.geometry, labels: s.labels, selection: s.selection, conflicting: s.conflicting, redundant: s.redundant,
+        editing: s.dimDraft?.editing ?? null,
+    })));
     // The label being dragged: where it was grabbed, relative to its centre.
-    const grab = useRef<{ id: string; du: number; dv: number; x: number; y: number; moved: boolean } | null>(null);
+    const grab = useRef<Grab>(null);
+    const shown = useMemo(() => {
+        const lines: BatchLine[] = [];
+        const values = g.constraints.filter(isDimension).flatMap((c) => {
+            if (editing === c.id) {
+                return [];
+            }
+            const at = labels[c.id] ?? dimensionAnchor(g, c);
+            const selected = selection.some((s) => s.id === c.id);
+            const bad = conflicting.includes(c.id);
+            const over = !bad && redundant.includes(c.id);
+            // Driven (reference) dimensions are grey, as in SolidWorks.
+            const color = bad ? CONFLICT : selected ? SELECTED : over ? OVER : c.driven ? DRIVEN : '#d6dde8';
+            for (const points of dimensionLines(g, c, at, size)) {
+                lines.push({ points, color, width: 1, opacity: 0.85, renderOrder: 21 });
+            }
+            return [{
+                c, u: at[0], v: at[1],
+                className: `sk-dim ${selected ? 'selected' : ''} ${bad ? 'bad' : over ? 'over' : ''} ${c.driven ? 'driven' : ''} ${c.suppressed ? 'suppressed' : ''}`,
+                title: c.driven ? 'Driven: follows the geometry · drag to move' : 'Drag to move · double-click to edit',
+            }];
+        });
+        return { lines, values };
+    }, [g, labels, selection, conflicting, redundant, editing, size]);
     return (
         <>
-            {g.constraints.filter(isDimension).map((c) => {
-                if (dimDraft?.editing === c.id) {
-                    return null;
-                }
-                const at = labels[c.id] ?? dimensionAnchor(g, c);
-                const selected = selection.some((s) => s.id === c.id);
-                const bad = conflicting.includes(c.id);
-                const over = !bad && redundant.includes(c.id);
-                const color = bad ? CONFLICT : selected ? SELECTED : over ? OVER : '#d6dde8';
-                return (
-                    <group key={c.id}>
-                        {dimensionLines(g, c, at, size).map((points, i) => (
-                            <Line key={i} points={points} color={color} lineWidth={1} transparent opacity={0.85} depthTest={false} renderOrder={21} />
-                        ))}
-                        <Html position={v3(at)} center zIndexRange={[32, 0]} className="sk-label">
-                            <button
-                                type="button"
-                                className={`sk-dim ${selected ? 'selected' : ''} ${bad ? 'bad' : over ? 'over' : ''}`}
-                                title="Drag to move · double-click to edit"
-                                onPointerDown={(e) => {
-                                    e.stopPropagation();
-                                    const hit = e.button === 0 ? planePoint(e.clientX, e.clientY) : null;
-                                    if (hit) {
-                                        e.currentTarget.setPointerCapture(e.pointerId);
-                                        grab.current = { id: c.id, du: at[0] - hit.p[0], dv: at[1] - hit.p[1], x: e.clientX, y: e.clientY, moved: false };
-                                    }
-                                }}
-                                onPointerMove={(e) => {
-                                    const held = grab.current;
-                                    if (held?.id !== c.id || (!held.moved && Math.hypot(e.clientX - held.x, e.clientY - held.y) <= CLICK_SLOP_PX)) {
-                                        return;
-                                    }
-                                    held.moved = true;
-                                    const hit = planePoint(e.clientX, e.clientY);
-                                    if (hit) {
-                                        moveLabel(c.id, [hit.p[0] + held.du, hit.p[1] + held.dv]);
-                                    }
-                                }}
-                                onPointerUp={(e) => {
-                                    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-                                        e.currentTarget.releasePointerCapture(e.pointerId);
-                                    }
-                                    // A drag is not a click: keep the flag for the click that follows, then drop it.
-                                    if (!grab.current?.moved) {
-                                        grab.current = null;
-                                    }
-                                }}
-                                onPointerCancel={() => {
-                                    grab.current = null;
-                                }}
-                                onClick={(e) => {
-                                    if (grab.current?.moved) {
-                                        grab.current = null;
-                                        return;
-                                    }
-                                    selectConstraint(c.id, e.shiftKey);
-                                }}
-                                onDoubleClick={() => editDimension(c.id)}
-                            >
-                                {dimensionText(c)}
-                            </button>
-                        </Html>
-                    </group>
-                );
-            })}
+            <LineBatch lines={shown.lines} />
+            {shown.values.map((d) => <DimensionLabel key={d.c.id} {...d} grab={grab} />)}
         </>
     );
-}
+});
 
 /** Dimension tool: the dimension the picks would make, following the cursor until it is placed. */
-function DimensionPreview({ size }: { size: number }) {
-    const { geometry: g, tool, picks, hover, dimDrag, dimDraft, cursor } = useSketcher();
-    if (tool !== 'dimension' || dimDraft || !cursor) {
+const DimensionPreview = memo(function DimensionPreview({ size }: { size: number }) {
+    // Follows the pointer only while the dimension tool is on.
+    const shown = useSketcher(useShallow((s) => (s.tool === 'dimension' && !s.dimDraft && s.cursor && !s.dimSpecial
+        ? { g: s.geometry, picks: s.picks, hover: s.hover, dimDrag: s.dimDrag, cursor: s.cursor } : null)));
+    if (!shown) {
         return null;
     }
+    const { g, picks, hover, dimDrag, cursor } = shown;
     // Over something else that a click would pick, the click is a pick, not a placement.
     const placing = dimDrag ? dist(cursor, dimDrag.from) > dimDrag.slop
         : picks.length > 0 && (!hover || (picks.length === 1 && hover.id === picks[0].id) || (picks.length >= 2 && hover.id.startsWith('axis-')));
-    const constraint = placing ? dimensionFromPicks(g, dimDrag?.picks ?? picks, cursor) : null;
+    const constraint = placing ? smartDimension(g, dimDrag?.picks ?? picks, cursor, useSketcher.getState().dimLock) : null;
     if (!constraint) {
         return null;
     }
-    const shown = { ...constraint, id: 'draft' } as Extract<SketchConstraint, { value: number }>;
-    const value = measure(g, shown) ?? 0;
+    const made = { ...constraint, id: 'draft' } as Extract<SketchConstraint, { value: number }>;
+    const value = measure(g, made) ?? 0;
     return (
         <>
-            {dimensionLines(g, shown, cursor, size).map((points, i) => (
-                <Line key={i} points={points} color={DRAFT} lineWidth={1} depthTest={false} renderOrder={21} />
-            ))}
-            <Label at={cursor} className="dim">{dimensionText({ ...shown, value })}</Label>
+            <LineBatch lines={draftLines(dimensionLines(g, made, cursor, size))} />
+            <Label at={cursor} className="dim">{dimensionText({ ...made, value })}</Label>
         </>
     );
-}
+});
+
+/** The leaders of a dimension being placed, in the draft colour. */
+const draftLines = (lines: [number, number, number][][]): BatchLine[] => lines.map((points) => ({ points, color: DRAFT, width: 1, renderOrder: 21 }));
 
 /** The value input of a dimension being placed or edited. */
-function DimensionInput({ size }: { size: number }) {
+const DimensionInput = memo(function DimensionInput({ size }: { size: number }) {
     const draft = useSketcher((s) => s.dimDraft);
     const g = useSketcher((s) => s.geometry);
     if (!draft) {
         return null;
     }
     const preview = dimensionLines(g, { ...draft.constraint, id: 'draft', value: 0 } as SketchConstraint, draft.at, size);
+    const lines = <LineBatch lines={draftLines(preview)} />;
+    if (draft.overDefining) {
+        // SolidWorks' Make Dimension Driven? choice, at the dimension.
+        return (
+            <>
+                {lines}
+                <Html position={v3(draft.at)} center zIndexRange={[40, 0]} className="sk-label">
+                    <DrivenChoice />
+                </Html>
+            </>
+        );
+    }
+    const kind = draft.constraint.kind;
+    const symbol = kind === 'angle' || kind === 'pointAngle' ? '∠' : kind === 'diameter' || (kind === 'distance' && draft.constraint.doubled) ? 'Ø'
+        : kind === 'radius' ? 'R' : kind === 'arcLength' ? '⌒' : kind === 'rho' ? 'Rho' : '↔';
     return (
         <>
-            {preview.map((points, i) => (
-                <Line key={i} points={points} color={DRAFT} lineWidth={1} depthTest={false} renderOrder={21} />
-            ))}
+            {lines}
             <Html position={v3(draft.at)} center zIndexRange={[40, 0]} className="sk-label">
                 <form
                     className={`sk-dim-input ${draft.error ? 'bad' : ''}`}
@@ -406,7 +484,7 @@ function DimensionInput({ size }: { size: number }) {
                         applyDimension();
                     }}
                 >
-                    <span>{draft.constraint.kind === 'angle' ? '∠' : draft.constraint.kind === 'diameter' ? 'Ø' : draft.constraint.kind === 'radius' ? 'R' : '↔'}</span>
+                    <span>{symbol}</span>
                     <input
                         autoFocus
                         value={draft.text}
@@ -421,20 +499,21 @@ function DimensionInput({ size }: { size: number }) {
                         }}
                         aria-label="Dimension value"
                     />
-                    <em>{draft.constraint.kind === 'angle' ? 'deg' : 'mm'}</em>
+                    <em>{kind === 'angle' || kind === 'pointAngle' ? 'deg' : kind === 'rho' ? '' : 'mm'}</em>
                     {draft.error && <small>{draft.error}</small>}
                 </form>
             </Html>
         </>
     );
-}
+});
 
 // ---- Constraint glyphs --------------------------------------------------------------------------------
 
 const GLYPHS: Partial<Record<SketchConstraint['kind'], string>> = {
     horizontal: 'H', vertical: 'V', parallel: '∥', perpendicular: '⊥', equal: '=', tangent: 'T', coincident: '●',
     pointOnCurve: '⊙', midpoint: 'M', symmetric: '⇋', fix: '🔒', fixRadius: '🔒', horizontalPoints: 'H', verticalPoints: 'V',
-    concentric: '◎', coradial: '◎=', collinear: '⋯',
+    concentric: '◎', coradial: '◎=', collinear: '⋯', intersection: '✕',
+    pathTangent: 'T', equalSweep: '=',
 };
 
 /** Where to draw a constraint's glyph(s). */
@@ -453,6 +532,11 @@ function glyphSpots(g: SketchGeometry, c: SketchConstraint, offset: number): Pt[
         if (curve.kind === 'circle') {
             const centre = P(g, curve.center);
             return [centre[0] + curve.radius * 0.71 + offset, centre[1] - curve.radius * 0.71 - offset];
+        }
+        if (curve.kind !== 'arc') {
+            const pts = geometryEntities({ ...g, curves: [curve] }).flatMap((e) => entityPoints(e));
+            const m = pts[Math.floor(pts.length / 2)] ?? [0, 0];
+            return [m[0] + offset, m[1] + offset];
         }
         const m = arcMiddle(P(g, curve.center), P(g, curve.start), P(g, curve.end));
         return [m[0] + offset, m[1] + offset];
@@ -482,11 +566,16 @@ function glyphSpots(g: SketchGeometry, c: SketchConstraint, offset: number): Pt[
             return [near(c.a)];
         case 'pointOnCurve':
         case 'midpoint':
+        case 'intersection':
             return [near(c.point)];
         case 'fix':
             return [near(c.point)];
         case 'symmetric':
             return [curveMid(c.about) ?? near(c.a)];
+        case 'pathTangent':
+            return [curveMid(c.curve)].filter(Boolean) as Pt[];
+        case 'equalSweep':
+            return [c.a, c.b].map((id) => curveMid(id)).filter(Boolean) as Pt[];
         default:
             return [];
     }
@@ -511,96 +600,113 @@ const GLYPH_MEANING: Partial<Record<SketchConstraint['kind'], string>> = {
     concentric: 'Concentric: these share a centre',
     coradial: 'Coradial: these share a centre and radius',
     collinear: 'Collinear: these lines stay on one line',
+    intersection: 'Intersection: this point stays where the two lines cross',
+    pathTangent: 'Tangent to path: this stays touching whichever entity of the path it meets',
+    equalSweep: 'Equal angle: these arcs sweep the same angle',
 };
+
+/** One relation marker; redrawn only when its own place or look changes. */
+const GlyphLabel = memo(function GlyphLabel({ id, u, v, glyph, className, title }: {
+    id: string; u: number; v: number; glyph: string; className: string; title: string;
+}) {
+    return (
+        <Html position={[u, v, 0]} center zIndexRange={[31, 0]} className="sk-label">
+            <button
+                type="button"
+                className={className}
+                title={title}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => selectConstraint(id, e.shiftKey)}
+            >
+                {glyph}
+            </button>
+        </Html>
+    );
+});
 
 /**
  * Relation markers (H, V, ∥ ...). They are out of the way while drawing: only the select, dimension and relation
  * tools show them, plus any that is selected or in conflict.
  */
-function Glyphs({ offset }: { offset: number }) {
-    const { geometry: g, selection, conflicting, redundant, tool } = useSketcher();
-    const all = tool === 'select' || tool === 'dimension' || tool.startsWith('c:');
-    const shown = (c: SketchConstraint) => !isDimension(c)
-        && (all || conflicting.includes(c.id) || redundant.includes(c.id) || selection.some((s) => s.id === c.id));
+const Glyphs = memo(function Glyphs({ offset }: { offset: number }) {
+    const { geometry: g, selection, conflicting, redundant, tool, settings } = useSketcher(useShallow((s) => ({
+        geometry: s.geometry, selection: s.selection, conflicting: s.conflicting, redundant: s.redundant, tool: s.tool, settings: s.settings,
+    })));
+    const marks = useMemo(() => {
+        // Show relations off: only those of the selected entities (and problems) are shown, as in SolidWorks.
+        const all = settings.showRelations && (tool === 'select' || tool === 'dimension' || tool.startsWith('c:'));
+        const picked = new Set(selection.map((s) => s.id));
+        // The locks on what was copied in from the model or another sketch only show while it is selected.
+        const brought = broughtIn(g);
+        const ofPicked = (c: SketchConstraint) => brought.locks.has(c.id) && c.kind === 'fix' && !brought.handles.has(c.point)
+            && (brought.on.get(c.point) ?? []).some((id) => picked.has(id));
+        const shown = (c: SketchConstraint) => !isDimension(c)
+            && ((all && !brought.locks.has(c.id)) || conflicting.includes(c.id) || redundant.includes(c.id) || picked.has(c.id)
+                || constraintRefs(c).some((r) => picked.has(r)) || ofPicked(c));
+        return g.constraints.filter(shown).flatMap((c) => glyphSpots(g, c, offset).map((at, i) => ({
+            key: `${c.id}-${i}`, id: c.id, u: at[0], v: at[1], glyph: GLYPHS[c.kind] ?? '•',
+            className: `sk-glyph ${picked.has(c.id) ? 'selected' : ''} ${conflicting.includes(c.id) ? 'bad' : redundant.includes(c.id) ? 'over' : ''} ${c.suppressed ? 'suppressed' : ''}`,
+            title: `${GLYPH_MEANING[c.kind] ?? c.kind} · click to select, Delete removes it`,
+        })));
+    }, [g, selection, conflicting, redundant, tool, settings.showRelations, offset]);
     return (
         <>
-            {g.constraints.filter(shown).flatMap((c) => glyphSpots(g, c, offset).map((at, i) => (
-                <Html key={`${c.id}-${i}`} position={v3(at)} center zIndexRange={[31, 0]} className="sk-label">
-                    <button
-                        type="button"
-                        className={`sk-glyph ${selection.some((s) => s.id === c.id) ? 'selected' : ''} ${conflicting.includes(c.id) ? 'bad' : redundant.includes(c.id) ? 'over' : ''}`}
-                        title={`${GLYPH_MEANING[c.kind] ?? c.kind} · click to select, Delete removes it`}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={(e) => selectConstraint(c.id, e.shiftKey)}
-                    >
-                        {GLYPHS[c.kind] ?? '•'}
-                    </button>
-                </Html>
-            )))}
+            {marks.map(({ key, ...m }) => <GlyphLabel key={key} {...m} />)}
         </>
     );
-}
+});
 
 // ---- Geometry -----------------------------------------------------------------------------------------
 
-/** Curves, points, the entity in progress, snapping cues, constraints and dimensions. */
+/**
+ * The sketch (SketchShapes, the relation markers and dimensions, each redrawn only when what it shows changes) and
+ * what follows the pointer: the entity in progress, snapping cues and live sizes.
+ */
 export function Drawing() {
     const {
-        geometry: g, draft, cursor, tool, selection, picks, hover, dimDrag, sides, typed, snapKind, snapGuides, snapHints, dof, conflicting,
-        redundant, arcSweep, editPreview, editText, highlight, xform,
+        geometry: g, draft, cursor, tool, sides, typed, snapKind, snapGuides, snapHints, arcSweep, editPreview, editText, xform,
+        drawOptions, chainStart, lineArc,
     } = useSketcher();
+    const zone = useSketchMore((m) => m.zone);
     const camera = useThree((s) => s.camera) as PerspectiveCamera;
     const size = useThree((s) => s.size);
     // A size that reads about 9 px on screen, for arrows and glyph offsets.
-    const unit = Math.max(0.2, (2 * camera.position.length() * Math.tan(MathUtils.degToRad(camera.fov) / 2) / size.height) * 9);
-    const entities = useMemo(() => geometryEntities(g), [g]);
-    // Each entity's own state: probed again only when the relations change, not while something is dragged.
-    const structure = useMemo(() => JSON.stringify([g.curves.map(({ id, kind }) => [id, kind]), g.constraints, g.points.map((p) => [p.id, p.fixed])]), [g]);
-    const defined = useMemo(() => (dof > 0 ? definedEntities(g) : null), [structure, dof > 0]);
-    const isDefined = (id: string) => dof === 0 || !!defined?.has(id);
-    const overRefs = new Set(g.constraints.filter((c) => redundant.includes(c.id)).flatMap((c) => constraintRefs(c)));
-    const selected = new Set(selection.map((s) => s.id));
-    const picked = new Set((dimDrag?.picks ?? picks).map((p) => p.id));
+    const unit = Math.max(0.2, pixelSizeAt(camera, ORIGIN_3D, size.height) * 9);
     const picking = tool === 'dimension' || tool.startsWith('c:') || isEditTool(tool);
-    const hovered = picking && hover ? hover.id : null;
-    // Lit from the relations or repair list.
-    const lit = new Set(highlight);
     const xformFrom = tool === 'xform' && xform?.picks.length === 1 && (xform.kind === 'move' || xform.kind === 'copy' || xform.kind === 'stretch') ? xform.picks[0] : null;
-    const conflictRefs = new Set(g.constraints.filter((c) => conflicting.includes(c.id)).flatMap((c) => Object.values(c).filter((v) => typeof v === 'string')));
     const at = draft.map((d) => d.at);
-    const preview = cursor && draft.length && !['select', 'dimension'].includes(tool) && !tool.startsWith('c:') && !isEditTool(tool)
-        ? tool === 'tangentArc' ? tangentPreview(g, draft[0].point, at[0], cursor) : draftEntity(tool, at, cursor, sides, arcSweep) : null;
-    const previewText = preview && draftText(preview);
-    const last = at[at.length - 1];
+    // The draw tool variants and options preview what their click would build.
+    const variant = cursor && draft.length
+        ? drawPreview({ tool, g, draft, cursor, options: drawOptions, sides, sweep: arcSweep, chainStart, lineArc: lineArc.arc }) : null;
+    const preview = !variant && cursor && draft.length && !['select', 'dimension'].includes(tool) && !tool.startsWith('c:') && !isEditTool(tool)
+        ? tool === 'tangentArc' ? zonedPreview(g, draft[0].point, at[0], cursor, zone.intent) ?? tangentPreview(g, draft[0].point, at[0], cursor)
+            : draftEntity(tool, at, cursor, sides, arcSweep) : null;
+    const shownPreview = preview || (variant?.length === 1 ? variant[0] : null);
+    const previewText = shownPreview && ((isConicTool(tool) && cursor ? conicDraftText(tool, at, cursor) : null) ?? draftText(shownPreview));
+    const guides: BatchLine[] = cursor && tool !== 'select' ? snapGuides.map((q) => ({
+        points: [v3(q), v3(cursor)], color: '#ffd166', width: 1, dashed: true, dashSize: unit * 0.4, gapSize: unit * 0.4, renderOrder: 21,
+    })) : [];
     return (
         <>
-            {entities.map((e) => {
-                const on = picked.has(e.id) || hovered === e.id || lit.has(e.id);
-                const color = lit.has(e.id) ? PICKED : selected.has(e.id) ? SELECTED : on ? PICKED : conflictRefs.has(e.id) ? CONFLICT
-                    : overRefs.has(e.id) ? OVER : e.construction ? CONSTRUCTION : isDefined(e.id) ? FIXED : FREE;
-                return (
-                    <EntityLine key={e.id} entity={e} color={color} dashed={e.construction} width={selected.has(e.id) || on ? 3.8 : e.construction ? 1.8 : 2.8} />
-                );
-            })}
-            {g.points.map((p) => {
-                const state = lit.has(p.id) ? 'picked' : selected.has(p.id) ? 'selected' : picked.has(p.id) || hovered === p.id ? 'picked' : p.fixed ? 'fixed' : '';
-                return (
-                    <Label key={p.id} at={[p.u, p.v]} className={`pt ${state} ${isDefined(p.id) ? 'done' : ''}`}>
-                        <span />
-                    </Label>
-                );
-            })}
-            {(picked.has(AXIS_U) || hovered === AXIS_U || lit.has(AXIS_U)) && <Line points={[[-1e4, 0, 0], [1e4, 0, 0]]} color={PICKED} lineWidth={2} depthTest={false} />}
-            {(picked.has(AXIS_V) || hovered === AXIS_V || lit.has(AXIS_V)) && <Line points={[[0, -1e4, 0], [0, 1e4, 0]]} color={PICKED} lineWidth={2} depthTest={false} />}
-            <Label at={[0, 0]} className={`pt origin ${picked.has('origin') || hovered === 'origin' || lit.has('origin') ? 'picked' : ''}`}>
-                <span />
-            </Label>
+            <SketchShapes />
             <Glyphs offset={unit * 0.9} />
             <Dimensions size={unit} />
             <DimensionPreview size={unit} />
             <DimensionInput size={unit} />
+            <DimExtrasDrawing unit={unit} />
+            <MoreDrawing unit={unit} />
+            <ModifyDragDrawing unit={unit} />
+            <Instant2dDrawing unit={unit} />
+            <ItemsDrawing />
+            <PathDrawing />
+            <SplineOverlays unit={unit} />
+            <FullyDefineGhosts unit={unit} lines={dimensionLines} text={dimensionText} spots={glyphSpots} glyphs={GLYPHS} />
             {preview && <EntityLine entity={preview} color={DRAFT} dashed width={2.4} />}
+            {variant?.map((e, i) => <EntityLine key={`draw-${i}`} entity={e} color={DRAFT} dashed width={2.4} />)}
             {tool === 'centerArc' && draft.length === 2 && <EntityLine entity={{ kind: 'line', a: at[0], b: at[1] }} color={DRAFT} dashed />}
+            {isConicTool(tool) && cursor && conicGuides(tool, at, cursor).map((e, i) => (
+                <EntityLine key={`guide-${i}`} entity={e} color={DRAFT} dashed width={1.2} />
+            ))}
             {/* Trim: the piece that goes, in red; extend and offset: what gets added. */}
             {(isEditTool(tool) || tool === 'xform' || tool === 'select') && editPreview.map((e, i) => (
                 <EntityLine key={`edit-${i}`} entity={e} color={tool === 'trim' ? CONFLICT : DRAFT} dashed={tool !== 'trim'} width={tool === 'trim' ? 4.2 : 2.4} />
@@ -610,9 +716,7 @@ export function Drawing() {
             {tool === 'arc' && draft.length === 2 && cursor && !circleThrough(at[0], cursor, at[1]) && (
                 <EntityLine entity={{ kind: 'line', a: at[0], b: at[1] }} color={DRAFT} dashed />
             )}
-            {cursor && tool !== 'select' && snapGuides.map((q, i) => (
-                <Line key={i} points={[v3(q), v3(cursor)]} color="#ffd166" lineWidth={1} dashed dashSize={unit * 0.4} gapSize={unit * 0.4} depthTest={false} renderOrder={21} />
-            ))}
+            <LineBatch lines={guides} />
             {cursor && tool !== 'select' && !picking && snapHints.filter((m) => dist(m, cursor) > 1e-6).map((m, i) => (
                 <Label key={i} at={m} className="snap mid hint">
                     <span />
@@ -645,42 +749,103 @@ export function Catcher({ frame }: { frame: RefObject<Group | null> }) {
         const raycaster = new Raycaster();
         const plane = new Plane();
         // Capture phase, before camera-controls sees the press: a press on sketch geometry drags it, not the view.
-        planePoint = (clientX, clientY) => {
+        /** Where the ray of `view` through a screen position meets the sketch plane, in the scene. */
+        const worldAt = (view: Camera, clientX: number, clientY: number): Vector3 | null => {
             if (!frame.current) {
                 return null;
             }
             const rect = gl.domElement.getBoundingClientRect();
-            raycaster.setFromCamera(new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1), camera);
+            rayFromCamera(raycaster, new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1), view);
             const matrix = frame.current.matrixWorld;
             plane.setFromNormalAndCoplanarPoint(new Vector3(0, 0, 1).transformDirection(matrix), new Vector3().setFromMatrixPosition(matrix));
-            const hit = raycaster.ray.intersectPlane(plane, new Vector3());
-            if (!hit) {
+            return raycaster.ray.intersectPlane(plane, new Vector3());
+        };
+        planePoint = (clientX, clientY) => {
+            const hit = worldAt(camera, clientX, clientY);
+            if (!hit || !frame.current) {
                 return null;
             }
             const local = frame.current.worldToLocal(hit.clone());
-            return { p: [local.x, local.y], perPx: (2 * camera.position.distanceTo(hit) * Math.tan(MathUtils.degToRad(camera.fov) / 2)) / rect.height };
+            return { p: [local.x, local.y], perPx: pixelSizeAt(camera, hit, gl.domElement.getBoundingClientRect().height), world: hit };
         };
+        // A left drag in an open sketch never turns the view (the middle button does). On sketch geometry it drags that;
+        // elsewhere it slides the view along the sketch plane, the grabbed spot staying under the pointer.
+        let slide: { x: number; y: number; grab: Vector3; view: Camera; eye: Vector3; look: Vector3; moving: boolean } | null = null;
+        let trucking = false;
         const down = (event: PointerEvent) => {
             // Presses on a dimension value or its input belong to that, not to the geometry behind it.
-            if (event.button !== 0 || (event.target as Element | null)?.closest?.('.sk-dim, .sk-dim-input')) {
+            if ((event.target as Element | null)?.closest?.('.sk-dim, .sk-dim-input, .sk-context-bar')) {
+                return;
+            }
+            // Modify Sketch's drags, Instant2D's handles and shaded contours take their presses first.
+            if (viewPress(event)) {
+                if (controls) {
+                    controls.enabled = false;
+                }
+                return;
+            }
+            if (event.button !== 0) {
                 return;
             }
             const hit = planePoint(event.clientX, event.clientY);
-            if (hit && sketchDown(hit.p, SNAP_PX * hit.perPx) && controls) {
-                controls.enabled = false;
+            if (!hit) {
+                return;
+            }
+            if (sketchDown(hit.p, SNAP_PX * hit.perPx, event.clientX)) {
+                if (controls) {
+                    controls.enabled = false;
+                }
+                return;
+            }
+            if (!controls || useSketcher.getState().stage !== 'draw') {
+                return;
+            }
+            if (Math.abs(camera.getWorldDirection(new Vector3()).dot(plane.normal)) < 0.2) {
+                // Seen almost edge on, the plane cannot be grabbed: the drag pans across the screen instead.
+                controls.mouseButtons.left = CameraControlsImpl.ACTION.TRUCK;
+                trucking = true;
+                return;
+            }
+            controls.enabled = false;
+            slide = {
+                x: event.clientX, y: event.clientY, grab: hit.world, view: camera.clone(), moving: false,
+                eye: controls.getPosition(new Vector3()), look: controls.getTarget(new Vector3()),
+            };
+        };
+        const move = (event: PointerEvent) => {
+            if (!slide || !controls || (!slide.moving && Math.hypot(event.clientX - slide.x, event.clientY - slide.y) <= CLICK_SLOP_PX)) {
+                return;
+            }
+            slide.moving = true;
+            // Measured with the view as it was at the press, so each move is exact and nothing builds up.
+            const now = worldAt(slide.view, event.clientX, event.clientY);
+            if (now) {
+                const by = slide.grab.clone().sub(now);
+                const [eye, look] = [slide.eye.clone().add(by), slide.look.clone().add(by)];
+                void controls.setLookAt(eye.x, eye.y, eye.z, look.x, look.y, look.z, false);
             }
         };
-        const up = () => {
-            sketchUp();
+        const up = (event: PointerEvent) => {
+            sketchUp({ shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey });
+            slide = null;
+            if (controls && trucking) {
+                controls.mouseButtons.left = CameraControlsImpl.ACTION.ROTATE;
+            }
+            trucking = false;
             if (controls && !controls.enabled) {
                 controls.enabled = true;
             }
         };
         element.addEventListener('pointerdown', down, { capture: true });
+        window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
         return () => {
             element.removeEventListener('pointerdown', down, { capture: true });
+            window.removeEventListener('pointermove', move);
             window.removeEventListener('pointerup', up);
+            if (controls && trucking) {
+                controls.mouseButtons.left = CameraControlsImpl.ACTION.ROTATE;
+            }
             planePoint = () => null;
         };
     }, [controls, gl, connected, camera, frame]);
@@ -689,29 +854,44 @@ export function Catcher({ frame }: { frame: RefObject<Group | null> }) {
             return null;
         }
         const local = frame.current.worldToLocal(e.point.clone());
-        const camera = e.camera as PerspectiveCamera;
-        const perPx = (2 * camera.position.distanceTo(e.point) * Math.tan(MathUtils.degToRad(camera.fov) / 2)) / size.height;
-        return { p: [local.x, local.y], tolerance: SNAP_PX * perPx };
+        return { p: [local.x, local.y], tolerance: SNAP_PX * pixelSizeAt(e.camera as PerspectiveCamera, e.point, size.height) };
     };
     return (
         <mesh
             onPointerMove={(e) => {
                 const hit = toSketch(e);
                 if (hit) {
-                    sketchMove(hit.p, hit.tolerance);
+                    sketchMove(hit.p, hit.tolerance, e.nativeEvent.clientX, { shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey });
                 }
             }}
             onClick={(e) => {
                 const hit = toSketch(e);
-                if (hit && e.delta <= CLICK_SLOP_PX) {
+                // Alt + click on a shaded contour: its context toolbar.
+                if (hit && e.delta <= CLICK_SLOP_PX && e.altKey && contourAltClick(hit.p)) {
                     e.stopPropagation();
-                    sketchClick(hit.p, hit.tolerance, e.shiftKey);
+                    return;
+                }
+                // Rapid Sketch: a click through the plane onto another face of the part opens the next sketch there.
+                if (hit && e.delta <= CLICK_SLOP_PX && rapidClick(partFaceHit(e.intersections), e.distance, hit.tolerance)) {
+                    e.stopPropagation();
+                    return;
+                }
+                if (hit && e.delta <= CLICK_SLOP_PX) {
+                    // A form collecting model picks: the click picks a curve of another sketch, or goes on to the model.
+                    if (useSketchModel.getState().picking) {
+                        if (modelPlaneClick(hit.p, hit.tolerance)) {
+                            e.stopPropagation();
+                        }
+                        return;
+                    }
+                    e.stopPropagation();
+                    sketchClick(hit.p, hit.tolerance, e.shiftKey, e.ctrlKey || e.metaKey);
                 }
             }}
             onDoubleClick={() => endChain()}
         >
             <planeGeometry args={[100000, 100000]} />
-            <meshBasicMaterial transparent opacity={0} depthWrite={false} colorWrite={false} side={DoubleSide} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} colorWrite={false} side={DoubleSide} forceSinglePass />
         </mesh>
     );
 }

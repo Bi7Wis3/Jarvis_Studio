@@ -511,6 +511,31 @@ describe('sketch regions', () => {
     }, SLOW);
 });
 
+describe('derived sketches', () => {
+    const empty: Shape = { kind: 'empty' };
+    const square = (size: number) => ({ kind: 'polygon' as const, points: [[0, 0], [size, 0], [size, size], [0, size]] as [number, number][] });
+
+    it('builds from the parent sketch on its own plane, following the parent when it changes', async () => {
+        const steps = (size: number): Feature[] => [
+            { id: 'parent', op: 'sketch', sketch: { plane: 'top', profiles: [square(size)] } },
+            // Its own (stale) copy is a 1 mm square: the parent's contents count.
+            { id: 'child', op: 'sketch', sketch: { plane: 'front', offset: 3, profiles: [square(1)], derived: { from: 'parent' } } },
+            { id: 'e', op: 'extrude', mode: 'add', distance: 5, sketchRef: 'child' },
+        ];
+        const ten = await mesh(empty, steps(10));
+        expectBounds(ten, [0, 0, 3], [10, 10, 8]);
+        expect(volume(ten)).toBeCloseTo(500, 1);
+        expectBounds(await mesh(empty, steps(20)), [0, 0, 3], [20, 20, 8]);
+    }, SLOW);
+
+    it('names a derived sketch whose parent is not an earlier sketch step', async () => {
+        await expect(mesh(empty, [
+            { id: 'child', name: 'Sketch2', op: 'sketch', sketch: { plane: 'front', profiles: [square(1)], derived: { from: 'gone' } } },
+            { id: 'e', op: 'extrude', mode: 'add', distance: 5, sketchRef: 'child' },
+        ])).rejects.toThrow(/Sketch2.*derived from \("gone"\) is not an earlier sketch step/);
+    }, SLOW);
+});
+
 describe('extrude options', () => {
     const empty: Shape = { kind: 'empty' };
     const top = (profiles: Sketch['profiles'], offset?: number): Sketch => ({ plane: 'top', offset, profiles });
@@ -632,5 +657,339 @@ describe('fillet order', () => {
         const first = await mesh(empty, [block, corners(15), top]);
         expect(volume(first)).toBeLessThan(14 * 60 * 60 - 4 * (15 * 15 - (Math.PI * 15 * 15) / 4) * 11);
         await expect(mesh(empty, [block, top, corners(15)])).rejects.toThrow(/fillet of 15 mm could not be built.*drag Fillet2 above Fillet1 in the feature tree/);
+    }, SLOW);
+});
+
+describe('ellipses, splines and conics', () => {
+    // Built here directly (not through the kernel worker) to measure the exact solid.
+    let build: typeof import('./sketch.js');
+    let r: typeof import('replicad');
+    let curves: typeof import('@jarvis/core/curves');
+
+    beforeAll(async () => {
+        r = await import('replicad');
+        const oc = (await import('replicad-opencascadejs')).default;
+        r.setOC(await oc({ print: () => {}, printErr: () => {} }));
+        build = await import('./sketch.js');
+        curves = await import('@jarvis/core/curves');
+    }, SLOW);
+
+    const valid = (shape: import('replicad').Shape3D): boolean => {
+        const analyzer = new (r.getOC().BRepCheck_Analyzer)(shape.wrapped, true, false);
+        const ok = analyzer.IsValid();
+        analyzer.delete();
+        return ok;
+    };
+    const area = (pts: [number, number][]) => Math.abs(pts.reduce((a, p, i) => {
+        const q = pts[(i + 1) % pts.length];
+        return a + p[0] * q[1] - q[0] * p[1];
+    }, 0) / 2);
+    type Seg = import('@jarvis/core').SketchSegment;
+    /** Volume by adaptive integration (the default fixed rule is coarse on spline faces). */
+    const exactVolume = (shape: import('replicad').Shape3D): number => {
+        const props = new (r.getOC().GProp_GProps)();
+        r.getOC().BRepGProp.VolumePropertiesGK(shape.wrapped, props, 1e-10, false, true, false, false, false);
+        const v = props.Mass();
+        props.delete();
+        return v;
+    };
+
+
+    it('extrudes an ellipse at an angle to exactly pi a b h, as a valid solid', () => {
+        const t = (30 * Math.PI) / 180;
+        // Radius 1 (8) is the shorter axis here: the 20 mm radius is the major one.
+        const sketch: Sketch = { plane: 'front', profiles: [{ kind: 'ellipse', center: [3, 4], major: [3 + 8 * Math.cos(t), 4 + 8 * Math.sin(t)], minor: 20 }] };
+        const solid = build.extrudeSketch(sketch, [0, 5]);
+        expect(valid(solid)).toBe(true);
+        expect(Math.abs(r.measureVolume(solid) / (Math.PI * 20 * 8 * 5) - 1)).toBeLessThan(1e-9);
+        // A true ellipse with its major axis at 30 + 90 degrees: the width across u is exact.
+        const [lo, hi] = solid.boundingBox.bounds;
+        const s = Math.sin(t);
+        expect(hi[0] - lo[0]).toBeCloseTo(2 * Math.hypot(20 * s, 8 * Math.cos(t)), 6);
+    }, SLOW);
+
+    it('extrudes a closed spline through points to a valid solid with the area of the curve', () => {
+        const through: [number, number][] = [[10, 0], [4, 7], [-6, 5], [-9, -3], [0, -8]];
+        const sketch: Sketch = { plane: 'top', profiles: [{ kind: 'path', start: through[0], segments: [{ kind: 'spline', through: through.slice(1), to: through[0] }] }] };
+        const solid = build.extrudeSketch(sketch, [0, 2]);
+        expect(valid(solid)).toBe(true);
+        expect(solid.edges.filter((e) => e.geomType === 'BSPLINE_CURVE').length).toBe(2);
+        const fine = curves.splinePoints([...through, through[0]], true, 4000);
+        expect(Math.abs(exactVolume(solid) / (area(fine) * 2) - 1)).toBeLessThan(1e-6);
+    }, SLOW);
+
+    it('extrudes a loop of an elliptical arc, a line, a spline, a conic and an arc to a valid solid', () => {
+        const start: [number, number] = [20, 0];
+        const segments: Seg[] = [
+            { kind: 'ellipse', center: [0, 0], major: [20, 0], minor: 10, ccw: true, to: [-20, 0] },
+            { kind: 'line', to: [-20, -10] },
+            { kind: 'spline', through: [[-12, -14], [-4, -9]], to: [0, -12] },
+            { kind: 'conic', apex: [8, -20], rho: 0.4, to: [14, -12] },
+            { kind: 'arc', through: [18.5, -7], to: [20, 0] },
+        ];
+        const sketch: Sketch = { plane: 'front', profiles: [{ kind: 'path', start, segments }] };
+        const solid = build.extrudeSketch(sketch, [0, 3]);
+        expect(valid(solid)).toBe(true);
+        const types = solid.edges.map((e) => e.geomType);
+        expect(types).toContain('ELLIPSE');
+        expect(types).toContain('BEZIER_CURVE');
+        let at = start;
+        const pts: [number, number][] = [start];
+        for (const s of segments) {
+            pts.push(...curves.segmentPoints(at, s, 2000));
+            at = s.to;
+        }
+        expect(Math.abs(exactVolume(solid) / (area(pts) * 3) - 1)).toBeLessThan(1e-6);
+    }, SLOW);
+
+    it('builds a clockwise elliptical arc as the arc from its end', () => {
+        const loop = (ccw: boolean): Sketch => ({ plane: 'front', profiles: [{ kind: 'path', start: [-20, 0], segments: [
+            { kind: 'ellipse', center: [0, 0], major: [20, 0], minor: 10, ccw, to: [20, 0] },
+            { kind: 'line', to: [-20, 0] },
+        ] }] });
+        const upper = build.extrudeSketch(loop(false), [0, 1]);
+        const lower = build.extrudeSketch(loop(true), [0, 1]);
+        expect(r.measureVolume(upper)).toBeCloseTo(Math.PI * 100, 8);
+        expect(r.measureVolume(lower)).toBeCloseTo(Math.PI * 100, 8);
+        expect(upper.boundingBox.bounds[1][1]).toBeCloseTo(10, 6);
+        expect(lower.boundingBox.bounds[0][1]).toBeCloseTo(-10, 6);
+    }, SLOW);
+
+    /** Area of a loop of segments from `start`, sampled finely. */
+    const loopArea = (start: [number, number], segments: Seg[]): number => {
+        let at = start;
+        const pts: [number, number][] = [start];
+        for (const s of segments) {
+            pts.push(...curves.segmentPoints(at, s, 4000));
+            at = s.to;
+        }
+        return area(pts);
+    };
+
+    it('builds style splines exactly: a Bezier curve and B-splines of degree 3 and 5 of their control vertices', () => {
+        const poles: [number, number][] = [[-14, 6], [-4, 14], [6, 2], [12, 15], [16, 4]];
+        for (const degree of [6, 3, 5]) {
+            const segments: Seg[] = [
+                { kind: 'bspline', poles, degree, to: [20, 0] },
+                { kind: 'line', to: [-20, 0] },
+            ];
+            const sketch: Sketch = { plane: 'front', profiles: [{ kind: 'path', start: [-20, 0], segments }] };
+            const solid = build.extrudeSketch(sketch, [0, 2]);
+            expect(valid(solid)).toBe(true);
+            expect(solid.edges.map((e) => e.geomType)).toContain(degree === 6 ? 'BEZIER_CURVE' : 'BSPLINE_CURVE');
+            expect(Math.abs(exactVolume(solid) / (loopArea([-20, 0], segments) * 2) - 1)).toBeLessThan(1e-6);
+        }
+    }, SLOW);
+
+    it('extrudes profiles of trimmed and split ellipse, spline, style spline and conic pieces to valid solids, the pieces making the same curve', async () => {
+        const cut = await import('@jarvis/core/curveIntersect');
+        const split = await import('@jarvis/core/curveSplit');
+        type P = [number, number];
+        const solid = (start: P, segments: Seg[]) => build.extrudeSketch({ plane: 'front', profiles: [{ kind: 'path', start, segments }] }, [0, 2]);
+        const same = (a: number, b: number) => expect(Math.abs(a / b - 1)).toBeLessThan(1e-9);
+        // An ellipse trimmed by the line u = 5: the partial ellipse right of it, closed by the line.
+        const ellipse = curves.ellipseAxes([0, 0], [20, 0], 10);
+        const hits = cut.crossings({ kind: 'ellipse', e: ellipse }, { kind: 'line', a: [5, -20], b: [5, 20] });
+        expect(hits).toHaveLength(2);
+        const [lower, upper] = [...hits].sort((x, y) => x.at[1] - y.at[1]).map((h) => h.at);
+        const arc = solid(lower, [{ kind: 'ellipse', center: [0, 0], major: [20, 0], minor: 10, ccw: true, to: upper }, { kind: 'line', to: lower }]);
+        expect(valid(arc)).toBe(true);
+        same(exactVolume(arc), 2 * 20 * 10 * (Math.acos(5 / 20) - (5 / 20) * Math.sqrt(1 - 1 / 16)));
+        // A closed spline split at two points: its two pieces (handles at the cuts, the parent's spacing) close it again.
+        const ring: P[] = [[10, 0], [4, 7], [-6, 5], [-9, -3], [0, -8], [10, 0]];
+        const whole = solid(ring[0], [{ kind: 'spline', through: ring.slice(1, -1), to: ring[0] }]);
+        const asSegment = (piece: import('@jarvis/core/curveSplit').SplinePiece): Seg => {
+            const pts = piece.points.map((p) => (typeof p === 'number' ? ring[p] : p));
+            return { kind: 'spline', through: pts.slice(1, -1), to: pts[pts.length - 1], startHandle: piece.startHandle, endHandle: piece.endHandle, spacing: piece.spacing };
+        };
+        const first = split.splinePiece(ring, true, {}, 0.4, 3.7);
+        const second = split.splinePiece(ring, true, {}, 3.7, 5.4);
+        const start = cut.pointAt(split.splineGeom(ring, true), 0.4);
+        const pieces = solid(start, [asSegment(first), asSegment(second)]);
+        expect(valid(pieces)).toBe(true);
+        // Two pieces, each a top and a bottom edge.
+        expect(pieces.edges.filter((e) => e.geomType === 'BSPLINE_CURVE').length).toBe(4);
+        same(exactVolume(pieces), exactVolume(whole));
+        // A B-spline style spline of degree 3 split in two (inner knots no longer even), closed by a line.
+        const poles: P[] = [[-20, 0], [-14, 9], [-4, 14], [6, 2], [12, 15], [16, 4], [20, 0]];
+        const styleWhole = solid(poles[0], [{ kind: 'bspline', poles: poles.slice(1, -1), degree: 3, to: poles[6] }, { kind: 'line', to: poles[0] }]);
+        const [s1, s2] = [split.bsplinePiece(poles, 3, undefined, 0, 0.42), split.bsplinePiece(poles, 3, undefined, 0.42, 1)];
+        expect(s1.knots ?? s2.knots).toBeDefined();
+        const styled = solid(poles[0], [
+            { kind: 'bspline', poles: s1.poles.slice(1, -1), degree: 3, to: s1.poles[s1.poles.length - 1], knots: s1.knots },
+            { kind: 'bspline', poles: s2.poles.slice(1, -1), degree: 3, to: poles[6], knots: s2.knots },
+            { kind: 'line', to: poles[0] },
+        ]);
+        expect(valid(styled)).toBe(true);
+        same(exactVolume(styled), exactVolume(styleWhole));
+        // A conic split in two conics (each its own top vertex and Rho), closed by its chord.
+        const conic = { kind: 'conic' as const, p0: [-10, 0] as P, p1: [0, 12] as P, p2: [10, 0] as P, w: curves.conicWeight(0.4) };
+        const conicWhole = solid([-10, 0], [{ kind: 'conic', apex: [0, 12], rho: 0.4, to: [10, 0] }, { kind: 'line', to: [-10, 0] }]);
+        const [c1, c2] = [split.conicPiece(conic, 0, 0.9)!, split.conicPiece(conic, 0.9, Math.PI / 2)!];
+        const conics = solid([-10, 0], [
+            { kind: 'conic', apex: c1.apex, rho: c1.rho, to: c1.end },
+            { kind: 'conic', apex: c2.apex, rho: c2.rho, to: [10, 0] },
+            { kind: 'line', to: [-10, 0] },
+        ]);
+        expect(valid(conics)).toBe(true);
+        expect(conics.edges.filter((e) => e.geomType === 'BEZIER_CURVE').length).toBe(4);
+        same(exactVolume(conics), exactVolume(conicWhole));
+    }, SLOW);
+
+    it('builds a spline with tangency handles at its ends', () => {
+        const segments: Seg[] = [
+            { kind: 'spline', through: [[0, 9]], to: [10, 0], startHandle: [-10, 6], endHandle: [13, 4] },
+            { kind: 'line', to: [-10, 0] },
+        ];
+        const solid = build.extrudeSketch({ plane: 'top', profiles: [{ kind: 'path', start: [-10, 0], segments }] }, [0, 1]);
+        expect(valid(solid)).toBe(true);
+        expect(Math.abs(exactVolume(solid) / loopArea([-10, 0], segments) - 1)).toBeLessThan(1e-6);
+    }, SLOW);
+
+    it('builds splines with inner handles, held curvature and stored spans, and rational style splines with knots, as drawn', () => {
+        const through: [number, number][] = [[-4, 10], [4, 7], [10, 3]];
+        const spline: Seg = {
+            kind: 'spline', through, to: [14, 0], startHandle: [-12, 4],
+            handles: [{ at: 2, prev: [1, 8.5], next: [7, 5.5] }], curvature: [{ at: 2, value: -0.01 }], continuity: true, spacing: [0.95, 1.05, 1, 1.1],
+        };
+        const style: Seg = { kind: 'bspline', poles: [[10, -8], [2, -12], [-6, -2], [-12, -9]], degree: 3, knots: [0.3, 0.45], weights: [1, 2.5, 0.6, 1, 1.8, 1], to: [-14, 0] };
+        const segments: Seg[] = [spline, style];
+        // Built from either end: the reversed segments are the same curve.
+        for (const loop of [segments, [curves.reverseSegment([14, 0], style), curves.reverseSegment([-14, 0], spline)]]) {
+            const solid = build.extrudeSketch({ plane: 'front', profiles: [{ kind: 'path', start: [-14, 0], segments: loop }] }, [0, 2]);
+            expect(valid(solid)).toBe(true);
+            expect(Math.abs(exactVolume(solid) / (loopArea([-14, 0], segments) * 2) - 1)).toBeLessThan(1e-6);
+        }
+    }, SLOW);
+});
+
+describe('offset, filleted and cut curves', () => {
+    // The same exact maths the sketcher's Offset, Sketch Fillet and Sketch Chamfer use: @jarvis/core/curveOffset on
+    // the curves of @jarvis/core/curveIntersect, cut by @jarvis/core/curveSplit.
+    let build: typeof import('./sketch.js');
+    let r: typeof import('replicad');
+    let curves: typeof import('@jarvis/core/curves');
+    let off: typeof import('@jarvis/core/curveOffset');
+    let split: typeof import('@jarvis/core/curveSplit');
+    let meet: typeof import('@jarvis/core/curveIntersect');
+
+    beforeAll(async () => {
+        r = await import('replicad');
+        const oc = (await import('replicad-opencascadejs')).default;
+        r.setOC(await oc({ print: () => {}, printErr: () => {} }));
+        build = await import('./sketch.js');
+        curves = await import('@jarvis/core/curves');
+        off = await import('@jarvis/core/curveOffset');
+        split = await import('@jarvis/core/curveSplit');
+        meet = await import('@jarvis/core/curveIntersect');
+    }, SLOW);
+
+    type P2 = [number, number];
+    type Seg = import('@jarvis/core').SketchSegment;
+    const valid = (shape: import('replicad').Shape3D): boolean => {
+        const analyzer = new (r.getOC().BRepCheck_Analyzer)(shape.wrapped, true, false);
+        const ok = analyzer.IsValid();
+        analyzer.delete();
+        return ok;
+    };
+    const exactVolume = (shape: import('replicad').Shape3D): number => {
+        const props = new (r.getOC().GProp_GProps)();
+        r.getOC().BRepGProp.VolumePropertiesGK(shape.wrapped, props, 1e-10, false, true, false, false, false);
+        const v = props.Mass();
+        props.delete();
+        return v;
+    };
+    const area = (pts: P2[]) => Math.abs(pts.reduce((a, p, i) => {
+        const q = pts[(i + 1) % pts.length];
+        return a + p[0] * q[1] - q[0] * p[1];
+    }, 0) / 2);
+    const loopArea = (start: P2, segments: Seg[]): number => {
+        let at = start;
+        const pts: P2[] = [start];
+        for (const s of segments) {
+            // Long fitted splines: hundreds of pieces, so no spread into push.
+            for (const p of curves.segmentPoints(at, s, s.kind === 'spline' && s.through.length > 20 ? 200 : 4000)) {
+                pts.push(p);
+            }
+            at = s.to;
+        }
+        return area(pts);
+    };
+    /** The whole curve offset by d, as a path segment. */
+    const offsetOf = (g: import('@jarvis/core/curveIntersect').CurveGeom, d: number) => {
+        const ev = off.geomEval(g);
+        const fit = off.offsetCurve(g, ev, d, ev.t0, ev.t0 + (ev.period ?? ev.t1 - ev.t0))!;
+        expect(fit.deviation).toBeLessThanOrEqual(1e-6);
+        return off.offsetSegment(fit.piece);
+    };
+
+    it('extrudes the band between a spline\'s two offsets, capped with lines, to a valid solid of the band\'s area', () => {
+        const spline = split.splineGeom([[0, 0], [10, 6], [20, 2], [30, 8]], false);
+        const up = offsetOf(spline, 1.5);
+        const down = offsetOf(spline, -1.5);
+        const back = curves.reverseSegment(down.from, down.seg);
+        const segments: Seg[] = [up.seg, { kind: 'line', to: down.seg.to }, back, { kind: 'line', to: up.from }];
+        const sketch: Sketch = { plane: 'front', profiles: [{ kind: 'path', start: up.from, segments }] };
+        const solid = build.extrudeSketch(sketch, [0, 2]);
+        expect(valid(solid)).toBe(true);
+        expect(Math.abs(exactVolume(solid) / (loopArea(up.from, segments) * 2) - 1)).toBeLessThan(1e-6);
+    }, SLOW);
+
+    it('extrudes a ring between an ellipse and its offset spline to a valid solid', () => {
+        const e = curves.ellipseAxes([3, 4], [33, 4], 15);
+        // Left of the counter-clockwise ellipse is inside: a negative distance goes outside.
+        const ring = offsetOf({ kind: 'ellipse', e }, -2);
+        expect(ring.seg.kind).toBe('spline');
+        const sketch: Sketch = { plane: 'top', profiles: [{ kind: 'path', start: ring.from, segments: [ring.seg] }, { kind: 'ellipse', center: [3, 4], major: [33, 4], minor: 15 }] };
+        const solid = build.extrudeSketch(sketch, [0, 3]);
+        expect(valid(solid)).toBe(true);
+        const expected = (loopArea(ring.from, [ring.seg]) - Math.PI * 30 * 15) * 3;
+        expect(Math.abs(exactVolume(solid) / expected - 1)).toBeLessThan(1e-6);
+    }, SLOW);
+
+    it('extrudes loops whose corner between a line and a spline (and a B-spline) is filleted, cut exactly, to valid solids', () => {
+        const through: P2[] = [[0, 0], [8, 14], [18, 18], [28, 26]];
+        const poles: P2[] = [[0, 0], [3, 10], [9, 20], [18, 22], [26, 30], [28, 26]];
+        const sides: { geom: import('@jarvis/core/curveIntersect').CurveGeom; piece: (t: number) => Seg & { to: P2 }; end: P2 }[] = [
+            {
+                geom: split.splineGeom(through, false),
+                // The spline from the touch point to its end, run back from its end.
+                piece: (t) => {
+                    const p = split.splinePiece(through, false, {}, t, through.length - 1);
+                    const pts = p.points.map((q) => (typeof q === 'number' ? through[q] : q));
+                    const seg: Seg = { kind: 'spline', to: pts[pts.length - 1], through: pts.slice(1, -1),
+                        ...(p.startHandle ? { startHandle: p.startHandle } : {}), ...(p.endHandle ? { endHandle: p.endHandle } : {}), ...(p.spacing ? { spacing: p.spacing } : {}) };
+                    return curves.reverseSegment(pts[0], seg) as Seg & { to: P2 };
+                },
+                end: through[through.length - 1],
+            },
+            {
+                geom: split.bsplineGeom(poles, 3),
+                piece: (t) => {
+                    const p = split.bsplinePiece(poles, 3, undefined, t, 1);
+                    const seg: Seg = { kind: 'bspline', to: p.poles[p.poles.length - 1], poles: p.poles.slice(1, -1), degree: 3, ...(p.knots ? { knots: p.knots } : {}) };
+                    return curves.reverseSegment(p.poles[0], seg) as Seg & { to: P2 };
+                },
+                end: poles[poles.length - 1],
+            },
+        ];
+        for (const side of sides) {
+            const line: import('@jarvis/core/curveIntersect').CurveGeom = { kind: 'line', a: [0, 0], b: [30, 0] };
+            const [ls, ss] = [off.geomEval(line), off.geomEval(side.geom)];
+            const fit = off.filletFit({ ev: ls, corner: 0, far: 1 }, { ev: ss, corner: ss.t0, far: ss.t1 }, 3, [0, 0])!;
+            expect(fit).not.toBeNull();
+            const [p, q] = fit.touch;
+            expect(meet.pointAt(side.geom, fit.t[1])).toEqual(q);
+            // The fillet arc from the side's touch point to the line's, through its middle.
+            const m: P2 = [p[0] + q[0] - 2 * fit.centre[0], p[1] + q[1] - 2 * fit.centre[1]];
+            const l = Math.hypot(...m);
+            const mid: P2 = [fit.centre[0] + (3 * m[0]) / l, fit.centre[1] + (3 * m[1]) / l];
+            const back = side.piece(fit.t[1]);
+            const segments: Seg[] = [{ kind: 'line', to: [30, 0] }, { kind: 'line', to: side.end }, back, { kind: 'arc', through: mid, to: p }];
+            const sketch: Sketch = { plane: 'front', profiles: [{ kind: 'path', start: p, segments }] };
+            const solid = build.extrudeSketch(sketch, [0, 2]);
+            expect(valid(solid)).toBe(true);
+            expect(Math.abs(exactVolume(solid) / (loopArea(p, segments) * 2) - 1)).toBeLessThan(1e-6);
+        }
     }, SLOW);
 });

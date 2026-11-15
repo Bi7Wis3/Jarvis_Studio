@@ -1,7 +1,10 @@
 // Construction planes and axes: resolves plane and axis references against a part's history, in the part frame.
 // Shared by the CAD kernel (building) and the sketcher (drawing), so both see exactly the same planes.
 
-import type { AxisRef, CustomSketchPlane, Feature, PlaneRef, PointRef, RevolveAxis, Sketch, SketchPlane, Vec3 } from './index';
+import type {
+    AxisRef, CustomSketchPlane, Feature, ModelEdgeShape, PlaneDefinition, PlaneRef, PointDefinition, PointRef, RevolveAxis, Sketch, SketchPlane,
+    Vec3,
+} from './index';
 
 const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -74,55 +77,132 @@ export function resolvePlane(ref: SketchPlane | PlaneRef, features: Feature[], w
         if (step.op !== 'plane') {
             throw new Error(`${where}: "${ref.planeRef}" is not a plane`);
         }
-        const before = features.slice(0, features.indexOf(step));
-        const d = step.definition;
-        switch (d.kind) {
-            case 'offset': {
-                const base = resolvePlane(d.base, before, where);
-                return { ...base, origin: add(base.origin, scale(base.normal, d.distance)) };
-            }
-            case 'angle': {
-                const base = resolvePlane(d.base, before, where);
-                const axis = d.about === 'u' || d.about === 'v'
-                    ? { point: base.origin, direction: d.about === 'u' ? base.xDir : cross(base.normal, base.xDir) }
-                    : resolveAxis(d.about, before, where);
-                const dir = unit(axis.direction, 'rotation axis');
-                const origin = add(axis.point, rotate(sub(base.origin, axis.point), dir, d.angle));
-                return normalizePlane({ origin, normal: rotate(base.normal, dir, d.angle), xDir: rotate(base.xDir, dir, d.angle) });
-            }
-            case 'threePoints': {
-                const [a, b, c] = d.points.map((p) => resolvePoint(p, before, where));
-                const normal = cross(sub(b, a), sub(c, a));
-                if (!(length(normal) > 1e-9)) {
-                    throw new Error(`${where}: the three points lie on one line`);
-                }
-                return normalizePlane({ origin: a, normal, xDir: sub(b, a) });
-            }
-            case 'pointNormal': {
-                const normal = unit(d.normal, `${where}: normal`);
-                return normalizePlane({ origin: resolvePoint(d.point, before, where), normal, xDir: d.xDir ?? defaultXDir(normal) });
-            }
-            case 'parallel': {
-                const base = resolvePlane(d.base, before, where);
-                return { ...base, origin: resolvePoint(d.point, before, where) };
-            }
-            case 'normal': {
-                const axis = resolveAxis(d.axis, before, where);
-                const origin = d.point === undefined ? axis.point : resolvePoint(d.point, before, where);
-                return normalizePlane({ origin, normal: axis.direction, xDir: defaultXDir(axis.direction) });
-            }
-            case 'midplane': {
-                const a = resolvePlane(d.a, before, where);
-                const b = resolvePlane(d.b, before, where);
-                if (Math.abs(dot(a.normal, b.normal)) < 0.999) {
-                    throw new Error(`${where}: a midplane needs two parallel planes`);
-                }
-                const gap = dot(sub(b.origin, a.origin), a.normal);
-                return { ...a, origin: add(a.origin, scale(a.normal, gap / 2)) };
-            }
-        }
+        const plane = planeOfDefinition(step.definition, features.slice(0, features.indexOf(step)), where);
+        return step.definition.flipNormal ? flipped(plane) : plane;
+    }
+    if ('fixedPlane' in ref) {
+        return normalizePlane(checkedPlane(ref.fixedPlane, where));
     }
     return normalizePlane(checkedPlane(ref, where));
+}
+
+/** The same plane facing the other way: the normal turned around, u kept (so v turns too). */
+const flipped = (p: CustomSketchPlane): CustomSketchPlane => ({ ...p, normal: scale(p.normal, -1) });
+
+/** The plane a definition makes, its references resolved against `before` (the steps before it). */
+export function planeOfDefinition(d: PlaneDefinition, before: Feature[], where = 'plane'): CustomSketchPlane {
+    switch (d.kind) {
+        case 'offset': {
+            const base = resolvePlane(d.base, before, where);
+            return { ...base, origin: add(base.origin, scale(base.normal, d.distance)) };
+        }
+        case 'angle': {
+            let base = resolvePlane(d.base, before, where);
+            const axis = d.about === 'u' || d.about === 'v'
+                ? { point: base.origin, direction: d.about === 'u' ? base.xDir : cross(base.normal, base.xDir) }
+                : resolveAxis(d.about, before, where);
+            const dir = unit(axis.direction, 'rotation axis');
+            if (d.throughAxis) {
+                if (Math.abs(dot(dir, base.normal)) > 1e-6) {
+                    throw new Error(`${where}: the axis must lie in the plane or be parallel to it`);
+                }
+                // Moved along its normal until the axis lies in it, its origin kept closest to where it was.
+                base = { ...base, origin: add(base.origin, scale(base.normal, dot(sub(axis.point, base.origin), base.normal))) };
+            }
+            const origin = add(axis.point, rotate(sub(base.origin, axis.point), dir, d.angle));
+            return normalizePlane({ origin, normal: rotate(base.normal, dir, d.angle), xDir: rotate(base.xDir, dir, d.angle) });
+        }
+        case 'threePoints': {
+            const [a, b, c] = d.points.map((p) => resolvePoint(p, before, where));
+            const normal = cross(sub(b, a), sub(c, a));
+            if (!(length(normal) > 1e-9)) {
+                throw new Error(`${where}: the three points lie on one line`);
+            }
+            return normalizePlane({ origin: a, normal, xDir: sub(b, a) });
+        }
+        case 'pointNormal': {
+            const normal = unit(d.normal, `${where}: normal`);
+            return normalizePlane({ origin: resolvePoint(d.point, before, where), normal, xDir: d.xDir ?? defaultXDir(normal) });
+        }
+        case 'parallel': {
+            const base = resolvePlane(d.base, before, where);
+            return { ...base, origin: resolvePoint(d.point, before, where) };
+        }
+        case 'normal': {
+            const axis = resolveAxis(d.axis, before, where);
+            const origin = d.point === undefined ? axis.point : resolvePoint(d.point, before, where);
+            return normalizePlane({ origin, normal: axis.direction, xDir: defaultXDir(axis.direction) });
+        }
+        case 'midplane': {
+            const a = resolvePlane(d.a, before, where);
+            const b = resolvePlane(d.b, before, where);
+            if (Math.abs(dot(a.normal, b.normal)) < 0.999) {
+                throw new Error(`${where}: a midplane needs two parallel planes`);
+            }
+            const gap = dot(sub(b.origin, a.origin), a.normal);
+            return { ...a, origin: add(a.origin, scale(a.normal, gap / 2)) };
+        }
+        case 'perpendicular': {
+            const base = resolvePlane(d.base, before, where);
+            const axis = resolveAxis(d.axis, before, where);
+            const normal = cross(axis.direction, base.normal);
+            if (!(length(normal) > 1e-9)) {
+                throw new Error(`${where}: the axis is normal to the plane, so no single plane through it is perpendicular to it`);
+            }
+            return normalizePlane({ origin: axis.point, normal, xDir: axis.direction });
+        }
+        case 'linePoint': {
+            const axis = resolveAxis(d.axis, before, where);
+            const point = resolvePoint(d.point, before, where);
+            const normal = cross(axis.direction, sub(point, axis.point));
+            if (!(length(normal) > 1e-9 * Math.max(1, length(sub(point, axis.point))))) {
+                throw new Error(`${where}: the point lies on the axis`);
+            }
+            return normalizePlane({ origin: axis.point, normal, xDir: axis.direction });
+        }
+        case 'tangent':
+            return tangentPlane(d, before, where);
+    }
+}
+
+/** A plane tangent to a cylinder, through a point or parallel (or at an angle) to a plane; see PlaneDefinition. */
+function tangentPlane(d: Extract<PlaneDefinition, { kind: 'tangent' }>, before: Feature[], where: string): CustomSketchPlane {
+    const axisDir = unit(d.cylinder.direction, `${where}: cylinder axis`);
+    const centre = d.cylinder.point;
+    const r = d.cylinder.radius;
+    if (!(r > 0)) {
+        throw new Error(`${where}: the cylinder radius must be greater than 0`);
+    }
+    // The radial direction of the tangent line, then the plane touches the cylinder there and contains the axis direction.
+    const touch = (radial: Vec3, along: Vec3): CustomSketchPlane =>
+        normalizePlane({ origin: add(add(centre, scale(radial, r)), along), normal: radial, xDir: axisDir });
+    if (d.point !== undefined) {
+        const p = resolvePoint(d.point, before, where);
+        const rel = sub(p, centre);
+        const along = scale(axisDir, dot(rel, axisDir));
+        const w = sub(rel, along);
+        const dist = length(w);
+        const tol = 1e-6 * Math.max(1, r);
+        if (dist < r - tol) {
+            throw new Error(`${where}: the point is inside the cylinder, so no tangent plane passes through it`);
+        }
+        const out = scale(w, 1 / dist);
+        if (dist <= r + tol) {
+            return touch(out, along);
+        }
+        // The two tangent lines from the point: their radial directions are `out` turned by ±acos(r / dist).
+        const turn = (Math.acos(r / dist) * 180) / Math.PI;
+        return touch(rotate(out, axisDir, d.flip ? -turn : turn), along);
+    }
+    if (d.plane !== undefined) {
+        const plane = resolvePlane(d.plane, before, where);
+        if (Math.abs(dot(plane.normal, axisDir)) > 1e-6) {
+            throw new Error(`${where}: the plane must be parallel to the cylinder's axis`);
+        }
+        const n = rotate(plane.normal, axisDir, d.angle ?? 0);
+        return touch(d.flip ? scale(n, -1) : n, scale(axisDir, dot(sub(plane.origin, centre), axisDir)));
+    }
+    throw new Error(`${where}: a tangent plane needs a point or a plane`);
 }
 
 /** A plane given directly must say what it means: no zero vectors, and a u axis that is not along the normal. */
@@ -140,6 +220,9 @@ export function resolveAxis(ref: AxisRef, features: Feature[], where = 'axis'): 
     if (typeof ref === 'string') {
         const direction: Vec3 = ref === 'x' ? [1, 0, 0] : ref === 'y' ? [0, 1, 0] : [0, 0, 1];
         return { point: [0, 0, 0], direction };
+    }
+    if ('fixedAxis' in ref) {
+        return { point: ref.fixedAxis.point, direction: unit(ref.fixedAxis.direction, `${where}: direction`) };
     }
     const step = earlier(features, ref.axisRef, 'axis', where);
     if (step.op !== 'axis') {
@@ -166,6 +249,8 @@ export function resolveAxis(ref: AxisRef, features: Feature[], where = 'axis'): 
         }
         case 'pointPlane':
             return { point: resolvePoint(d.point, before, where), direction: resolvePlane(d.plane, before, where).normal };
+        case 'along':
+            return resolveAxis(d.axis, before, where);
         case 'planeIntersection': {
             const a = resolvePlane(d.a, before, where);
             const b = resolvePlane(d.b, before, where);
@@ -183,10 +268,16 @@ export function resolveAxis(ref: AxisRef, features: Feature[], where = 'axis'): 
     }
 }
 
-/** Resolves a point reference: coordinates as they are, or the position of an earlier point step. */
+/**
+ * Resolves a point reference: coordinates as they are, a point taken from the model where it was last found (the
+ * kernel finds it again before this runs), or the position of an earlier point step.
+ */
 export function resolvePoint(ref: PointRef, features: Feature[], where = 'point'): Vec3 {
     if (Array.isArray(ref)) {
         return ref;
+    }
+    if ('fixedPoint' in ref) {
+        return ref.fixedPoint;
     }
     const step = earlier(features, ref.pointRef, 'point', where);
     if (step.op !== 'point') {
@@ -288,4 +379,126 @@ export function resolveRevolveAxis(
 /** The curve ids of a sketch's centrelines (construction lines), the default revolve axis when there is one. */
 export function sketchCentrelines(sketch: Pick<Sketch, 'geometry'>): string[] {
     return (sketch.geometry?.curves ?? []).filter((c) => c.kind === 'line' && c.construction).map((c) => c.id);
+}
+
+// ---- References taken from the model ------------------------------------------------------------------------------
+// The kernel finds each picked face, edge or vertex again on the body at every rebuild (apps/server/src/cad/followRefs.ts)
+// and writes where it found it into the cached values (fixedPlane, fixedAxis, fixedPoint, a cylinder's axis and radius,
+// an edge's shape, a point step's position); the view shows those (apps/web/src/followedRefs.ts).
+
+/** Where two lines (a point and a unit direction each) meet; throws when they are parallel or pass each other. */
+export function linesMeet(a: Vec3, da: Vec3, b: Vec3, db: Vec3): Vec3 {
+    const n = cross(da, db);
+    const nn = dot(n, n);
+    if (!(nn > 1e-18)) {
+        throw new Error('The two edges are parallel: they do not meet.');
+    }
+    const w = sub(b, a);
+    const pa = add(a, scale(da, dot(cross(w, db), n) / nn));
+    const pb = add(b, scale(db, dot(cross(w, da), n) / nn));
+    const size = Math.max(1, length(a), length(b));
+    if (length(sub(pa, pb)) > Math.max(1e-4, 1e-6 * size)) {
+        throw new Error('The two edges do not meet (not even extended).');
+    }
+    return scale(add(pa, pb), 0.5);
+}
+
+/**
+ * `count` points along a straight or circular edge from its start (`reverse`: from its end), spaced by a distance or a
+ * percentage of its length; the first is one spacing from the end, as in SolidWorks. `fmt` writes the length in errors.
+ */
+export function pointsAlong(shape: ModelEdgeShape, by: 'distance' | 'percent', amount: number, count: number, reverse = false,
+    fmt: (mm: number) => string = String): Vec3[] {
+    let total: number;
+    let at: (s: number) => Vec3;
+    if (shape.type === 'line') {
+        total = length(sub(shape.b, shape.a));
+        const [from, to] = reverse ? [shape.b, shape.a] : [shape.a, shape.b];
+        const d = unit(sub(to, from), 'edge');
+        at = (s) => add(from, scale(d, s));
+    } else {
+        if (!(shape.radius > 0)) {
+            throw new Error('Pick a straight or circular edge.');
+        }
+        const n = unit(shape.normal, 'circle normal');
+        const r0 = sub(shape.start, shape.centre);
+        const r1 = sub(shape.end, shape.centre);
+        // Counter-clockwise about the normal from start to end (the direction the edge runs).
+        let sweep = shape.full ? 2 * Math.PI : Math.atan2(dot(cross(r0, r1), n), dot(r0, r1));
+        if (sweep <= 0) {
+            sweep += 2 * Math.PI;
+        }
+        total = shape.radius * sweep;
+        const deg = (s: number): number => ((s / shape.radius) * 180) / Math.PI;
+        at = (s) => (reverse ? add(shape.centre, rotate(r1, n, -deg(s))) : add(shape.centre, rotate(r0, n, deg(s))));
+    }
+    const spacing = by === 'percent' ? (total * amount) / 100 : amount;
+    if (spacing * count > total * (1 + 1e-9)) {
+        throw new Error(`The points run past the end of the edge (it is ${fmt(total)} mm long): use a smaller value or fewer points.`);
+    }
+    return Array.from({ length: count }, (_, i) => at(spacing * (i + 1)));
+}
+
+/**
+ * A point step's position from its definition's cached values (the edges' shapes as last found); faces and vertices
+ * keep none of their own, so `position` (where the step was last found) stands for them.
+ */
+export function pointOfDefinition(d: PointDefinition, position: Vec3): Vec3 {
+    switch (d.kind) {
+        case 'arcCentre':
+            return d.edge.shape?.type === 'circle' ? d.edge.shape.centre : position;
+        case 'intersection': {
+            const [a, b] = [d.a.shape, d.b.shape];
+            if (a?.type !== 'line' || b?.type !== 'line') {
+                return position;
+            }
+            return linesMeet(a.a, unit(sub(a.b, a.a), 'edge'), b.a, unit(sub(b.b, b.a), 'edge'));
+        }
+        case 'along':
+            return d.edge.shape ? pointsAlong(d.edge.shape, d.by, d.amount, d.index, d.reverse)[d.index - 1] : position;
+        default:
+            return position;
+    }
+}
+
+/** Keys of an object that only say where a picked reference was last found. */
+function cacheKeys(o: Record<string, unknown>): string[] {
+    if (o.pick && typeof o.pick === 'object') {
+        return ['fixedPlane', 'fixedAxis', 'fixedPoint', ...('radius' in o ? ['point', 'direction', 'radius'] : [])];
+    }
+    // A plane tangent where a followed cylinder was clicked: the spot goes with the cylinder.
+    const cylinder = o.cylinder as { pick?: unknown } | undefined;
+    if (o.kind === 'tangent' && cylinder?.pick && Array.isArray(o.point) && o.plane === undefined) {
+        return ['point'];
+    }
+    return Array.isArray(o.edge) ? ['shape'] : [];
+}
+
+/** A copy of a step (or any part of one) without the values that only say where its model references were last found. */
+export function withoutFollowCaches<T>(value: T): T {
+    if (Array.isArray(value)) {
+        return value.map(withoutFollowCaches) as T;
+    }
+    if (!value || typeof value !== 'object') {
+        return value;
+    }
+    const o = value as Record<string, unknown>;
+    const drop = new Set(cacheKeys(o));
+    if (o.op === 'point' && o.definition) {
+        drop.add('position');
+    }
+    return Object.fromEntries(Object.entries(o).filter(([k]) => !drop.has(k)).map(([k, v]) => [k, withoutFollowCaches(v)])) as T;
+}
+
+/** Whether a step holds references taken from the model that follow it (picks the kernel finds again). */
+export function followsModel(f: Feature): boolean {
+    if (f.op === 'point') {
+        return !!f.definition;
+    }
+    if (f.op !== 'plane' && f.op !== 'axis') {
+        return false;
+    }
+    const scan = (v: unknown): boolean => (Array.isArray(v) ? v.some(scan)
+        : !!v && typeof v === 'object' && ('pick' in v || Object.values(v).some(scan)));
+    return scan(f.definition);
 }

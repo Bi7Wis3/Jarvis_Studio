@@ -4,23 +4,25 @@
 
 import type { SketchConstraint, SketchCurve, SketchGeometry } from '@jarvis/core';
 import { ORIGIN, curveOf, measure, pointOf, solveGeometry, type SolveResult } from './solver';
-import { addConstraint, constraintRefs, danglingConstraints, type NewConstraint } from './sketchGeometry';
+import { addConstraint, constraintRefs, danglingConstraints, geometryEntities, type NewConstraint } from './sketchGeometry';
 import { chainOf, curvePoints } from './sketchEdit';
-import { dist, round, type Pt } from './sketchMath';
+import { curveEndIds, isExtra, mapCurvePoints } from './sketchCurves';
+import { dist, entityPoints, round, type Pt } from './sketchMath';
 
 /** End points closer than this (mm) that are not joined count as a gap. */
 export const GAP = 0.5;
 /** Positions closer than this are the same. */
 const SAME = 1e-3;
 
-export type ProblemKind = 'gap' | 'duplicate' | 'overlap' | 'zero' | 'dangling';
+/** shared: a point that three or more entities share; reported (and highlighted), not fixed. */
+export type ProblemKind = 'gap' | 'duplicate' | 'overlap' | 'zero' | 'dangling' | 'shared';
 
 export interface Problem {
     /** Stable key: kind and the ids involved. */
     key: string;
     kind: ProblemKind;
     text: string;
-    /** What the fix button says. */
+    /** What the fix button says; empty for what is only reported. */
     action: string;
     /** Geometry to highlight. */
     refs: string[];
@@ -31,9 +33,12 @@ const P = (g: SketchGeometry, id: string): Pt => {
     return p ? [p.u, p.v] : [0, 0];
 };
 
-const endsOf = (c: SketchCurve): string[] => (c.kind === 'line' ? [c.a, c.b] : c.kind === 'arc' ? [c.start, c.end] : []);
+const endsOf = (c: SketchCurve): string[] => curveEndIds(c);
 
-const NOUN: Record<SketchCurve['kind'], string> = { line: 'Line', circle: 'Circle', arc: 'Arc' };
+const NOUN: Record<SketchCurve['kind'], string> = {
+    line: 'Line', circle: 'Circle', arc: 'Arc', ellipse: 'Ellipse', ellipseArc: 'Partial ellipse', spline: 'Spline', styleSpline: 'Style spline',
+    parabola: 'Parabola', conic: 'Conic',
+};
 
 function segmentDistance(p: Pt, a: Pt, b: Pt): number {
     const d: Pt = [b[0] - a[0], b[1] - a[1]];
@@ -48,6 +53,10 @@ function isZero(g: SketchGeometry, c: SketchCurve): boolean {
     }
     if (c.kind === 'circle') {
         return c.radius < SAME;
+    }
+    if (isExtra(c)) {
+        const pts = geometryEntities({ ...g, curves: [c] }).flatMap((e) => entityPoints(e));
+        return pts.length < 2 || pts.every((p) => dist(p, pts[0]) < SAME);
     }
     return dist(P(g, c.center), P(g, c.start)) < SAME || dist(P(g, c.start), P(g, c.end)) < SAME;
 }
@@ -78,6 +87,10 @@ function lengthOf(g: SketchGeometry, c: SketchCurve): number {
     }
     if (c.kind === 'circle') {
         return 2 * Math.PI * c.radius;
+    }
+    if (isExtra(c)) {
+        const pts = geometryEntities({ ...g, curves: [c] }).flatMap((e) => entityPoints(e));
+        return pts.slice(1).reduce((sum, p, i) => sum + dist(pts[i], p), 0);
     }
     const m = P(g, c.center);
     const [s, e] = [P(g, c.start), P(g, c.end)];
@@ -182,6 +195,52 @@ export function findProblems(g: SketchGeometry, gap = GAP): Problem[] {
         const c = g.constraints.find((k) => k.id === id)!;
         out.push({ key: `dangling:${id}`, kind: 'dangling', text: `${c.kind} ${id} refers to deleted geometry`, action: 'Remove', refs: [id] });
     }
+    out.push(...sharedPoints(g, curves));
+    return out;
+}
+
+/**
+ * Points shared by three or more entities (SolidWorks reports them: such a point is no simple corner of a contour).
+ * End points held together by a coincident relation count as one.
+ */
+export function sharedPoints(g: SketchGeometry, curves: SketchCurve[] = g.curves): Problem[] {
+    const root = new Map<string, string>();
+    const find = (id: string): string => {
+        let r = id;
+        while (root.has(r) && root.get(r) !== r) {
+            r = root.get(r)!;
+        }
+        return r;
+    };
+    for (const c of g.constraints) {
+        if (c.kind === 'coincident' && !c.suppressed) {
+            const [a, b] = [find(c.a), find(c.b)];
+            if (a !== b) {
+                root.set(b, a);
+            }
+        }
+    }
+    const users = new Map<string, { points: Set<string>; curves: Set<string> }>();
+    for (const c of curves.filter((k) => !k.construction)) {
+        for (const id of new Set(endsOf(c))) {
+            const key = find(id);
+            const entry = users.get(key) ?? { points: new Set<string>(), curves: new Set<string>() };
+            entry.points.add(id);
+            entry.curves.add(c.id);
+            users.set(key, entry);
+        }
+    }
+    const out: Problem[] = [];
+    for (const [key, { points, curves: on }] of users) {
+        if (on.size < 3 || key === ORIGIN) {
+            continue;
+        }
+        const names = [...on].map((id) => `${NOUN[curveOf(g, id)!.kind].toLowerCase()} ${id}`);
+        out.push({
+            key: `shared:${key}`, kind: 'shared', action: '', refs: [...points, ...on],
+            text: `Point ${[...points].join(' / ')} is shared by ${on.size} entities (${names.join(', ')})`,
+        });
+    }
     return out;
 }
 
@@ -214,8 +273,7 @@ export function mergePoints(g: SketchGeometry, keep: string, drop: string): Sket
         return g;
     }
     const r = (id: string) => (id === drop ? keep : id);
-    const curves = g.curves.map((c): SketchCurve => (c.kind === 'line' ? { ...c, a: r(c.a), b: r(c.b) }
-        : c.kind === 'circle' ? { ...c, center: r(c.center) } : { ...c, center: r(c.center), start: r(c.start), end: r(c.end) }));
+    const curves = g.curves.map((c): SketchCurve => mapCurvePoints(c, r));
     let points = g.points.filter((p) => p.id !== drop);
     if (keep === ORIGIN && !points.some((p) => p.id === ORIGIN)) {
         points = [...points, { id: ORIGIN, u: 0, v: 0, fixed: true }];
@@ -290,6 +348,9 @@ export function fixProblem(g: SketchGeometry, problem: Problem): SketchGeometry 
         }
         case 'dangling':
             return { ...g, constraints: g.constraints.filter((c) => c.id !== ids[0]) };
+        case 'shared':
+            // Reported only: which entity should leave the point is the user's choice.
+            return g;
     }
 }
 
@@ -299,7 +360,7 @@ export function fixAll(g: SketchGeometry, gap = GAP): { g: SketchGeometry; fixed
     let fixed = 0;
     const tried = new Set<string>();
     for (let i = 0; i < 1000; i++) {
-        const next = findProblems(out, gap).find((p) => !tried.has(p.key));
+        const next = findProblems(out, gap).find((p) => !tried.has(p.key) && p.action);
         if (!next) {
             break;
         }
@@ -343,9 +404,10 @@ function candidates(g: SketchGeometry): NewConstraint[] {
     for (const c of drawn) {
         if (c.kind === 'line') {
             out.push({ kind: 'length', line: c.id, value: dist(P(g, c.a), P(g, c.b)) });
-        } else {
+        } else if (c.kind === 'circle' || c.kind === 'arc') {
             out.push({ kind: c.kind === 'circle' ? 'diameter' : 'radius', curve: c.id, value: 0 });
         }
+
     }
     const points = [...new Set([...drawn.flatMap(curvePoints), ...g.points.map((p) => p.id)])].filter((id) => id !== ORIGIN && id !== base);
     for (const id of points) {

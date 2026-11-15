@@ -4,18 +4,25 @@
 
 import { create } from 'zustand';
 import type { FacePickRef } from '@jarvis/core';
-import { edgeOfPick, edgePick, faceOfPick, facePick } from './pickRefs';
+import { edgeOfPick, edgePick, faceOfPick, facePick, type ModelPick } from './pickRefs';
 import type { P3 } from './picking';
 
-export type PickEntity = 'edge' | 'face' | 'vertex';
+/** `ref`: the box also takes reference planes, axes and points (steps and base planes) clicked in the view. */
+export type PickEntity = 'edge' | 'face' | 'vertex' | 'ref';
 
 /**
  * One picked entity. An edge is a point on it (`side`: the normal of the face it was clicked next to, which a chamfer
  * measures its first distance on); a face is a point inside it with its outward normal.
  */
 export type PickItem =
-    | { kind: 'edge'; at: P3; side?: P3 }
-    | { kind: 'face'; at: P3; normal?: P3 };
+    | { kind: 'edge'; at: P3; side?: P3; model?: ModelPick }
+    | { kind: 'face'; at: P3; normal?: P3; model?: ModelPick }
+    /** A vertex (the end of an edge), only in boxes that take vertices. */
+    | { kind: 'vertex'; at: P3; model?: ModelPick }
+    /** A reference plane, axis or point (see referenceDefs.ts), only in boxes that take `ref`. */
+    | { kind: 'ref'; ref: string; label: string };
+
+/** `model`: in boxes that take `ref`, the geometry of a picked face, edge or vertex, by value (pickRefs.modelPick). */
 
 /** A selection box as the view needs it. */
 export interface PickBox {
@@ -27,6 +34,8 @@ export interface PickBox {
     flat?: boolean;
     /** A position field (vec) filled from a click: a circle's centre, a line's midpoint, a point on a face. */
     position?: boolean;
+    /** Why a picked item is refused (shown under the box), or null to take it. */
+    accept?: (item: PickItem) => string | null;
 }
 
 /** The arrays of a kernel mesh that picking reads (see meshes.ts and picking.ts). */
@@ -39,11 +48,14 @@ export interface PickMesh {
     segEdge: ArrayLike<number>;
 }
 
-/** "Edge<1>", "Face<2>": numbered per kind in list order, as SolidWorks names box entries. */
+/** "Edge<1>", "Face<2>": numbered per kind in list order, as SolidWorks names box entries; references by name. */
 export function itemLabel(items: readonly PickItem[], index: number): string {
-    const kind = items[index].kind;
-    const n = items.slice(0, index + 1).filter((i) => i.kind === kind).length;
-    return `${kind === 'edge' ? 'Edge' : 'Face'}<${n}>`;
+    const item = items[index];
+    if (item.kind === 'ref') {
+        return item.label;
+    }
+    const n = items.slice(0, index + 1).filter((i) => i.kind === item.kind).length;
+    return `${item.kind === 'edge' ? 'Edge' : item.kind === 'face' ? 'Face' : 'Vertex'}<${n}>`;
 }
 
 /**
@@ -65,7 +77,7 @@ export function nextBox(boxes: readonly PickBox[], key: string | null): string |
 }
 
 export const isPickList = (value: unknown): value is PickItem[] => Array.isArray(value)
-    && value.every((v) => typeof v === 'object' && v !== null && 'kind' in v && 'at' in v);
+    && value.every((v) => typeof v === 'object' && v !== null && 'kind' in v && ('at' in v || 'ref' in v));
 
 /** The items of a form value (anything else: none). */
 export const pickItems = (value: unknown): PickItem[] => (isPickList(value) ? value : []);
@@ -87,7 +99,8 @@ export function itemsOf(at: readonly P3[] | undefined, faces: readonly FacePickR
 }
 
 /** The box item for an entity of the mesh (`hitNormal`: of the face clicked, for an edge's side), or null. */
-export function itemFor(mesh: PickMesh, entity: { kind: 'edge' | 'face'; index: number }, hitNormal?: P3): PickItem | null {
+export function itemFor(mesh: PickMesh, entity: { kind: 'edge' | 'face'; index: number }, hitNormal?: P3):
+    Extract<PickItem, { kind: 'edge' | 'face' }> | null {
     if (entity.kind === 'edge') {
         const at = edgePick(mesh.edges, mesh.segEdge, entity.index);
         return at ? (hitNormal ? { kind: 'edge', at, side: hitNormal } : { kind: 'edge', at }) : null;
@@ -101,6 +114,9 @@ export const pickTolerance = (diagonal: number): number => Math.max(1e-3, Math.m
 
 /** The entity of the mesh an item refers to, or null when it is not in this mesh. */
 export function entityOf(mesh: PickMesh, item: PickItem, tolerance: number): { kind: 'edge' | 'face'; index: number } | null {
+    if (item.kind === 'vertex' || item.kind === 'ref') {
+        return null;
+    }
     if (item.kind === 'edge') {
         const index = edgeOfPick(mesh.edges, mesh.segEdge, item.at, tolerance);
         return index === null ? null : { kind: 'edge', index };

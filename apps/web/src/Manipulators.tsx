@@ -9,8 +9,10 @@ import { Html, Line } from '@react-three/drei';
 import { Color, DoubleSide, MathUtils, Quaternion, Raycaster, Vector2, Vector3, type Camera, type Group, type Mesh, type PerspectiveCamera } from 'three';
 import type { Vec3 } from '@jarvis/core';
 import type { CameraControlsImpl } from '@react-three/drei';
+import { pixelSizeAt, rayFromCamera } from './viewProjection';
 import { anim } from './Scene';
-import { regionsOf, useRegionPick } from './regionPick';
+import { useRegionPick } from './regionPick';
+import { openSketchRegions, usePlaneFaces } from './sketchModelContours';
 import { useSketcher } from './sketcher';
 import { useStudio } from './state';
 import { useToolSession } from './toolSession';
@@ -33,7 +35,7 @@ const brighter = (color: string) => `#${new Color(color).lerp(new Color('#ffffff
 function perPixel(camera: Camera, height: number, p: Vector3): number {
     const c = camera as PerspectiveCamera;
     if (c.isPerspectiveCamera) {
-        return (2 * c.position.distanceTo(p) * Math.tan(MathUtils.degToRad(c.fov) / 2)) / Math.max(1, height);
+        return pixelSizeAt(c, p, height);
     }
     const o = camera as unknown as { top: number; bottom: number; zoom: number };
     return (o.top - o.bottom) / o.zoom / Math.max(1, height);
@@ -247,7 +249,8 @@ export function Manipulators({ offsets }: { offsets: Record<string, Vec3> }) {
     const sketchPart = useSketcher((s) => s.partId);
     const parts = useStudio((s) => s.history?.parts);
     const finishing = toolId === 'sk-finish' && drawing;
-    const regions = useMemo(() => (finishing ? regionsOf(geometry) : []), [finishing, geometry]);
+    const faces = usePlaneFaces((f) => f.known);
+    const regions = useMemo(() => (finishing ? openSketchRegions(geometry) : []), [finishing, geometry, faces]);
     const env = useMemo<HandleEnv>(() => ({
         picks,
         pickKey,
@@ -311,7 +314,7 @@ export function Manipulators({ offsets }: { offsets: Record<string, Vec3> }) {
         const rayOf = (e: MouseEvent): Ray => {
             const rect = canvas.getBoundingClientRect();
             const { camera: cam } = latest.current;
-            raycaster.setFromCamera(new Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
+            rayFromCamera(raycaster, new Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
             const s = shiftNow();
             const o = raycaster.ray.origin;
             return { origin: [o.x - s[0], o.y - s[1], o.z - s[2]], direction: raycaster.ray.direction.toArray() as Vec3 };

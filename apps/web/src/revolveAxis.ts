@@ -17,7 +17,7 @@ export function axisValue(axis: RevolveAxis | undefined): string {
     if (typeof axis === 'string') {
         return axis;
     }
-    return 'line' in axis ? `line:${axis.line}` : `axis:${axis.axisRef}`;
+    return 'line' in axis ? `line:${axis.line}` : 'axisRef' in axis ? `axis:${axis.axisRef}` : `fixed:${JSON.stringify(axis)}`;
 }
 
 export function axisFromValue(value: unknown): RevolveAxis {
@@ -27,6 +27,9 @@ export function axisFromValue(value: unknown): RevolveAxis {
     }
     if (v.startsWith('axis:')) {
         return { axisRef: v.slice(5) };
+    }
+    if (v.startsWith('fixed:')) {
+        return JSON.parse(v.slice(6)) as RevolveAxis;
     }
     return v === 'u' || v === 'x' || v === 'y' || v === 'z' ? v : 'v';
 }

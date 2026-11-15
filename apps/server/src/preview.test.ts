@@ -11,9 +11,10 @@ const dir = await vi.hoisted(async () => {
     return d;
 });
 
+import type { Part } from '@jarvis/core';
 import { CadKernel } from './cad/kernel.js';
 import { MeshService } from './meshes.js';
-import { PreviewRejected, runPreview } from './preview.js';
+import { PreviewRejected, quickThreads, runPreview } from './preview.js';
 import { ProjectStore, slug } from './store.js';
 import { createTools } from './tools.js';
 
@@ -103,5 +104,22 @@ describe('runPreview', () => {
         expect(invalid.parts).toEqual([]);
         const thrown = await runPreview(store.get(), [{ name: 'parts_instance', args: { partId: 'missing', instances: [{ position: [0, 0, 0] }] } }], meshes);
         expect(thrown.error).toMatch(/No part with id "missing"/);
+    });
+});
+
+describe('quickThreads', () => {
+    it('shows every thread from the first changed step on as its ridges, and builds the ones before for real', () => {
+        const thread = { id: 't1', op: 'thread', kind: 'internal', at: [1, 2, 3], pitch: 0.8, length: 10 } as const;
+        const other = { id: 't2', op: 'thread', kind: 'external', at: [4, 5, 6], pitch: 1, length: 5 } as const;
+        const fillet = { id: 'f', op: 'fillet', radius: 1 } as const;
+        const old = { id: 'p', name: 'P', features: [thread, fillet, other] } as unknown as Part;
+        const quick = (p: Part): boolean[] => (p.features ?? []).map((f) => (f as { preview?: boolean }).preview ?? false);
+        // The first thread edited: it and the later thread, which is rebuilt on top of it anyway, are quick.
+        expect(quick(quickThreads({ ...old, features: [{ ...thread, pitch: 1 }, fillet, other] } as unknown as Part, old))).toEqual([true, false, true]);
+        // The fillet edited: the thread before it is built already; the one after is quick.
+        expect(quick(quickThreads({ ...old, features: [thread, { ...fillet, radius: 2 }, other] } as unknown as Part, old))).toEqual([false, false, true]);
+        // A new part is quick throughout; an unchanged part comes back as it was.
+        expect(quick(quickThreads(old, undefined))).toEqual([true, false, true]);
+        expect(quickThreads(old, old)).toBe(old);
     });
 });

@@ -4,7 +4,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import type { Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
 import {
-    finishEditTool, setEditOptions, setTool, startEditTool, useSketcher, type EditOptions, type EditTool,
+    finishEditTool, setEditOptions, setSizeErrors, setTool, startEditTool, useSketcher, type EditOptions, type EditTool,
 } from './sketcher';
 
 const opts = (...pairs: [string, string][]) => pairs.map(([value, label]) => ({ value, label }));
@@ -50,6 +50,17 @@ function toOptions(fields: Field[], v: Values): Partial<EditOptions> {
     return out as Partial<EditOptions>;
 }
 
+/** Sizes that must be above zero: a radius or distance of 0 or below, or one that is not a number, is refused. */
+const SIZES = new Set(['filletRadius', 'chamferDistance', 'chamferDistance2', 'offsetDistance']);
+
+function sizeErrorsOf(fields: Field[], v: Values): string[] {
+    return fields.filter((f) => SIZES.has(f.key) && (!f.show || f.show(v))).flatMap((f) => {
+        const value = v[f.key];
+        const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+        return Number.isFinite(n) && n > 0 ? [] : [`${f.label} must be a number above zero; nothing is ${f.key === 'offsetDistance' ? 'offset' : f.key === 'filletRadius' ? 'filleted' : 'chamfered'} until it is.`];
+    });
+}
+
 function fromOptions(fields: Field[]): Values {
     const s = useSketcher.getState();
     const o = { ...s.editOptions, filletRadius: s.filletRadius, chamferDistance: s.chamferDistance } as unknown as Record<string, unknown>;
@@ -80,6 +91,7 @@ function editTool({ id, label, icon, hint, shortcut, fields, note: Note }: EditF
         defaults: () => fromOptions(fields),
         onChange: (_key, v) => {
             setEditOptions(toOptions(fields, v));
+            setSizeErrors(sizeErrorsOf(fields, v));
         },
         top: () => <Note />,
         extra: (api) => <EditSession tool={id} api={api} />,
@@ -94,7 +106,7 @@ function editTool({ id, label, icon, hint, shortcut, fields, note: Note }: EditF
 
 const TRIM_NOTES: Record<EditOptions['trimMode'], string> = {
     power: 'Drag the pointer across curves to trim each where it crosses · or click a piece to remove it.',
-    corner: 'Click two lines on the sides to keep: they are trimmed or extended to meet.',
+    corner: 'Click two curves on the sides to keep: they are trimmed or extended along themselves to meet.',
     inside: 'Click two boundaries, then the curves to cut away between them.',
     outside: 'Click two boundaries, then the curves to cut away outside them.',
     closest: 'Click the piece of a curve to remove, up to the nearest crossings.',
@@ -137,7 +149,7 @@ const extend = editTool({
     icon: 'extend',
     hint: 'click near an end to lengthen it to the next curve',
     fields: [],
-    note: () => <p className="tb-note">Point near the end of a line or arc to see where it goes, then click to extend it to the next curve.</p>,
+    note: () => <p className="tb-note">Point near the end of a line, arc, partial ellipse, parabola or conic to see where it goes, then click to extend it along itself to the next curve. Splines are not extended.</p>,
 });
 
 // ---- Offset -----------------------------------------------------------------------------------------------
@@ -148,7 +160,7 @@ function OffsetNote() {
         <p className="tb-note">
             {picked
                 ? <><b>{picked}</b> picked. Click on the side where the offset goes (at the pointer's distance), or press OK for the distance below.</>
-                : 'Click a curve to offset (or select curves first), then click where the offset goes.'}
+                : 'Click a curve, a model edge or a model face to offset (or select curves first), then click where the offset goes. Model edges are copied in as locked construction.'}
         </p>
     );
 }
@@ -222,7 +234,7 @@ function MirrorNote() {
     const about = useSketcher((s) => s.mirrorAbout);
     return (
         <p className="tb-note">
-            <b>{picked}</b> to mirror. {about ? 'Click any line to mirror about.' : 'Click the curves, then an axis or a centreline (or press Enter, then any line).'}
+            <b>{picked}</b> to mirror. {about ? 'Click any line to mirror about.' : 'Click the curves, then an axis, a centreline or a straight model edge (or press Enter, then any line).'}
         </p>
     );
 }
@@ -243,7 +255,7 @@ const split = editTool({
     icon: 'trim',
     hint: 'split a curve in two at a point',
     fields: [],
-    note: () => <p className="tb-note">Click a line or arc where it splits; a circle takes two points. The split point can be dimensioned.</p>,
+    note: () => <p className="tb-note">Click a curve where it splits; a circle, an ellipse or a closed spline takes two points. The split point can be dimensioned.</p>,
 });
 
 /** In the Modify group, in place of the plain click tools. */

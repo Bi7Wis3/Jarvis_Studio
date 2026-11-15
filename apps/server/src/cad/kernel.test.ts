@@ -388,7 +388,144 @@ describe('features', () => {
         expect(openEdges(lead)).toBe(0);
         expectBounds(lead, [-10, -10, -10], [10, 10, 10]);
         expect(volume(lead)).toBeLessThan(volume(chamfered));
-        await expect(mesh(block, [hole, thread, mouth])).rejects.toThrow(/runs along a thread \(Thread1\).*drag Thread1 below this step/);
+        // A chamfer after the thread is made as the countersink it is: it takes about the same cone off the mouth.
+        const tapped = await mesh(block, [hole, thread]);
+        const sunk = await mesh(block, [hole, thread, mouth]);
+        expect(openEdges(sunk)).toBe(0);
+        expectBounds(sunk, [-10, -10, -10], [10, 10, 10]);
+        const drilled = await mesh(block, [hole]);
+        const cone = volume(drilled) - volume(chamfered);
+        expect(volume(tapped) - volume(sunk)).toBeGreaterThan(cone * 0.5);
+        expect(volume(tapped) - volume(sunk)).toBeLessThan(cone * 1.05);
+        // Distance and angle chamfers on the thread's mouth build too, and a fillet there still says what to do.
+        const steep = await mesh(block, [hole, thread, { id: 'c', op: 'chamfer', size: 1, angle: 60, at: [[10, r, 0]] }]);
+        expect(volume(steep)).toBeLessThan(volume(tapped));
+        await expect(mesh(block, [hole, thread, { id: 'f', op: 'fillet', radius: 1, at: [[10, r, 0]] }]))
+            .rejects.toThrow(/runs along a thread \(Thread1\).*drag Thread1 below this step/);
+    }, SLOW);
+
+    it('cuts a thread only where there is material, and runs it out through the start face', async () => {
+        const block = sharpBox([20, 20, 20]);
+        const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 8 }, position: [10, 0, 0], direction: [-1, 0, 0] };
+        const r = (8 + DEFAULT_PRINT.holeTolerance) / 2;
+        // The far top edge cut off at 45 degrees, 12 mm deep: the hole comes out through that slanted face (y - x = 8).
+        const slant: Feature = { id: 's', op: 'chamfer', size: 12, at: [[-10, 10, 0]] };
+        const thread: Feature = { id: 't', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5, length: 19 };
+        const before = await mesh(block, [slant, hole]);
+        const tapped = await mesh(block, [slant, hole, thread]);
+        expect(openEdges(tapped)).toBe(0);
+        expect(volume(tapped)).toBeLessThan(volume(before));
+        // Nothing stands in the air past the slanted face, where the old ridges used to hang.
+        let past = -Infinity;
+        for (let i = 0; i < tapped.positions.length; i += 3) {
+            past = Math.max(past, tapped.positions[i + 1] - tapped.positions[i]);
+        }
+        expect(past).toBeLessThan(8 + 1e-3);
+        expectBounds(tapped, [-10, -10, -10], [10, 10, 10]);
+
+        // Where the thread meets its start face (x = 10): trimmed with the face, the ridge reaches it (the opening comes
+        // in to the crest); untrimmed, the thread starts a little inside behind a plain bore at the major diameter.
+        const opening = (m: MeshData): number => {
+            let least = Infinity;
+            for (let i = 0; i < m.positions.length; i += 3) {
+                const radius = Math.hypot(m.positions[i + 1], m.positions[i + 2]);
+                if (Math.abs(m.positions[i] - 10) < 1e-4 && radius < 7) {
+                    least = Math.min(least, radius);
+                }
+            }
+            return least;
+        };
+        const major = r + (1.0825 * 1.5) / 2 + DEFAULT_PRINT.holeTolerance / 2;
+        const plain = await mesh(block, [hole, { ...thread, length: 12 }]);
+        const blunt = await mesh(block, [hole, { ...thread, length: 12, trimStart: false }]);
+        expect(opening(plain)).toBeLessThan(r + 0.2);
+        expect(opening(blunt)).toBeGreaterThan(major - 0.05);
+    }, SLOW);
+
+    it('offers Cut thread and Extrude thread, and keeps older threads as they were built', async () => {
+        const block = sharpBox([20, 20, 20]);
+        const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 8 }, position: [10, 0, 0], direction: [-1, 0, 0] };
+        const r = (8 + DEFAULT_PRINT.holeTolerance) / 2;
+        const drilled = await mesh(block, [hole]);
+        // A thread as wide as the hole: nothing for a tap to cut; extruded, the ridges are added on the wall.
+        const wide = { id: 't', op: 'thread', kind: 'internal', at: [10, r, 0] as Vec3, pitch: 1.5, length: 12, diameter: 2 * r } as const;
+        await expect(mesh(block, [hole, { ...wide, method: 'cut' }])).rejects.toThrow(/Cut thread: the hole .* nothing to cut.*tap size.*Extrude thread/);
+        const added = await mesh(block, [hole, { ...wide, method: 'extrude' }]);
+        expect(volume(added)).toBeGreaterThan(volume(drilled) + 10);
+        expect(openEdges(added)).toBe(0);
+        // Without a method (a thread made before the choice existed) it is built as before: the ridges added.
+        const older = await mesh(block, [hole, wide]);
+        expect(volume(older)).toBeCloseTo(volume(added), 3);
+
+        // A hollow shaft keeps its bore when a thread is cut on it.
+        const tube: Shape = { kind: 'tube', outerRadius: 5, innerRadius: 3, height: 20 };
+        const bare = await mesh(tube, []);
+        const threaded = await mesh(tube, [{ id: 't', op: 'thread', kind: 'external', at: [5, 10, 0], pitch: 1.5, length: 10 }]);
+        expect(openEdges(threaded)).toBe(0);
+        expect(volume(threaded)).toBeLessThan(volume(bare));
+        expect(volume(threaded)).toBeGreaterThan(volume(bare) - Math.PI * (25 - 4.08 ** 2) * 10);
+    }, SLOW);
+
+    it('adds an extruded thread only where the wall stands, not past a slanted face the hole comes out through', async () => {
+        const block = sharpBox([20, 20, 20]);
+        const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 8 }, position: [10, 0, 0], direction: [-1, 0, 0] };
+        const r = (8 + DEFAULT_PRINT.holeTolerance) / 2;
+        // The far top edge cut off at 45 degrees: the hole comes out through that slanted face (y - x = 8).
+        const slant: Feature = { id: 's', op: 'chamfer', size: 12, at: [[-10, 10, 0]] };
+        const thread: Feature = { id: 't', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5, length: 19, diameter: 8, method: 'extrude' };
+        const drilled = await mesh(block, [slant, hole]);
+        const threaded = await mesh(block, [slant, hole, thread]);
+        expect(openEdges(threaded)).toBe(0);
+        expect(volume(threaded)).toBeGreaterThan(volume(drilled) + 20);
+        // No ridge stands in the air past the slanted face.
+        let past = -Infinity;
+        for (let i = 0; i < threaded.positions.length; i += 3) {
+            past = Math.max(past, threaded.positions[i + 1] - threaded.positions[i]);
+        }
+        expect(past).toBeLessThan(8 + 1e-3);
+        expectBounds(threaded, [-10, -10, -10], [10, 10, 10]);
+    }, SLOW);
+
+    it('threads several holes in one step, each from its own edge, and names the edge that fails', async () => {
+        const block = sharpBox([30, 20, 20]);
+        const holes: Feature[] = [-5, 5].map((z, i) => ({
+            id: `h${i}`, op: 'hole', spec: { kind: 'plain', diameter: 5 }, position: [0, 10, z], direction: [0, -1, 0], depth: i ? 8 : 12,
+        } as Feature));
+        const r = (5 + DEFAULT_PRINT.holeTolerance) / 2;
+        const thread = (at: Vec3, alsoAt?: Vec3[]): Feature => ({
+            id: 't', op: 'thread', kind: 'internal', at, ...(alsoAt ? { alsoAt } : {}), pitch: 0.8, length: 20,
+        } as Feature);
+        const drilled = await mesh(block, holes);
+        const first = await mesh(block, [...holes, thread([r, 10, -5])]);
+        const second = await mesh(block, [...holes, thread([r, 10, 5])]);
+        const both = await mesh(block, [...holes, thread([r, 10, -5], [[r, 10, 5]])]);
+        expect(openEdges(both)).toBe(0);
+        // Each hole decides its own thread length (12 and 8 mm deep): the two together take what each takes alone.
+        const taken = (m: MeshData): number => volume(drilled) - volume(m);
+        expect(taken(first)).toBeGreaterThan(taken(second) * 1.2);
+        expect(Math.abs(taken(both) - taken(first) - taken(second))).toBeLessThan(0.02 * (taken(first) + taken(second)));
+        await expect(mesh(block, [...holes, thread([r, 10, -5], [[14, 9, 9]])])).rejects.toThrow(/Edge<2>: .*circular edge/);
+    }, SLOW);
+
+    it('shows a thread being edited as its ridges on the body, at once, for a preview', async () => {
+        const block = sharpBox([20, 20, 20]);
+        const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 8 }, position: [10, 0, 0], direction: [-1, 0, 0] };
+        const r = (8 + DEFAULT_PRINT.holeTolerance) / 2;
+        const drilled = await mesh(block, [hole]);
+        const started = Date.now();
+        const ghost = await mesh(block, [hole, { id: 't', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5, length: 30, preview: true }]);
+        expect(Date.now() - started).toBeLessThan(10_000);
+        // The body as it was, with the ridge laid in the hole: 30 mm asked, trimmed to the 20 mm hole.
+        expect(ghost.indices.length).toBeGreaterThan(drilled.indices.length);
+        let [least, most] = [Infinity, -Infinity];
+        for (let i = drilled.positions.length; i < ghost.positions.length; i += 3) {
+            least = Math.min(least, ghost.positions[i]);
+            most = Math.max(most, ghost.positions[i]);
+            // Sized from the hole: its major diameter is the hole plus 1.0825 x pitch.
+            expect(Math.hypot(ghost.positions[i + 1], ghost.positions[i + 2])).toBeLessThan(r + (1.0825 * 1.5) / 2 + 0.15);
+        }
+        expect(least).toBeGreaterThan(-10.01);
+        expect(most).toBeLessThan(10.01);
     }, SLOW);
 });
 

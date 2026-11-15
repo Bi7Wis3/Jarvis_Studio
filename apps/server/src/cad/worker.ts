@@ -2,17 +2,22 @@
 
 import { parentPort } from 'node:worker_threads';
 import { exportSTEP, type Shape3D } from 'replicad';
-import { DEFAULT_PRINT, effectivePart, type Part, type PrintSettings, type Project } from '@jarvis/core';
+import { DEFAULT_PRINT, effectivePart, type Feature, type Part, type PrintSettings, type Project } from '@jarvis/core';
 import { combineContext, type CombineContext } from './context.js';
 import { buildPartial, initOC, meshSolid, place, repeatCopies, errorMessage, type PartSpec } from './build.js';
 import { meshKey } from './key.js';
 import type { MeshData, PropsResult } from './kernel.js';
 import { massProperties } from './props.js';
+import { modelSketch } from './project.js';
+import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projection';
+import { freecadMacro, type FreecadExport } from '../export/freecadMacro.js';
 
 export type WorkerRequest =
     | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext }
     | { id: number; type: 'step'; project: Project }
-    | { id: number; type: 'props'; part: PartSpec; print: PrintSettings; context?: CombineContext };
+    | { id: number; type: 'props'; part: PartSpec; print: PrintSettings; context?: CombineContext }
+    | { id: number; type: 'project'; part: PartSpec; print: PrintSettings; context?: CombineContext; frame: PlaneFrame3; query: ModelQuery }
+    | { id: number; type: 'freecad'; project: Project; partIds: string[] };
 
 export type WorkerResponse =
     | { type: 'ready' }
@@ -20,6 +25,8 @@ export type WorkerResponse =
     | { id: number; ok: true; mesh: MeshData }
     | { id: number; ok: true; step: Uint8Array }
     | { id: number; ok: true; props: PropsResult }
+    | { id: number; ok: true; model: ModelSketch }
+    | { id: number; ok: true; freecad: FreecadExport }
     | { id: number; ok: false; error: string; partial?: MeshData };
 
 const port = parentPort;
@@ -30,6 +37,7 @@ if (!port) {
 interface Built {
     shape: Shape3D | null;
     error: string | null;
+    followed?: Record<string, Feature>;
 }
 
 // Recently built solids, so a STEP export after meshing does not rebuild everything.
@@ -102,14 +110,16 @@ async function handle(request: WorkerRequest): Promise<void> {
     try {
         if (request.type === 'mesh') {
             const built = build(request.part, request.print, request.context);
+            // Where its reference steps found the model, for the view to draw them there.
+            const followed = built.followed && Object.keys(built.followed).length ? { followed: built.followed } : {};
             if (built.error) {
-                const partial = built.shape ? meshSolid(built.shape) : undefined;
+                const partial = built.shape ? { ...meshSolid(built.shape), ...followed } : undefined;
                 const response: WorkerResponse = { id: request.id, ok: false, error: built.error, partial };
                 port!.postMessage(response, partial ? meshTransfer(partial) : []);
                 return;
             }
             // A part with no body yet (an empty shape with only sketches) meshes as nothing.
-            const mesh = built.shape ? meshSolid(built.shape) : emptyMesh();
+            const mesh = { ...(built.shape ? meshSolid(built.shape) : emptyMesh()), ...followed };
             port!.postMessage({ id: request.id, ok: true, mesh } satisfies WorkerResponse, meshTransfer(mesh));
         } else if (request.type === 'props') {
             // A failed history still reports the solid as far as it built, with the error alongside.
@@ -119,6 +129,13 @@ async function handle(request: WorkerRequest): Promise<void> {
                 ...(built.error ? { error: built.error } : {}),
             };
             port!.postMessage({ id: request.id, ok: true, props } satisfies WorkerResponse);
+        } else if (request.type === 'project') {
+            // The body as far as it builds: a sketch sees the model as it is before its own step.
+            const built = build(request.part, request.print, request.context);
+            const model = modelSketch(built.shape, request.frame, request.query);
+            port!.postMessage({ id: request.id, ok: true, model } satisfies WorkerResponse);
+        } else if (request.type === 'freecad') {
+            port!.postMessage({ id: request.id, ok: true, freecad: freecadMacro(request.project, request.partIds) } satisfies WorkerResponse);
         } else {
             const bytes = await step(request.project);
             port!.postMessage({ id: request.id, ok: true, step: bytes } satisfies WorkerResponse,

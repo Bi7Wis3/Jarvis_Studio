@@ -1,14 +1,17 @@
-// Sketch fillet on lines and arcs, as in SolidWorks: the corner is rounded by a tangent arc; with Keep constrained
+// Sketch fillet on lines and arcs (other curve kinds: sketchCurveFillet.ts), as in SolidWorks: the corner is rounded by a tangent arc; with Keep constrained
 // corners the sharp corner stays as a point on both curves (a virtual sharp) holding its relations and dimensions, and
 // the dimensions of the sides go to construction lines from the sharp; with Dimension each fillet off, the fillet is
 // equal to the first one instead of getting its own radius dimension.
 
 import type { SketchConstraint, SketchCurve, SketchGeometry } from '@jarvis/core';
 import { curveOf, pointOf } from './solver';
-import { addConstraint, constraintRefs, newId, type NewConstraint } from './sketchGeometry';
-import { curvePoints, shapeOf } from './sketchEdit';
+import { addConstraint, constraintRefs, extentHeld, newId, type NewConstraint } from './sketchGeometry';
+import { curvePoints, notForCurve, shapeOf } from './sketchEdit';
+import { curveEndIds } from './sketchCurves';
+import { chamferCurves, curveCornerAt, curveCornerOf, filletCurves, needsCurveCorner, type CurveCorner } from './sketchCurveFillet';
 import { dist, type Pt } from './sketchMath';
 import { intersections } from './snapping';
+import { isEndless } from './sketchInfinite';
 
 type Shape = ReturnType<typeof shapeOf>;
 
@@ -34,29 +37,62 @@ export interface FilletCorner {
     /** The shared corner point, when the sides share one. */
     point: string | null;
     sides: [Side, Side];
+    /** A corner beyond two lines, or lines and arcs at an end: made on the exact curves (sketchCurveFillet.ts). */
+    curves?: CurveCorner;
 }
 
-const endsOf = (c: SketchCurve): string[] => (c.kind === 'line' ? [c.a, c.b] : c.kind === 'arc' ? [c.start, c.end] : []);
+/** Where each curve was clicked for a corner of two curves (which part of each the fillet keeps). */
+const pickedAt = new Map<string, Pt>();
+export function notePick(curve: string, at: Pt): void {
+    pickedAt.clear();
+    pickedAt.set(curve, at);
+}
+export const pickPosition = (curve: string): Pt | null => pickedAt.get(curve) ?? null;
+
+function general(cc: CurveCorner | { error: string }): FilletCorner | { error: string } {
+    if ('error' in cc) {
+        return cc;
+    }
+    const side = (s: CurveCorner['sides'][number]): Side => ({ curve: s.curve, near: s.near ?? '', far: s.farId ?? '' });
+    return { at: cc.at, point: cc.point, sides: [side(cc.sides[0]), side(cc.sides[1])], curves: cc };
+}
+
+const endsOf = (c: SketchCurve): string[] => curveEndIds(c);
 
 /** The corner at a point: the two drawn lines or arcs that end there (construction curves through it do not count). */
 export function filletCornerAt(g: SketchGeometry, point: string): FilletCorner | { error: string } {
     const users = g.curves.filter((c) => endsOf(c).includes(point));
     const drawn = users.filter((c) => !c.construction);
     const pair = drawn.length === 2 ? drawn : users.length === 2 ? users : null;
-    if (!pair || g.curves.some((c) => c.kind !== 'line' && (c as { center: string }).center === point && pair.includes(c))) {
-        return { error: 'Pick a corner where two lines or arcs meet.' };
+    const odd = pair?.find((c) => isEndless(c));
+    if (odd) {
+        return { error: notForCurve('Fillet and chamfer', odd)!.replace('does not work', 'do not work') };
+    }
+    if (!pair || g.curves.some((c) => (c.kind === 'arc' || c.kind === 'ellipseArc') && c.center === point && pair.includes(c))) {
+        return { error: 'Pick a corner where two curves meet.' };
+    }
+    if (needsCurveCorner(pair[0], pair[1], true)) {
+        return general(curveCornerAt(g, point, pair[0], pair[1]));
     }
     const side = (c: SketchCurve): Side => ({ curve: c, near: point, far: endsOf(c).find((p) => p !== point) ?? point });
     return { at: P(g, point), point, sides: [side(pair[0]), side(pair[1])] };
 }
 
 /** The corner of two picked curves: their shared end, or (two lines) where they would meet. */
-export function filletCornerOf(g: SketchGeometry, a: string, b: string): FilletCorner | { error: string } {
+export function filletCornerOf(g: SketchGeometry, a: string, b: string, picks?: [Pt | null, Pt | null]): FilletCorner | { error: string } {
     const ca = curveOf(g, a);
     const cb = curveOf(g, b);
-    if (!ca || !cb || a === b || ca.kind === 'circle' || cb.kind === 'circle') {
-        return { error: 'Pick two lines or arcs.' };
+    if (isEndless(ca) || isEndless(cb)) {
+        return { error: notForCurve('Fillet and chamfer', isEndless(ca) ? ca : cb)!.replace('does not work', 'do not work') };
     }
+    if (!ca || !cb || a === b) {
+        return { error: 'Pick two curves.' };
+    }
+    const meet = endsOf(ca).some((p) => endsOf(cb).includes(p));
+    if (needsCurveCorner(ca, cb, meet)) {
+        return general(curveCornerOf(g, ca, cb, picks ?? [pickPosition(a), pickPosition(b)]));
+    }
+
     const shared = endsOf(ca).find((p) => endsOf(cb).includes(p));
     if (shared) {
         const users = g.curves.filter((c) => endsOf(c).includes(shared) && !c.construction);
@@ -146,7 +182,7 @@ export interface FilletResult {
 
 /** Side relations of a line that stop holding once it is cut back: its length, middle and equal length. */
 const sideRelation = (k: SketchConstraint, line: string) => (k.kind === 'length' && k.line === line) || (k.kind === 'midpoint' && k.line === line)
-    || (k.kind === 'equal' && (k.a === line || k.b === line));
+    || (k.kind === 'equal' && (k.a === line || k.b === line)) || extentHeld(k, line);
 
 /**
  * Rounds the corner with a tangent arc of `radius`. Tangency is held by construction spokes from the fillet's centre:
@@ -154,6 +190,9 @@ const sideRelation = (k: SketchConstraint, line: string) => (k.kind === 'length'
  * share a point).
  */
 export function filletSides(g: SketchGeometry, corner: FilletCorner, radius: number, o: FilletOptions = {}): FilletResult | { error: string } {
+    if (corner.curves) {
+        return filletCurves(g, corner.curves, radius, o);
+    }
     if (!(radius > 0)) {
         return { error: 'Type a radius above zero.' };
     }
@@ -209,12 +248,16 @@ export function filletSides(g: SketchGeometry, corner: FilletCorner, radius: num
                 out = {
                     ...out,
                     constraints: out.constraints.map((k) => (!sideRelation(k, c.id) ? k
-                        : k.kind === 'equal' ? { ...k, a: k.a === c.id ? id : k.a, b: k.b === c.id ? id : k.b }
+                        : k.kind === 'equal' || k.kind === 'distance' ? { ...k, a: k.a === c.id ? id : k.a, b: k.b === c.id ? id : k.b }
                             : { ...k, line: id } as SketchConstraint)),
                 };
             } else {
                 out = { ...out, constraints: out.constraints.filter((k) => !sideRelation(k, c.id)) };
             }
+        }
+        if (c.kind === 'arc') {
+            // A cut-back arc no longer has its arc length.
+            out = { ...out, constraints: out.constraints.filter((k) => !extentHeld(k, c.id)) };
         }
         return t;
     });
@@ -270,8 +313,13 @@ export interface ChamferOptions {
  */
 export function chamferSides(g: SketchGeometry, corner: FilletCorner, o: ChamferOptions): { g: SketchGeometry } | { error: string } {
     const [s1, s2] = corner.sides;
-    if (s1.curve.kind !== 'line' || s2.curve.kind !== 'line') {
-        return { error: 'Chamfer works on two lines.' };
+    if (corner.curves || s1.curve.kind !== 'line' || s2.curve.kind !== 'line') {
+        // Anything but two lines: on the exact curves (an arc meeting a line at an end too).
+        const cc = corner.curves ?? (corner.point ? curveCornerAt(g, corner.point, s1.curve, s2.curve) : null);
+        if (!cc || 'error' in cc) {
+            return cc ?? { error: 'Pick a corner, or two curves.' };
+        }
+        return chamferCurves(g, cc, o);
     }
     if (!(o.distance > 0)) {
         return { error: 'Type a distance above zero.' };

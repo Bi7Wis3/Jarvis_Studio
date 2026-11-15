@@ -2,11 +2,22 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { Icon } from './icons';
 import { runTool, useStudio } from './state';
 import './browser.css';
 
+/**
+ * One line of a context menu. `icon`: the toolbar icon of the same command; `title`: the tooltip (for a disabled
+ * entry, why it cannot be used now); `checked`: a setting that is on. `items` makes a submenu, `header` a greyed
+ * heading naming what was clicked.
+ */
 export type MenuEntry =
-    | { label: string; onSelect: () => void; hint?: string; danger?: boolean; disabled?: boolean }
+    | {
+        label: string; onSelect: () => void; hint?: string; danger?: boolean; disabled?: boolean; icon?: string; title?: string;
+        checked?: boolean;
+    }
+    | { label: string; items: MenuEntry[]; icon?: string; title?: string; disabled?: boolean }
+    | { header: string }
     | 'separator';
 
 /** Shows a short message in the app's error bubble, like server errors. */
@@ -56,43 +67,130 @@ export function useDismiss(ref: RefObject<HTMLElement | null>, onClose: () => vo
 /**
  * A floating menu at a screen point (right-click or a ⋯ button), kept inside the window. It is rendered on the
  * page body: inside a panel with a backdrop blur, a fixed position would be measured from that panel, not the window.
+ * Esc or a press outside it (and outside its submenus) closes it.
  */
 export function ContextMenu(props: { x: number; y: number; items: MenuEntry[]; onClose: () => void }) {
-    const { x, y, items, onClose } = props;
+    const { onClose } = props;
+    useEffect(() => {
+        const onDown = (event: PointerEvent) => {
+            if (!(event.target as Element | null)?.closest?.('.ctx-menu')) {
+                onClose();
+            }
+        };
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                event.stopPropagation();
+                onClose();
+            }
+        };
+        document.addEventListener('pointerdown', onDown, true);
+        document.addEventListener('keydown', onKey, true);
+        return () => {
+            document.removeEventListener('pointerdown', onDown, true);
+            document.removeEventListener('keydown', onKey, true);
+        };
+    }, [onClose]);
+    return <MenuBox {...props} />;
+}
+
+/** The menu's box at (x, y), or for a submenu beside the entry that opened it (`beside`: that entry's rectangle). */
+function MenuBox(props: { x: number; y: number; items: MenuEntry[]; onClose: () => void; beside?: DOMRect }) {
+    const { x, y, items, onClose, beside } = props;
     const box = useRef<HTMLDivElement>(null);
     const [pos, setPos] = useState({ x, y });
-    useDismiss(box, onClose);
+    const [sub, setSub] = useState<{ index: number; rect: DOMRect } | null>(null);
     useLayoutEffect(() => {
         const rect = box.current?.getBoundingClientRect();
-        if (rect) {
+        if (!rect) {
+            return;
+        }
+        if (beside) {
+            // Right of the entry, else left of it when the window ends first.
+            const right = beside.right + 2;
+            setPos({
+                x: right + rect.width + 8 <= window.innerWidth ? right : Math.max(4, beside.left - rect.width - 2),
+                y: Math.max(4, Math.min(beside.top - 4, window.innerHeight - rect.height - 8)),
+            });
+        } else {
             setPos({
                 x: Math.max(4, Math.min(x, window.innerWidth - rect.width - 8)),
                 y: Math.max(4, Math.min(y, window.innerHeight - rect.height - 8)),
             });
         }
-    }, [x, y]);
-    return createPortal(
-        <div ref={box} className="ctx-menu" role="menu" style={{ left: pos.x, top: pos.y }}>
-            {items.map((item, i) => (item === 'separator'
-                ? <div key={i} className="ctx-sep" role="separator" />
-                : (
-                    <button
-                        key={i}
-                        type="button"
-                        role="menuitem"
-                        className={item.danger ? 'danger' : ''}
-                        disabled={item.disabled}
-                        onClick={() => {
-                            onClose();
-                            item.onSelect();
-                        }}
-                    >
-                        <span>{item.label}</span>
-                        {item.hint && <span className="hint">{item.hint}</span>}
-                    </button>
-                )))}
-        </div>,
-        document.body,
+    }, [x, y, beside]);
+    // A column for icons and ticks when any entry has one, so the labels line up.
+    const lead = items.some((item) => typeof item === 'object' && !('header' in item) && (item.icon || ('checked' in item && item.checked !== undefined)));
+    const subItems = sub ? items[sub.index] : null;
+    return (
+        <>
+            {createPortal(
+                <div ref={box} className="ctx-menu" role="menu" style={{ left: pos.x, top: pos.y }} onContextMenu={(e) => e.preventDefault()}>
+                    {items.map((item, i) => {
+                        if (item === 'separator') {
+                            return <div key={i} className="ctx-sep" role="separator" />;
+                        }
+                        if ('header' in item) {
+                            return <div key={i} className="ctx-head" role="presentation">{item.header}</div>;
+                        }
+                        const disabled = !!item.disabled;
+                        const icon = lead && (
+                            <span className="ctx-icon" aria-hidden="true">
+                                {'checked' in item && item.checked !== undefined
+                                    ? (item.checked ? '✓' : '')
+                                    : item.icon ? <Icon name={item.icon} size={15} /> : null}
+                            </span>
+                        );
+                        if ('items' in item) {
+                            return (
+                                <button
+                                    key={i}
+                                    type="button"
+                                    role="menuitem"
+                                    aria-haspopup="menu"
+                                    aria-expanded={sub?.index === i}
+                                    aria-disabled={disabled || undefined}
+                                    className={`${disabled ? 'off' : ''} ${sub?.index === i ? 'open' : ''}`}
+                                    title={item.title}
+                                    onPointerEnter={(e) => !disabled && setSub({ index: i, rect: e.currentTarget.getBoundingClientRect() })}
+                                    onClick={(e) => !disabled && setSub({ index: i, rect: e.currentTarget.getBoundingClientRect() })}
+                                >
+                                    {icon}
+                                    <span className="ctx-label">{item.label}</span>
+                                    <span className="hint">▸</span>
+                                </button>
+                            );
+                        }
+                        return (
+                            <button
+                                key={i}
+                                type="button"
+                                role={'checked' in item && item.checked !== undefined ? 'menuitemcheckbox' : 'menuitem'}
+                                aria-checked={'checked' in item && item.checked !== undefined ? item.checked : undefined}
+                                aria-disabled={disabled || undefined}
+                                className={`${item.danger ? 'danger' : ''} ${disabled ? 'off' : ''}`}
+                                title={item.title}
+                                onPointerEnter={() => setSub(null)}
+                                onClick={() => {
+                                    if (disabled) {
+                                        return;
+                                    }
+                                    onClose();
+                                    item.onSelect();
+                                }}
+                            >
+                                {icon}
+                                <span className="ctx-label">{item.label}</span>
+                                {item.hint && <span className="hint">{item.hint}</span>}
+                            </button>
+                        );
+                    })}
+                </div>,
+                document.body,
+            )}
+            {sub && subItems && typeof subItems === 'object' && 'items' in subItems && (
+                <MenuBox x={sub.rect.right} y={sub.rect.top} items={subItems.items} onClose={onClose} beside={sub.rect} />
+            )}
+        </>
     );
 }
 

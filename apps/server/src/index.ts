@@ -7,7 +7,11 @@ import type { ActivityEntry, ClientMessage, ServerMessage } from '@jarvis/core';
 import { Jarvis } from './agent.js';
 import { z } from 'zod';
 import { MAX_ASSET_BYTES, readAsset, saveAsset } from './assets.js';
+import { listBlockFiles, readBlockFile, saveBlockFile } from './blockFiles.js';
+import { fontGlyphs, listFonts } from './fonts.js';
+import { FONT_STYLES, type FontStyle } from '@jarvis/core/text';
 import { CadKernel } from './cad/kernel.js';
+import { modelSketchRequest } from './modelSketch.js';
 import { createHostTools } from './hostTools.js';
 import { MeshService } from './meshes.js';
 import { registerMcpHttp } from './mcpHttp.js';
@@ -335,12 +339,12 @@ app.get<{ Params: { id: string } }>('/api/audio/:id', async (request, reply) => 
 app.get<{ Params: { file: string } }>('/api/exports/:file', async (request, reply) => {
     const { file } = request.params;
     const path = join(EXPORTS_DIR, file);
-    const match = /^[a-z0-9-]+\.(stl|step)$/.exec(file);
+    const match = /^[a-z0-9-]+\.(stl|step|FCMacro)$/.exec(file);
     if (!match || !existsSync(path)) {
         return reply.code(404).send();
     }
     return reply
-        .type(match[1] === 'stl' ? 'model/stl' : 'model/step')
+        .type(match[1] === 'stl' ? 'model/stl' : match[1] === 'step' ? 'model/step' : 'text/x-python; charset=utf-8')
         .header('content-disposition', `attachment; filename="${file}"`)
         .send(readFileSync(path));
 });
@@ -367,6 +371,12 @@ app.post('/api/preview', async (request, reply) => {
     }
 });
 
+/** Model geometry for an open sketch: the part's edges as seen from the sketch plane, picks, a section, a silhouette. */
+app.post('/api/sketch-model', async (request, reply) => {
+    const answer = await modelSketchRequest(store.get(), request.body, kernel);
+    return 'error' in answer ? reply.code(answer.status).send({ error: answer.error }) : answer.model;
+});
+
 app.addContentTypeParser(/^image\/(png|jpeg|webp)$/, { parseAs: 'buffer', bodyLimit: MAX_ASSET_BYTES }, (_request, body, done) => {
     done(null, body);
 });
@@ -388,7 +398,36 @@ app.get<{ Params: { id: string } }>('/api/assets/:id', async (request, reply) =>
     return reply.type(asset.type).header('cache-control', 'public, max-age=31536000, immutable').send(asset.data);
 });
 
-app.addContentTypeParser(/^audio\//, { parseAs: 'buffer', bodyLimit: MAX_AUDIO_BYTES }, (_request, body, done) => {
+/** Sketch text: the fonts on this machine, and the glyph outlines a text needs. */
+app.get('/api/fonts', async () => ({ fonts: listFonts() }));
+
+app.post('/api/fonts/glyphs', async (request, reply) => {
+    const body = request.body as { family?: unknown; style?: unknown; text?: unknown } | null;
+    const style = body?.style ?? 'regular';
+    if (typeof body?.family !== 'string' || typeof body.text !== 'string' || !FONT_STYLES.includes(style as FontStyle) || body.text.length > 5000) {
+        return reply.code(400).send({ error: 'Expected { family, style, text }.' });
+    }
+    const glyphs = fontGlyphs(body.family, style as FontStyle, body.text);
+    return glyphs ? { glyphs } : reply.code(404).send({ error: `The font ${body.family} (${style}) is not on this machine.` });
+});
+
+/** Sketch blocks saved as files in the projects folder. */
+app.get('/api/blocks', async () => ({ blocks: listBlockFiles() }));
+
+app.get<{ Params: { name: string } }>('/api/blocks/:name', async (request, reply) => {
+    const block = readBlockFile(request.params.name);
+    return block ? { block } : reply.code(404).send({ error: 'No such block file.' });
+});
+
+app.post('/api/blocks', async (request, reply) => {
+    try {
+        return { name: saveBlockFile(request.body) };
+    } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : 'The block could not be saved.' });
+    }
+});
+
+app.addContentTypeParser(/^audio\//,{ parseAs: 'buffer', bodyLimit: MAX_AUDIO_BYTES }, (_request, body, done) => {
     done(null, body);
 });
 

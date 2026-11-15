@@ -1,12 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
-import { effectivePart, shapeHalfExtents, type Part, type Vec3 } from '@jarvis/core';
+import { effectivePart, type Part } from '@jarvis/core';
 import { labelInsets } from './Labels';
 import { ContextMenu, InlineInput, showError, tool, type MenuEntry } from './menus';
-import { focusPart, runTool, select, setHidden, setWorkspace, useStudio } from './state';
+import { runTool, select, setHidden, setWorkspace, useStudio } from './state';
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
 import { PartHistory } from './FeatureTree';
 import { usePropertyManager } from './PropertyManager';
 import { valueText } from './numberText';
+import { componentMenu, type PartListActions } from './contextMenus';
+import { appActions, duplicatePart, editPattern, insertInstance, menuContext, removePattern, usePartRequest } from './viewMenu';
 import './browser.css';
 
 const PANEL_INSET = 274;
@@ -21,6 +23,13 @@ export function Browser() {
     const activePart = useStudio((s) => s.activePart);
     const [open, setOpen] = useState(() => load(STORAGE_KEY, 'open') !== 'closed');
     const editingFeature = usePropertyManager((s) => s.open);
+    // Rename and Delete from the view's menu happen in the components list: show it.
+    const request = usePartRequest((s) => s.rename ?? s.remove);
+    useEffect(() => {
+        if (request) {
+            setOpen(true);
+        }
+    }, [request]);
 
     useEffect(() => {
         store(STORAGE_KEY, open ? 'open' : 'closed');
@@ -111,67 +120,38 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
         store(`${STORAGE_KEY}.collapsed`, [...next].join(','));
     };
 
-    const duplicate = (part: Part) => {
-        const { id: _id, instanceOf: _source, ...rest } = part;
-        const width = shapeHalfExtents(part.shape)[0] * 2;
-        const position: Vec3 = [part.position[0] + width + 10, part.position[1], part.position[2]];
-        void tool('parts_add', { parts: [{ ...rest, name: `${part.name} copy`, position }] });
-    };
-
     const instancesOf = (id: string) => parts.filter((p) => p.instanceOf === id);
-    const insertInstance = (source: Part) => {
-        const members = [source, ...instancesOf(source.id)];
-        const last = members[members.length - 1];
-        const width = shapeHalfExtents(source.shape)[0] * 2;
-        void tool('parts_instance', {
-            partId: source.id,
-            instances: [{ position: [last.position[0] + width + 10, last.position[1], last.position[2]], rotation: last.rotation }],
-        });
-        setExpanded((e) => new Set(e).add(source.id));
-    };
+    // The view's menu asks for these by part (viewMenu.tsx).
+    const request = usePartRequest();
+    useEffect(() => {
+        if (request.rename) {
+            setRenaming(request.rename);
+        }
+        if (request.remove) {
+            setConfirming(request.remove);
+        }
+        if (request.rename || request.remove) {
+            usePartRequest.setState({ rename: null, remove: null });
+        }
+    }, [request.rename, request.remove]);
 
-    const designMenu = (part: Part): MenuEntry[] => [
-        { label: 'Edit part', hint: 'double-click', onSelect: () => setWorkspace('part', part.id, 'isolated') },
-        { label: 'Edit in place', onSelect: () => setWorkspace('part', part.id, 'inContext') },
-        { label: 'Insert instance', onSelect: () => insertInstance(part) },
-        ...patternEntries(part),
-        'separator',
-        { label: 'Rename', onSelect: () => setRenaming(part.id) },
-        { label: 'Duplicate as new part', onSelect: () => duplicate(part) },
-        { label: 'Zoom to part', onSelect: () => focusPart(part.id) },
-        'separator',
-        {
-            label: instancesOf(part.id).length ? 'Delete with all instances' : 'Delete',
-            danger: true,
-            onSelect: () => setConfirming(part.id),
+    // The same menu as a right-click on the part in the view (contextMenus.tsx).
+    const listActions: PartListActions = {
+        rename: (part) => setRenaming(part.id),
+        remove: (part) => setConfirming(part.id),
+        insertInstance: (part) => {
+            insertInstance(part, parts);
+            setExpanded((e) => new Set(e).add(part.id));
         },
-    ];
-    /** Opens the Pattern form for a part (the toolbar owns the form). */
-    const editPattern = (part: Part) => {
-        select(part.id);
-        window.setTimeout(() => window.dispatchEvent(new CustomEvent('jarvis:open-tool', { detail: 'pattern' })), 0);
+        duplicate: duplicatePart,
+        editPattern,
+        removePattern,
     };
-    const removePattern = (part: Part) => void tool('parts_update', { updates: [{ id: part.id, repeat: null }] });
-    const patternEntries = (part: Part): MenuEntry[] => (part.repeat
-        ? [
-            { label: 'Edit pattern', onSelect: () => editPattern(part) },
-            { label: 'Remove pattern', onSelect: () => removePattern(part) },
-        ]
-        : [{ label: 'Pattern this part', onSelect: () => editPattern(part) }]);
+    const partMenu = (part: Part): MenuEntry[] => componentMenu(part, menuContext(), appActions, listActions);
     const patternMenu = (part: Part): MenuEntry[] => [
         { label: 'Edit pattern', hint: 'double-click', onSelect: () => editPattern(part) },
         'separator',
         { label: 'Remove pattern', danger: true, onSelect: () => removePattern(part) },
-    ];
-    const instanceMenu = (part: Part): MenuEntry[] => [
-        { label: 'Edit the shared design', hint: 'double-click', onSelect: () => setWorkspace('part', part.id, 'isolated') },
-        { label: 'Edit in place', onSelect: () => setWorkspace('part', part.id, 'inContext') },
-        ...patternEntries(part),
-        'separator',
-        { label: 'Rename', onSelect: () => setRenaming(part.id) },
-        { label: 'Zoom to instance', onSelect: () => focusPart(part.id) },
-        'separator',
-        { label: 'Delete instance', danger: true, onSelect: () => setConfirming(part.id) },
     ];
 
     const designs = parts.filter((p) => !p.instanceOf || !parts.some((q) => q.id === p.instanceOf));
@@ -201,7 +181,7 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
                 deleteIds={all.map((p) => p.id)}
                 onRenamed={() => setRenaming(null)}
                 onConfirmed={() => setConfirming(null)}
-                onMenu={(event) => setMenu(menuAt(event, part.instanceOf ? instanceMenu(part) : designMenu(part)))}
+                onMenu={(event) => setMenu(menuAt(event, partMenu(part)))}
             />
         );
     };

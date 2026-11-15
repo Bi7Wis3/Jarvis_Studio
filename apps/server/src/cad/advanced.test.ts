@@ -111,6 +111,22 @@ describe('reference geometry', () => {
             { id: 'later', op: 'plane', definition: { kind: 'offset', base: 'top', distance: 1 } },
         ])).rejects.toThrow(/^feature "Base" \(extrude\): .*plane "later" not found/);
     }, SLOW);
+
+    it('puts sketches on planes built from faces and vertices picked on the model (kept by value)', async () => {
+        // A 10 mm block's top face (y = 5, outward +Y) and bottom face (y = -5, outward -Y), as picked in the view.
+        const top = { fixedPlane: { origin: [1, 5, 2] as Vec3, normal: [0, 1, 0] as Vec3, xDir: [1, 0, 0] as Vec3 }, from: 'face' as const };
+        const bottom = { fixedPlane: { origin: [0, -5, 0] as Vec3, normal: [0, -1, 0] as Vec3, xDir: [1, 0, 0] as Vec3 }, from: 'face' as const };
+        const m = await mesh({ kind: 'box', size: [10, 10, 10], radius: 0 }, [
+            { id: 'off', op: 'plane', definition: { kind: 'offset', base: top, distance: 2 } },
+            { id: 'e', op: 'extrude', mode: 'add', distance: 3, sketch: { plane: { planeRef: 'off' }, profiles: [rect([0, 0], 4, 4)] } },
+            { id: 'mid', op: 'plane', definition: { kind: 'midplane', a: top, b: bottom } },
+            { id: 'tp', op: 'plane', definition: { kind: 'threePoints', points: [[-5, -5, 5], [5, -5, 5], [-5, 5, 5]] } },
+            { id: 'e2', op: 'extrude', mode: 'add', distance: 4, sketch: { plane: { planeRef: 'tp' }, profiles: [rect([5, 5], 2, 2)] } },
+            { id: 'c', op: 'extrude', mode: 'cut', distance: 1, sketch: { plane: { planeRef: 'mid' }, offset: 4, profiles: [rect([0, 0], 2, 2)] } },
+        ]);
+        // The boss on the offset plane runs y 7..10, the one on the front face (through three corners) z 5..9.
+        expectBounds(m, [-5, -5, -5], [5, 10, 9]);
+    }, SLOW);
 });
 
 describe('sweep', () => {

@@ -4,6 +4,9 @@
 
 import type { SketchGeometry } from '@jarvis/core';
 import { ORIGIN, curveRadius, solveGeometry, solverReady } from './solver';
+import { curvePointIds } from './sketchCurves';
+import { rigidGroups } from './sketchBlockRigid';
+
 
 /** Past this many points the probes cost too much per change; the caller falls back to the whole-sketch state. */
 const MAX_POINTS = 160;
@@ -26,7 +29,20 @@ export function definedEntities(g: SketchGeometry): Set<string> | null {
     }
     const geometry = base.geometry;
     const defined = new Set<string>([ORIGIN]);
+    // A block instance is one rigid body: its points are defined together, when holding all of them takes no freedom.
+    const groups = rigidGroups(geometry);
+    const bodies = new Map<string[], boolean>();
     for (const p of geometry.points) {
+        const group = groups.get(p.id);
+        if (group) {
+            if (!bodies.has(group)) {
+                bodies.set(group, solveGeometry(geometry, { targets: [], hold: new Set(group) }).dof === base.dof);
+            }
+            if (bodies.get(group)) {
+                defined.add(p.id);
+            }
+            continue;
+        }
         if (p.fixed || p.id === ORIGIN || solveGeometry(geometry, { targets: [], hold: new Set([p.id]) }).dof === base.dof) {
             defined.add(p.id);
         }
@@ -38,6 +54,11 @@ export function definedEntities(g: SketchGeometry): Set<string> | null {
             }
         } else if (c.kind === 'arc') {
             if (defined.has(c.center) && defined.has(c.start) && defined.has(c.end)) {
+                defined.add(c.id);
+            }
+        } else if (c.kind !== 'circle') {
+            // Ellipses, splines, parabolas and conics are set by their points (a conic's Rho is a fixed value).
+            if (curvePointIds(c).every((id) => defined.has(id))) {
                 defined.add(c.id);
             }
         } else if (defined.has(c.center)) {

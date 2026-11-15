@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import type { SketchGeometry, SketchRegion } from '@jarvis/core';
 import { geometryEntities } from './sketchGeometry';
 import { sketchRegions } from './sketchRegions';
+import { curveEndIds } from './sketchCurves';
 import { inside, profilePoints, type Pt } from './sketchMath';
 
 export interface RegionPickState {
@@ -56,20 +57,41 @@ export function RegionPickSession({ sketchKey, initial }: { sketchKey: string | 
 export function regionsOf(g: SketchGeometry): SketchRegion[] {
     const ends = new Map<string, [string, string]>();
     for (const c of g.curves) {
-        if (c.kind === 'line') {
-            ends.set(c.id, [c.a, c.b]);
-        } else if (c.kind === 'arc') {
-            ends.set(c.id, [c.start, c.end]);
+        const e = curveEndIds(c);
+        if (e.length === 2) {
+            ends.set(c.id, [e[0], e[1]]);
         }
     }
     return sketchRegions(geometryEntities(g, false), ends);
 }
 
+/** A region's loops as points, with the outline's bounds; worked out once per region (regions are not changed). */
+const ringsKept = new WeakMap<SketchRegion, { outer: Pt[] | undefined; holes: Pt[][]; box: [number, number, number, number] }>();
+
+function ringsOf(r: SketchRegion) {
+    let rings = ringsKept.get(r);
+    if (!rings) {
+        const [outer, ...holes] = r.loops.map(profilePoints);
+        const box: [number, number, number, number] = [Infinity, -Infinity, Infinity, -Infinity];
+        for (const [u, v] of outer ?? []) {
+            box[0] = Math.min(box[0], u);
+            box[1] = Math.max(box[1], u);
+            box[2] = Math.min(box[2], v);
+            box[3] = Math.max(box[3], v);
+        }
+        rings = { outer, holes, box };
+        ringsKept.set(r, rings);
+    }
+    return rings;
+}
+
 /** Index of the region containing `point` (inside its outline, outside its holes), or -1. */
 export function regionAt(regions: SketchRegion[], point: Pt): number {
     return regions.findIndex((r) => {
-        const [outer, ...holes] = r.loops.map(profilePoints);
-        return !!outer && inside(point, outer) && !holes.some((h) => inside(point, h));
+        const { outer, holes, box } = ringsOf(r);
+        // Outside the outline's bounds is outside the outline.
+        const near = point[0] >= box[0] && point[0] <= box[1] && point[1] >= box[2] && point[1] <= box[3];
+        return !!outer && near && inside(point, outer) && !holes.some((h) => inside(point, h));
     });
 }
 

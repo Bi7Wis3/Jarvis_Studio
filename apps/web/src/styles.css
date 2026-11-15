@@ -98,6 +98,8 @@ h1 {
 .viewport-error {
     display: grid;
     place-items: center;
+    align-content: center;
+    gap: 12px;
     padding: 0 20vw;
     color: var(--muted);
     text-align: center;
@@ -891,12 +893,13 @@ footer {
 
 /* ==== CAD toolbar, option popups, world readout ============================================== */
 
+/* The toolbar, the sketch bar and their menus stay above the labels drawn in the view (z-index up to 40). */
 .toolbar {
     position: absolute;
     top: 12px;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 5;
+    z-index: 46;
     display: flex;
     align-items: center;
     padding: 4px;
@@ -933,7 +936,8 @@ footer {
 }
 
 /* A quiet tint per group, so the kinds of tool can be told apart at a glance. */
-.tb-group.g-sketch {
+.tb-group.g-sketch,
+.tb-group.g-draw {
     --tb-tint: #8fd6ec;
 }
 
@@ -1002,6 +1006,42 @@ footer {
     width: 38px;
 }
 
+.tb-family {
+    display: flex;
+    align-items: center;
+    border-radius: 7px;
+}
+
+.tb-more {
+    display: grid;
+    place-items: center;
+    width: 12px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.tb-more:hover,
+.tb-family.open .tb-more {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text);
+}
+
+.tb-btn.tb-menu.named {
+    width: auto;
+    padding: 0 5px;
+}
+
+.tb-menu-name {
+    margin-left: 5px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
 .tb-btn .caret {
     color: var(--muted);
 }
@@ -1033,7 +1073,7 @@ footer {
 
 .tb-float {
     position: fixed;
-    z-index: 20;
+    z-index: 47;
     overflow-y: auto;
     border: 1px solid rgba(255, 255, 255, 0.13);
     border-radius: 10px;

@@ -5,7 +5,7 @@ import { useEffect, useMemo } from 'react';
 import type { KernelMesh } from './meshes';
 import { activeEntities, entityOf, itemFor, pickTolerance, usePickSession, type PickItem, type PickMesh } from './pickField';
 import { facePlane, type P3 } from './picking';
-import { positionFromPick } from './pickRefs';
+import { modelPick, positionFromPick, vertexAtClick } from './pickRefs';
 import { clearPicked, useStudio } from './state';
 
 type Entity = { kind: 'edge' | 'face'; index: number };
@@ -50,8 +50,13 @@ export function usePartPicks(partId: string, kernel: KernelMesh | null) {
         if (before.length === 0) {
             return;
         }
+        const refs = s.boxes.find((b) => b.key === s.active)?.entities.includes('ref');
         for (const p of before) {
             const item = itemFor(view.mesh, p);
+            const model = refs && item ? modelPick(view.mesh, p, item.at) : null;
+            if (item && model) {
+                item.model = model;
+            }
             if (item) {
                 s.pick(item, (i) => sameEntity(entityOf(view.mesh, i, view.tolerance), p));
             }
@@ -82,12 +87,21 @@ export function usePartPicks(partId: string, kernel: KernelMesh | null) {
         return null;
     }
     const allow = activeEntities(session);
-    /** `point`: the clicked spot and `hitNormal` the face normal there, both in the part's frame. */
-    const click = (entity: Entity, point: P3, hitNormal?: P3) => {
+    /**
+     * `point`: the clicked spot and `hitNormal` the face normal there, both in the part's frame; `near`: how far
+     * (part units) the pointer picks an edge, for a vertex at the end of the edge.
+     */
+    const click = (entity: Entity, point: P3, hitNormal?: P3, near?: number) => {
         const s = usePickSession.getState();
         const box = s.boxes.find((b) => b.key === s.active);
         if (box?.position && s.place) {
             const { edges, segEdge } = view.mesh;
+            // Near an edge's end: the vertex there.
+            const corner = entity.kind === 'edge' ? vertexAtClick(edges, segEdge, entity.index, point, 2 * (near ?? view.tolerance)) : null;
+            if (corner) {
+                s.place(corner);
+                return;
+            }
             const at = entity.kind === 'edge'
                 ? positionFromPick('edge', { edges, segEdge, edge: entity.index, point })
                 : positionFromPick('face', { point, normal: hitNormal });
@@ -100,6 +114,25 @@ export function usePartPicks(partId: string, kernel: KernelMesh | null) {
         if (box.flat && entity.kind === 'face'
             && !facePlane(view.mesh.positions, view.mesh.indices, view.mesh.triFace, entity.index).planar) {
             usePickSession.setState({ note: 'Pick a flat face.' });
+            return;
+        }
+        if (box.entities.includes('ref')) {
+            // A reference box keeps the geometry by value; a click at an edge's end picks the vertex there.
+            const { edges, segEdge } = view.mesh;
+            const corner = box.entities.includes('vertex') && entity.kind === 'edge'
+                ? vertexAtClick(edges, segEdge, entity.index, point, 2 * (near ?? view.tolerance)) : null;
+            if (corner) {
+                const model = modelPick(view.mesh, { kind: 'vertex', at: corner }, point);
+                const tie = view.tolerance * 1e-3;
+                s.pick({ kind: 'vertex', at: corner, ...(model ? { model } : {}) },
+                    (i) => i.kind === 'vertex' && Math.hypot(i.at[0] - corner[0], i.at[1] - corner[1], i.at[2] - corner[2]) <= tie);
+                return;
+            }
+            const item = itemFor(view.mesh, entity, hitNormal);
+            const model = modelPick(view.mesh, entity, point);
+            if (item && model) {
+                s.pick({ ...item, model }, (i) => sameEntity(entityOf(view.mesh, i, view.tolerance), entity));
+            }
             return;
         }
         const item: PickItem | null = itemFor(view.mesh, entity, hitNormal);

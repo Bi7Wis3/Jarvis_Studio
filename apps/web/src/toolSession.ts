@@ -24,3 +24,18 @@ export function clearToolSession(owner: symbol): void {
         useToolSession.setState({ toolId: null, values: {}, ctx: null, set: null, owner: null });
     }
 }
+
+/**
+ * Values a tool's form opens with instead of its defaults, set just before it is opened from elsewhere (a right-click
+ * menu: Axis through a cylindrical face, Extrude of one sketch). Read as the form opens; it expires shortly after, so
+ * a later opening of the same tool starts from the defaults again.
+ */
+let preset: { toolId: string; values: Values; until: number } | null = null;
+
+export function presetToolValues(toolId: string, values: Values, ms = 1500): void {
+    preset = { toolId, values, until: Date.now() + ms };
+}
+
+export function toolPreset(toolId: string): Values {
+    return preset && preset.toolId === toolId && Date.now() <= preset.until ? preset.values : {};
+}

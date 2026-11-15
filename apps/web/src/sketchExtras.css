@@ -1,0 +1,106 @@
+/* The forms of sketch text, pictures, equation curves, blocks and spline fitting (left panel). */
+
+.sx-text textarea {
+    width: 100%;
+    min-height: 3.6em;
+    resize: vertical;
+    box-sizing: border-box;
+    font: inherit;
+    color: inherit;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 4px;
+    padding: 4px 6px;
+}
+
+.sx-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 4px 0;
+}
+
+.sx-row button,
+.sx-small {
+    font: inherit;
+    font-size: 12px;
+    color: inherit;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+}
+
+.sx-row button:hover,
+.sx-small:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.sx-small.on {
+    border-color: #ffd166;
+    color: #ffd166;
+}
+
+.sx-small.danger:hover {
+    border-color: #ff5d6c;
+    color: #ff5d6c;
+}
+
+.sx-warn {
+    color: #f0c674;
+}
+
+.sx-list {
+    list-style: none;
+    margin: 2px 0 6px;
+    padding: 0;
+    max-height: 9em;
+    overflow: auto;
+}
+
+.sx-list li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px;
+    cursor: pointer;
+    border-radius: 3px;
+}
+
+.sx-list li.on,
+.sx-list li:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.sx-list li span {
+    flex: 1;
+}
+
+/* Display instance count of a sketch pattern (double-click to change it). */
+.sk-label .sk-pattern-count {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    color: #10141c;
+    background: #ffd166;
+    border: none;
+    border-radius: 3px;
+    padding: 0 5px;
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+/* A block instance's insertion point (drags the instance). */
+.sk-label.pt.insertion span {
+    width: 9px;
+    height: 9px;
+    border-radius: 1px;
+    background: transparent;
+    border: 1.5px solid #35e0ff;
+    box-shadow: none;
+}
+
+.sk-label.pt.insertion.selected span {
+    border-color: #c48bff;
+}

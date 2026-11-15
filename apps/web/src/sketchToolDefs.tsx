@@ -2,11 +2,11 @@
 // toolbar groups include after their own.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { SketchConstraint, SketchGeometry } from '@jarvis/core';
+import type { Feature, SketchConstraint, SketchGeometry } from '@jarvis/core';
 import type { Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
 import { AXIS_U, AXIS_V, ORIGIN, curveOf, isDimension, solveGeometry, solverReady } from './solver';
 import {
-    clearTransformPicks, deleteConstraints, describe, fullyDefineSketch, repairAll, repairProblem, selectConstraint, setHighlight, setSnapKind, setTool,
+    clearTransformPicks, deleteConstraints, describe, fullyDefineSketch, repairAll, repairProblem, selectConstraint, setDimensionTool, setHighlight, setSnapKind, setTool,
     startTransformPick, stopTransformPick, stretchSelected, transformCentre, transformSelected, useSketcher, type TransformKind,
 } from './sketcher';
 import { constraintRefs, liveIds } from './sketchGeometry';
@@ -14,7 +14,21 @@ import { findProblems, GAP } from './sketchRepair';
 import type { Transform } from './sketchEdit';
 import { QUICK_SNAPS } from './snapping';
 import { valueText } from './numberText';
+import { CURVE_NOUN } from './sketchCurves';
 import type { Pt } from './sketchMath';
+import { RELATION_NAMES, relationName } from './sketchRelationNames';
+import { addRelationsTool } from './sketchRelationForms';
+import { sketchXpertTool } from './sketchXpertForm';
+import { fullyDefineTool } from './sketchFullyDefineForm';
+import { RELATION_FILTERS, externalRelations, relationStates, showsUnder, type RelationFilter, type RelationState } from './sketchRelationEdit';
+import { definedEntities } from './sketchStatus';
+import { undoSketch } from './sketcher';
+import { PmSection } from './sketchPm';
+import { moreDimensionTools } from './sketchDimForms';
+import { QuickSnapButtons } from './sketchQuickSnaps';
+import {
+    cancelReplaceEntity, constraintTool, setDimensionsDriven, setOrdinateTool, setPathLengthTool, setSuppressed, startReplaceEntity,
+} from './sketcher';
 
 const fmt = valueText;
 
@@ -44,6 +58,8 @@ function QuickSnaps() {
     const snap = useSketcher((s) => s.snap);
     return (
         <div className="sk-snaps">
+            <QuickSnapButtons />
+            <p className="tb-note"><b>Sketch snaps</b> (kept on or off):</p>
             {!snap && <p className="tb-note">Snapping is off in the sketch settings.</p>}
             {QUICK_SNAPS.map(({ kind, label }) => (
                 <label key={kind}>
@@ -218,7 +234,7 @@ function RepairList() {
         </label>
     );
     if (!problems.length) {
-        return <>{gapField}<p className="tb-note">No problems found: no gaps, overlaps, tiny or zero-length curves or relations to deleted geometry.</p></>;
+        return <>{gapField}<p className="tb-note">No problems found: no gaps, overlaps, tiny or zero-length curves, points shared by three or more entities or relations to deleted geometry.</p></>;
     }
     return (
         <>
@@ -227,7 +243,7 @@ function RepairList() {
                 {problems.map((p) => (
                     <div key={p.key} className="sk-row" onMouseEnter={() => setHighlight(p.refs)} onMouseLeave={() => setHighlight([])}>
                         <span className="sk-row-text">{p.text}</span>
-                        <button type="button" className="sk-small" onClick={() => repairProblem(p)}>{p.action}</button>
+                        {p.action && <button type="button" className="sk-small" onClick={() => repairProblem(p)}>{p.action}</button>}
                     </div>
                 ))}
             </div>
@@ -258,13 +274,7 @@ export const moreModifyTools: ToolDef[] = [
 
 // ---- Constrain: display / delete relations, fully define ------------------------------------------------
 
-const KIND_NAMES: Record<SketchConstraint['kind'], string> = {
-    coincident: 'Coincident', horizontal: 'Horizontal', vertical: 'Vertical', parallel: 'Parallel', perpendicular: 'Perpendicular',
-    tangent: 'Tangent', equal: 'Equal', pointOnCurve: 'On curve', midpoint: 'Midpoint', symmetric: 'Symmetric', fix: 'Lock',
-    fixRadius: 'Lock radius', horizontalPoints: 'Horizontal', verticalPoints: 'Vertical', concentric: 'Concentric', coradial: 'Coradial',
-    collinear: 'Collinear',
-    distance: 'Distance', length: 'Length', angle: 'Angle', radius: 'Radius', diameter: 'Diameter',
-};
+const KIND_NAMES = RELATION_NAMES;
 
 /** A short name of what a relation refers to. */
 function refLabel(g: SketchGeometry, id: string, alive: Set<string>): string {
@@ -278,61 +288,138 @@ function refLabel(g: SketchGeometry, id: string, alive: Set<string>): string {
         return `${id} (deleted)`;
     }
     const curve = curveOf(g, id);
-    return curve ? `${curve.kind} ${id}` : `point ${id}`;
+    return curve ? `${CURVE_NOUN[curve.kind]} ${id}` : `point ${id}`;
 }
 
-type RelationState = 'ok' | 'conflicting' | 'redundant' | 'dangling';
-const STATE_TEXT: Record<RelationState, string> = { ok: 'satisfied', conflicting: 'conflicting', redundant: 'redundant', dangling: 'dangling' };
+const STATE_TEXT: Record<RelationState, string> = {
+    ok: 'satisfied', conflicting: 'conflicting', redundant: 'over defining', dangling: 'dangling', unsolved: 'not solved', suppressed: 'suppressed',
+};
+
+/** The Entities group of the relation picked in the list: what it refers to, each with Replace. */
+function RelationEntities({ id }: { id: string }) {
+    const g = useSketcher((s) => s.geometry);
+    const dof = useSketcher((s) => s.dof);
+    const c = g.constraints.find((k) => k.id === id);
+    const alive = useMemo(() => liveIds(g), [g]);
+    // Status and Defined In of each entity: fully or under defined; this sketch, or copied in from the model or another sketch.
+    const defined = useMemo(() => (dof > 0 ? definedEntities(g) : null), [g, dof]);
+    const outside = useMemo(() => externalRelations(g).entities, [g]);
+    if (!c) {
+        return null;
+    }
+    const status = (r: string) => (dof === 0 || defined?.has(r) ? 'Fully defined' : 'Under defined');
+    return (
+        <PmSection title="Entities">
+            <div className="sk-list">
+                {constraintRefs(c).map((r) => (
+                    <div key={r} className="sk-row" onMouseEnter={() => setHighlight(alive.has(r) ? [r] : [])} onMouseLeave={() => setHighlight([])}>
+                        <span className="sk-row-text">
+                            <b>{refLabel(g, r, alive)}</b>
+                            <small>
+                                {alive.has(r) ? `${status(r)} · ${outside.has(r) ? 'Same model (copied in, locked)' : 'Current sketch'}` : 'Deleted: replace it to repair the relation'}
+                            </small>
+                        </span>
+                        <button
+                            type="button"
+                            className="sk-small"
+                            title="Then click the entity that takes its place"
+                            disabled={r === ORIGIN}
+                            onClick={() => startReplaceEntity(c.id, r)}
+                        >
+                            Replace
+                        </button>
+                    </div>
+                ))}
+            </div>
+        </PmSection>
+    );
+}
 
 function RelationsList() {
     const g = useSketcher((s) => s.geometry);
+    const context = useSketcher((s) => s.context);
     const selection = useSketcher((s) => s.selection);
     const conflicting = useSketcher((s) => s.conflicting);
-    const [filter, setFilter] = useState<'all' | 'dangling' | 'problems'>('all');
-    useEffect(() => () => setHighlight([]), []);
+    const geometryPicked = selection.filter((x) => x.type !== 'constraint').map((x) => x.id);
+    // Opened on an over defined or unsolvable sketch: the problems first.
+    const [filter, setFilter] = useState<RelationFilter>(conflicting.length || useSketcher.getState().redundant.length ? 'problems'
+        : geometryPicked.length ? 'selected' : 'all');
+    // Delete all asks in the form itself (no browser dialog): the count to delete, or null.
+    const [askAll, setAskAll] = useState<number | null>(null);
+    // Undo last relation change: the sketch as the last change made from this list left it.
+    const mine = useRef<SketchGeometry | null>(null);
+    const did = (change: () => unknown) => {
+        const before = useSketcher.getState().geometry;
+        change();
+        const after = useSketcher.getState().geometry;
+        mine.current = after !== before ? after : mine.current;
+    };
+    const outside = useMemo(() => externalRelations(g), [g]);
+    useEffect(() => () => {
+        setHighlight([]);
+        cancelReplaceEntity();
+    }, []);
     const solved = useMemo(() => (solverReady() ? solveGeometry(g) : null), [g]);
     const alive = useMemo(() => liveIds(g), [g]);
-    // Selected points and curves narrow the list to their relations. Selecting a relation (from the list) keeps the
-    // list as it was; clearing the selection shows everything.
+    const states = useMemo(() => relationStates(g, solved, conflicting), [g, solved, conflicting]);
+    // Selected Entities: the points and curves selected; picking a relation in the list keeps the list as it was.
     const lastScope = useRef<string[]>([]);
-    const geometryPicked = selection.filter((x) => x.type !== 'constraint').map((x) => x.id);
     if (geometryPicked.length || !selection.length) {
         lastScope.current = geometryPicked;
     }
     const scope = lastScope.current.filter((id) => alive.has(id));
-    const rows = g.constraints.map((c) => {
-        const refs = constraintRefs(c);
-        const state: RelationState = refs.some((r) => !alive.has(r)) ? 'dangling'
-            : conflicting.includes(c.id) || solved?.conflicting.includes(c.id) ? 'conflicting'
-                : solved?.redundant.includes(c.id) ? 'redundant' : 'ok';
-        return { c, refs, state };
-    }).filter(({ refs, state }) => (!scope.length || refs.some((r) => scope.includes(r)))
-        && (filter === 'all' || (filter === 'dangling' ? state === 'dangling' : state !== 'ok')));
+    const rows = g.constraints.map((c) => ({ c, refs: constraintRefs(c), state: states.get(c.id) ?? 'ok' }))
+        .filter(({ c, state }) => showsUnder(filter, state, c, scope, outside));
     const selected = new Set(selection.map((x) => x.id));
+    const picked = selection.filter((x) => x.type === 'constraint' && g.constraints.some((c) => c.id === x.id)).map((x) => x.id);
     return (
         <>
-            <p className="tb-note">
-                {scope.length ? `Relations of the ${scope.length} selected item${scope.length === 1 ? '' : 's'}.` : 'All relations and dimensions in the sketch.'}
-            </p>
             <div className="sk-list-filter">
-                <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)} aria-label="Show">
-                    <option value="all">All</option>
-                    <option value="dangling">Dangling (deleted geometry)</option>
-                    <option value="problems">Conflicting or redundant</option>
+                <select value={filter} onChange={(e) => setFilter(e.target.value as RelationFilter)} aria-label="Filter">
+                    {RELATION_FILTERS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
                 </select>
                 <button
                     type="button"
                     className="sk-small danger"
-                    disabled={!rows.length}
+                    disabled={!picked.length}
+                    onClick={() => did(() => deleteConstraints(picked))}
+                >
+                    Delete
+                </button>
+                {askAll === null ? (
+                    <button type="button" className="sk-small danger" disabled={!rows.length} onClick={() => setAskAll(rows.length)}>
+                        Delete all
+                    </button>
+                ) : (
+                    <span className="sk-ask" role="alertdialog" aria-label="Delete all listed relations">
+                        Delete {askAll} relation{askAll === 1 ? '' : 's'}?
+                        <button
+                            type="button"
+                            className="sk-small danger"
+                            onClick={() => {
+                                setAskAll(null);
+                                did(() => deleteConstraints(rows.map((r) => r.c.id)));
+                            }}
+                        >
+                            Delete
+                        </button>
+                        <button type="button" className="sk-small" onClick={() => setAskAll(null)}>Keep</button>
+                    </span>
+                )}
+                <button
+                    type="button"
+                    className="sk-small"
+                    title="Undo last relation change: takes back the last delete, suppress, driven or replace made here"
+                    disabled={!mine.current || mine.current !== g}
                     onClick={() => {
-                        if (window.confirm(`Delete ${rows.length} relation${rows.length === 1 ? '' : 's'}?`)) {
-                            deleteConstraints(rows.map((r) => r.c.id));
-                        }
+                        mine.current = null;
+                        undoSketch();
                     }}
                 >
-                    Delete all
+                    Undo
                 </button>
             </div>
+            {filter === 'selected' && !scope.length && <p className="tb-note">Select points or curves in the view to see their relations.</p>}
             {!rows.length && <p className="tb-note">Nothing to show.</p>}
             <div className="sk-list">
                 {rows.map(({ c, refs, state }) => (
@@ -344,10 +431,20 @@ function RelationsList() {
                         onClick={(e) => selectConstraint(c.id, e.shiftKey)}
                     >
                         <span className="sk-row-text">
-                            <b>{KIND_NAMES[c.kind]}{isDimension(c) ? ` ${describe(g, c.id)}` : ''}</b>
+                            <b>{relationName(c, context)}{isDimension(c) ? ` ${describe(g, c.id)}` : ''}</b>
                             <small>{refs.map((r) => refLabel(g, r, alive)).join(', ')}</small>
                         </span>
                         <span className={`sk-state ${state}`}>{STATE_TEXT[state]}</span>
+                        <label className="sk-row-check" title="Suppressed: kept, but not solved" onClick={(e) => e.stopPropagation()}>
+                            <input type="checkbox" checked={!!c.suppressed} onChange={(e) => did(() => setSuppressed([c.id], e.target.checked))} aria-label="Suppressed" />
+                            <span>Supp.</span>
+                        </label>
+                        {isDimension(c) && (
+                            <label className="sk-row-check" title="Driven: follows the geometry, holds nothing" onClick={(e) => e.stopPropagation()}>
+                                <input type="checkbox" checked={!!c.driven} onChange={(e) => did(() => setDimensionsDriven([c.id], e.target.checked))} aria-label="Driven" />
+                                <span>Driven</span>
+                            </label>
+                        )}
                         <button
                             type="button"
                             className="sk-row-x"
@@ -355,7 +452,7 @@ function RelationsList() {
                             aria-label={`Delete ${KIND_NAMES[c.kind]}`}
                             onClick={(e) => {
                                 e.stopPropagation();
-                                deleteConstraints([c.id]);
+                                did(() => deleteConstraints([c.id]));
                             }}
                         >
                             ×
@@ -363,12 +460,63 @@ function RelationsList() {
                     </div>
                 ))}
             </div>
+            {picked.length === 1 && <RelationEntities id={picked[0]} />}
         </>
     );
 }
 
 /** Shown at the end of the Constrain group. */
 export const moreConstrainTools: ToolDef[] = [
+    {
+        id: 'sk-dim-horizontal',
+        label: 'Horizontal dimension',
+        icon: 'dim-horizontal',
+        hint: 'a distance along the sketch’s horizontal: two points, a line, or centres',
+        instant: () => setDimensionTool('u'),
+        active: (_, s) => s.sketchTool === 'dimension' && useSketcher.getState().dimLock === 'u',
+    },
+    {
+        id: 'sk-dim-vertical',
+        label: 'Vertical dimension',
+        icon: 'dim-vertical',
+        hint: 'a distance along the sketch’s vertical: two points, a line, or centres',
+        instant: () => setDimensionTool('v'),
+        active: (_, s) => s.sketchTool === 'dimension' && useSketcher.getState().dimLock === 'v',
+    },
+    ...(['u', 'v'] as const).map((axis): ToolDef => ({
+        id: axis === 'u' ? 'sk-dim-ordinate' : 'sk-dim-ordinate-v',
+        label: axis === 'u' ? 'Horizontal ordinate' : 'Vertical ordinate',
+        icon: 'dim-ordinate',
+        hint: `a zero, then each point's ${axis === 'u' ? 'horizontal' : 'vertical'} distance from it, in one row`,
+        instant: () => setOrdinateTool(axis),
+        active: (_, s) => {
+            const special = useSketcher.getState().dimSpecial;
+            return s.sketchTool === 'dimension' && special?.kind === 'ordinate' && special.axis === axis && !special.auto;
+        },
+    })),
+    {
+        id: 'sk-dim-path',
+        label: 'Path length',
+        icon: 'dim-path',
+        hint: 'the total length of a chain of lines and arcs, end to end; it drives the chain (driven if that over defines)',
+        instant: () => setPathLengthTool(),
+        active: (_, s) => s.sketchTool === 'dimension' && useSketcher.getState().dimSpecial?.kind === 'path',
+    },
+    ...moreDimensionTools,
+    ...([
+        { id: 'intersection', label: 'Intersection', hint: 'a point where two lines cross' },
+        { id: 'equalSlots', label: 'Equal slots', hint: 'two or more straight slots: equal lengths and radii' },
+        { id: 'fixSlot', label: 'Fix slot', hint: 'a straight slot keeps its size and place' },
+    ] as const).map(({ id, label, hint }): ToolDef => ({
+        id: `sk-c-${id}`,
+        label,
+        icon: id === 'intersection' ? 'c-intersection' : id === 'equalSlots' ? 'c-equal-slots' : 'c-fix-slot',
+        hint,
+        instant: () => constraintTool(id),
+        active: (_, s) => s.sketchTool === `c:${id}`,
+    })),
+    addRelationsTool,
+    sketchXpertTool,
     {
         id: 'sk-relations',
         label: 'Relations',
@@ -379,11 +527,5 @@ export const moreConstrainTools: ToolDef[] = [
         width: 320,
         top: () => <RelationsList />,
     },
-    {
-        id: 'sk-fully-define',
-        label: 'Fully define',
-        icon: 'fully-define',
-        hint: 'add the dimensions the sketch still needs',
-        instant: () => fullyDefineSketch(),
-    },
+    fullyDefineTool,
 ];

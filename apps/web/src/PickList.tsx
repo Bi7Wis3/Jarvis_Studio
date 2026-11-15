@@ -17,6 +17,7 @@ const boxesOf = (fields: Field[]): PickBox[] => fields.filter((f) => f.kind === 
     multi: !!f.multi,
     ...(f.flat ? { flat: true } : {}),
     ...(f.kind === 'vec' ? { position: true } : {}),
+    ...(f.accept ? { accept: f.accept } : {}),
 }));
 
 /**
@@ -53,6 +54,11 @@ export function usePickBoxes(tool: ToolDef, ctx: Ctx, fields: Field[], values: V
                 const session = usePickSession.getState();
                 const box = session.boxes.find((b) => b.key === session.active);
                 if (!box || !box.entities.includes(item.kind)) {
+                    return;
+                }
+                const refused = box.accept?.(item) ?? null;
+                if (refused) {
+                    usePickSession.setState({ note: refused });
                     return;
                 }
                 const { values: v, ctx: c } = latest.current;
@@ -105,8 +111,11 @@ export function PickList(props: { field: Field; values: Values; change: (key: st
         usePickSession.setState({ hover: null });
     };
     const hover = (index: number | null) => usePickSession.setState({ hover: index === null ? null : { key: field.key, index } });
-    const kinds = field.entities ?? ['edge', 'face'];
-    const what = field.multi ? kinds.map((e) => `${e}s`).join(' or ') : `one ${field.flat ? 'flat ' : ''}${kinds.join(' or ')}`;
+    const kinds = (field.entities ?? ['edge', 'face']).filter((e) => e !== 'ref');
+    const what = field.entities?.includes('ref') ? 'a reference'
+        : field.multi ? kinds.map((e) => `${e}s`).join(' or ') : `one ${field.flat ? 'flat ' : ''}${kinds.join(' or ')}`;
+    // A reference taken from the model follows it; one of an older step was kept by value (see referenceDefs.ts).
+    const byValue = !!field.entities?.includes('ref') && items.some((i) => i.kind !== 'ref' && i.model?.fixed);
     return (
         <div className="tb-field pm-pick">
             <span>{field.label}</span>
@@ -129,7 +138,7 @@ export function PickList(props: { field: Field; values: Values; change: (key: st
                 {items.map((item, i) => {
                     const label = itemLabel(items, i);
                     return (
-                        <li key={`${label}-${item.at.join(',')}`} data-row={i} onMouseEnter={() => hover(i)} onMouseLeave={() => hover(null)}>
+                        <li key={`${label}-${item.kind === 'ref' ? item.ref : item.at.join(',')}`} data-row={i} onMouseEnter={() => hover(i)} onMouseLeave={() => hover(null)}>
                             <span>{label}</span>
                             <button
                                 type="button"
@@ -147,6 +156,7 @@ export function PickList(props: { field: Field; values: Values; change: (key: st
                 })}
             </ul>
             {note && <p className="tb-note pm-pick-note">{note}</p>}
+            {byValue && <p className="tb-note tb-hint">Kept as it was when picked: it does not follow later changes to the model. Pick it again to make it follow.</p>}
             {menu && (
                 <ContextMenu
                     x={menu.x}

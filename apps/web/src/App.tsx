@@ -12,6 +12,7 @@ import { Browser } from './Browser';
 import { FileMenu } from './FileMenu';
 import { Toolbar } from './Toolbar';
 import { Hud } from './Hud';
+import { ViewMenu } from './viewMenu';
 
 const QUICK_ACTIONS: { label: string; action: ViewAction }[] = [
     { label: 'Explode', action: 'explode' },
@@ -238,6 +239,7 @@ export function App() {
             <Activity />
             {project && <Toolbar />}
             {project && <Hud />}
+            <ViewMenu />
             <footer>
                 {error && <div className="bubble error">{error}</div>}
                 {subtitle && !error && <div className="bubble">{subtitle}</div>}

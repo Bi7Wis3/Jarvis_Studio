@@ -3,8 +3,10 @@ import { partsAtTimeline } from '@jarvis/core';
 import type { ActivityEntry, AgentStatus, ClientMessage, ImageAttachment, MeshStatus, Project, ProjectEntry, ServerMessage, ViewAction } from '@jarvis/core';
 import { enqueue, onSpeech, silence, unlockAudio } from './audio';
 import { captureViewport } from './capture';
+import { withFollowed } from './followedRefs';
 import { togglePick, type PickedEntity } from './picking';
 import { CAPTURED, captureCall, type Preview } from './preview';
+import { undefinedSketchRefusal } from './sketchUseDefined';
 
 export { captureToolCalls } from './preview';
 
@@ -49,6 +51,11 @@ interface StudioState {
     /** Client-only visual aids. */
     grid: boolean;
     edges: boolean;
+    /**
+     * Whether the view is drawn with perspective: in the 3D workspaces, and while a sketch is drawn (flat by default,
+     * as sketches are dimensioned). Local to this browser.
+     */
+    perspective: { model: boolean; sketch: boolean };
     /** World point under the cursor in mm: on a part surface, else on the ground plane. */
     cursor: {
         point: [number, number, number];
@@ -84,6 +91,28 @@ interface StudioState {
     preview: Preview | null;
 }
 
+const PERSPECTIVE_KEY = 'jarvis.view.perspective';
+
+function storedPerspective(): StudioState['perspective'] {
+    try {
+        const saved = JSON.parse(localStorage.getItem(PERSPECTIVE_KEY) ?? 'null') as { model?: unknown; sketch?: unknown } | null;
+        return { model: saved?.model !== false, sketch: saved?.sketch === true };
+    } catch {
+        return { model: true, sketch: false };
+    }
+}
+
+/** Perspective on or off for the sketch view or the 3D view; remembered in this browser. */
+export function setPerspective(view: 'model' | 'sketch', on: boolean): void {
+    const perspective = { ...useStudio.getState().perspective, [view]: on };
+    useStudio.setState({ perspective });
+    try {
+        localStorage.setItem(PERSPECTIVE_KEY, JSON.stringify(perspective));
+    } catch {
+        // No storage (private mode): the choice lasts for this session.
+    }
+}
+
 export const useStudio = create<StudioState>(() => ({
     project: null,
     history: null,
@@ -100,6 +129,7 @@ export const useStudio = create<StudioState>(() => ({
     picked: [],
     grid: true,
     edges: true,
+    perspective: storedPerspective(),
     cursor: null,
     placingDecal: null,
     decalHit: null,
@@ -132,15 +162,18 @@ function send(message: ClientMessage): void {
 
 function handle(message: ServerMessage): void {
     switch (message.type) {
-        case 'state':
+        case 'state': {
+            // Reference steps taken from the model where the kernel last found them (followedRefs.ts).
+            const project = withFollowed(message.project, useStudio.getState().meshes.followed);
             useStudio.setState({
-                history: message.project,
+                history: project,
                 project: {
-                    ...message.project,
-                    parts: partsAtTimeline(message.project).filter((p) => !message.project.view.hidden?.includes(p.id)),
+                    ...project,
+                    parts: partsAtTimeline(project).filter((p) => !project.view.hidden?.includes(p.id)),
                 },
             });
             break;
+        }
         case 'toolResult':
             toolCalls.get(message.id)?.(message);
             toolCalls.delete(message.id);
@@ -148,9 +181,16 @@ function handle(message: ServerMessage): void {
         case 'activity':
             useStudio.setState({ activity: message.entries });
             break;
-        case 'meshes':
-            useStudio.setState({ meshes: { keys: message.keys, errors: message.errors } });
+        case 'meshes': {
+            const { history, project } = useStudio.getState();
+            const followed = message.followed;
+            useStudio.setState({
+                meshes: { keys: message.keys, errors: message.errors, ...(followed ? { followed } : {}) },
+                ...(followed && history ? { history: withFollowed(history, followed) } : {}),
+                ...(followed && project ? { project: withFollowed(project, followed) } : {}),
+            });
             break;
+        }
         case 'status':
             useStudio.setState({ status: message.status, detail: message.detail ?? null });
             break;
@@ -282,6 +322,11 @@ export function draftPrompt(text: string): void {
 export function runTool(name: string, args: Record<string, unknown> = {}): Promise<{ text: string; isError: boolean }> {
     if (captureCall(name, args)) {
         return Promise.resolve({ ...CAPTURED });
+    }
+    // Sketch settings: Use fully defined sketches.
+    const refusal = undefinedSketchRefusal(name, args, useStudio.getState().history);
+    if (refusal) {
+        return Promise.resolve({ text: refusal, isError: true });
     }
     const id = `t${nextToolCall++}`;
     return new Promise((resolve) => {

@@ -32,7 +32,7 @@ describe('selection box items', () => {
     it('adds, removes by a second click, and replaces in a single box', () => {
         const a: PickItem = { kind: 'edge', at: [5, 1, 0] };
         const b: PickItem = { kind: 'edge', at: [5, 1, 10] };
-        const sameAs = (x: PickItem) => (i: PickItem) => i.at.join() === x.at.join();
+        const sameAs = (x: PickItem) => (i: PickItem) => 'at' in i && 'at' in x && i.at.join() === x.at.join();
         const one = togglePickItem([], a, sameAs(a), true);
         expect(one).toEqual({ items: [a], advance: false });
         const two = togglePickItem(one.items, b, sameAs(b), true);
