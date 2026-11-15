@@ -134,10 +134,12 @@ Thread
 - [~] Edge of cylinder (several edges in one step, each from its own hole or shaft), offset, start angle and a
   second direction; not yet the optional start location (vertex, edge, plane or face).
 - [~] End condition: blind (depth), revolutions; not yet up to selection or maintain thread length.
-- [~] Size table, override diameter and pitch, cut thread or extrude thread (ridges only where the wall or core stands
-  behind them), right/left hand, multiple starts, trim with start/end face; the thread runs as far as any wall of
+- [~] Size table, override diameter and pitch, cut thread or extrude thread (both: ridges only where the wall or core
+  stands behind them; a cut thread's crests also stay within the hole or shaft as it was), right/left hand, multiple
+  starts, trim with start/end face; the thread runs as far as any wall of
   the hole (or the shaft) does, and a thread asked longer stops there and the form says so; the preview while the form is open shows the ridges the build keeps as a
-  ghost and the real cut is made on OK. Not yet mirror profile, rotation angle, preview options.
+  ghost and the real cut is made on OK. Each hole is threaded on a small piece of the part, and a rebuild after an
+  edit away from the hole reuses the thread. Not yet mirror profile, rotation angle, preview options.
 - [ ] Cosmetic thread: standard, type, size, minor/major diameter, end condition (blind, through, up to next).
 - [x] Hide the thread in the view (its eye in the tree): the hole or shaft is drawn plain with cosmetic thread marks
   (dashed circles at both ends and lines along it, at a hole's major or a shaft's minor diameter), and the thread is

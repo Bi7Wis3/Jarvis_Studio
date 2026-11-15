@@ -581,6 +581,49 @@ describe('features', () => {
         await expect(mesh(block, [...holes, thread([r, 10, -5], [[14, 9, 9]])])).rejects.toThrow(/Edge<2>: .*circular edge/);
     }, SLOW);
 
+    it('cuts a thread in two holes quickly, and again at once after an edit away from them', async () => {
+        // A block 40 x 20 x 20 with two M5 tap holes through it, the second coming out through a slanted face (the
+        // bottom edge at x = 20 cut off 8 mm: the material is where y > x - 22). 40 mm of thread asked in each.
+        const block = sharpBox([40, 20, 20]);
+        const slant: Feature = { id: 's', op: 'chamfer', size: 8, at: [[20, -10, 0]] };
+        const holes: Feature[] = [-10, 15].map((x, i) => ({
+            id: `h${i}`, op: 'hole', spec: { kind: 'plain', diameter: 4.2 }, position: [x, 10, 0], direction: [0, -1, 0],
+        } as Feature));
+        const r = (4.2 + DEFAULT_PRINT.holeTolerance) / 2;
+        const thread: Feature = {
+            id: 't', name: 'Thread1', op: 'thread', kind: 'internal', at: [-10 + r, 10, 0], alsoAt: [[15 + r, 10, 0]], pitch: 0.8, length: 40,
+            diameter: 5, method: 'cut',
+        };
+        const drilled = await mesh(block, [slant, ...holes]);
+        let started = Date.now();
+        const tapped = await mesh(block, [slant, ...holes, thread]);
+        const first = Date.now() - started;
+        expect(first).toBeLessThan(90_000);
+        expect(openEdges(tapped)).toBe(0);
+        expectBounds(tapped, [-20, -10, -10], [20, 10, 10]);
+        // Opened to the major diameter over both holes, less the ridges left standing.
+        const taken = volume(drilled) - volume(tapped);
+        const rMaj = (5 + DEFAULT_PRINT.holeTolerance) / 2;
+        expect(taken).toBeGreaterThan(0.2 * Math.PI * (rMaj ** 2 - r ** 2) * 40);
+        expect(taken).toBeLessThan(Math.PI * (rMaj ** 2 - r ** 2) * 40);
+        // Nothing stands in the air past the slanted face, and both edges say they were cut to their hole.
+        let past = -Infinity;
+        for (let i = 0; i < tapped.positions.length; i += 3) {
+            past = Math.max(past, tapped.positions[i] - tapped.positions[i + 1]);
+        }
+        expect(past).toBeLessThan(22 + 1e-3);
+        expect(tapped.notes?.join(' ')).toMatch(/Edge<1>: cut to the length of the hole: 20 mm \(40 mm asked\)/);
+        expect(tapped.notes?.join(' ')).toMatch(/Edge<2>: cut to the length of the hole: [\d.]+ mm \(40 mm asked\)/);
+        // A hole drilled away from both before them: the threads made already are sewn back in, not cut again.
+        const other: Feature = { id: 'h2', op: 'hole', spec: { kind: 'plain', diameter: 3 }, position: [3, 10, 0], direction: [0, -1, 0] };
+        const redrilled = await mesh(block, [slant, other, ...holes]);
+        started = Date.now();
+        const again = await mesh(block, [slant, other, ...holes, thread]);
+        expect(Date.now() - started).toBeLessThan(first / 2);
+        expect(openEdges(again)).toBe(0);
+        expect(Math.abs(volume(redrilled) - volume(again) - taken)).toBeLessThan(0.005 * taken);
+    }, 300_000);
+
     it('shows a thread being edited as its ridges on the body, at once, for a preview', async () => {
         const block = sharpBox([20, 20, 20]);
         const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 8 }, position: [10, 0, 0], direction: [-1, 0, 0] };

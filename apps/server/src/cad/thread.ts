@@ -1,6 +1,7 @@
 // Modelled threads: helical ridges, the Thread step on circular edges (or from a point), chamfers on a thread's end,
 // and the quick ghost a tool preview shows in place of the slow booleans.
 
+import { createHash } from 'node:crypto';
 import {
     cast, downcast, genericSweep, getOC, localGC, makeAx3, makeBox, makeCompound, makeCylinder, makeHelix, makePolygon, measureVolume,
     revolution, Wire, type Edge, type Face, type Shape3D,
@@ -28,6 +29,52 @@ const cross3 = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[
 const scale3 = (a: Vec3, k: number): Vec3 => [a[0] * k, a[1] * k, a[2] * k];
 const add3 = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 export const fmtMm = (mm: number): string => `${Math.round(mm * 1e6) / 1e6} mm`;
+
+// ---- Kept from build to build -----------------------------------------------------------------------------------
+
+/** Ridge solids by their piece and trim, built about the thread's own axis: like holes and rebuilds sweep each once. */
+const ridgeSolids = new Map<string, Shape3D>();
+const RIDGE_LIMIT = 300;
+/**
+ * Threaded pieces of parts, by the piece as it was (its BREP) and the thread's values: a rebuild that leaves the hole or
+ * shaft and what is around it as they were (an edit elsewhere in the part) sews the thread made before back in.
+ */
+const threadedZones = new Map<string, Shape3D>();
+const ZONE_LIMIT = 12;
+
+/** A copy with geometry of its own, so the booleans it goes into cannot touch what is kept. */
+const ownCopy = (shape: Shape3D): Shape3D => shape.clone().translate([0, 0, 0]);
+
+function remember(cache: Map<string, Shape3D>, key: string, shape: Shape3D, limit: number): void {
+    cache.get(key)?.delete();
+    cache.delete(key);
+    cache.set(key, shape);
+    while (cache.size > limit) {
+        const oldest = cache.keys().next().value as string;
+        cache.get(oldest)?.delete();
+        cache.delete(oldest);
+    }
+}
+
+/** The BREP of a shape's own geometry, hashed. */
+function pieceHash(shape: Shape3D): string {
+    const copy = ownCopy(shape);
+    try {
+        return createHash('sha1').update(getOC().BRepToolsWrapper.Write(copy.wrapped)).digest('hex');
+    } finally {
+        copy.delete();
+    }
+}
+
+function recall(cache: Map<string, Shape3D>, key: string): Shape3D | null {
+    const hit = cache.get(key);
+    if (!hit) {
+        return null;
+    }
+    cache.delete(key);
+    cache.set(key, hit);
+    return hit;
+}
 
 function asSolid(shape: unknown, what: string): Shape3D {
     const s = shape as Shape3D;
@@ -177,7 +224,7 @@ export function threadRidge(spec: RidgeSpec, byTurns = false): Ridge {
 
 /** The ridge of an external thread for a major radius, inside the zone [yLow, yHigh]; null if the zone is too short. */
 function externalSpec(pitch: number, rMajor: number, rRoot: number, yLow: number, yHigh: number,
-    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}, proud = 0): RidgeSpec | null {
+    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): RidgeSpec | null {
     const rBase = rRoot - THREAD_OVERLAP;
     const wCrest = pitch / 8;
     const wBase = wCrest + 2 * (rMajor - rBase) * TAN30;
@@ -186,16 +233,12 @@ function externalSpec(pitch: number, rMajor: number, rRoot: number, yLow: number
     if (height < pitch || wBase >= pitch * 0.98) {
         return null;
     }
-    // `proud`: the flanks carried on past the crest by that fraction of the pitch (a sharper, taller ridge). Taken out
-    // of a cutter, its flanks then pass straight through the surface the crest lies in, and the cutter has neither a
-    // face nor an edge in that surface.
-    const more = Math.min(proud, 0.09) * pitch;
-    return { pitch, rBase, rCrest: rMajor + more, wBase, wCrest: wCrest - 2 * more * TAN30, y0, height, ...hand };
+    return { pitch, rBase, rCrest: rMajor, wBase, wCrest, y0, height, ...hand };
 }
 
 /** The ridge of an internal thread in a bore of radius rMajor, inside [yLow, yHigh]; null if too short. */
 function internalSpec(pitch: number, rMajor: number, yLow: number, yHigh: number,
-    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}, proud = 0): RidgeSpec | null {
+    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): RidgeSpec | null {
     const rBase = rMajor + THREAD_OVERLAP;
     const rCrest = rMajor - (MINOR_DEPTH * pitch) / 2;
     const wCrest = pitch / 4;
@@ -205,21 +248,20 @@ function internalSpec(pitch: number, rMajor: number, yLow: number, yHigh: number
     if (height < pitch || wBase >= pitch * 0.98) {
         return null;
     }
-    const more = Math.min(proud, 0.18) * pitch;
-    return { pitch, rBase, rCrest: rCrest - more, wBase, wCrest: wCrest - 2 * more * TAN30, y0, height, ...hand };
+    return { pitch, rBase, rCrest, wBase, wCrest, y0, height, ...hand };
 }
 
 /** External thread ridge for a major radius, inside the zone [yLow, yHigh]; null if the zone is too short. */
 export function externalRidge(pitch: number, rMajor: number, rRoot: number, yLow: number, yHigh: number,
-    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}, proud = 0): Ridge | null {
-    const spec = externalSpec(pitch, rMajor, rRoot, yLow, yHigh, hand, proud);
+    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): Ridge | null {
+    const spec = externalSpec(pitch, rMajor, rRoot, yLow, yHigh, hand);
     return spec && threadRidge(spec);
 }
 
 /** Internal thread ridge in a bore of radius rMajor, inside [yLow, yHigh]; null if too short. */
 export function internalRidge(pitch: number, rMajor: number, yLow: number, yHigh: number,
-    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}, proud = 0): Ridge | null {
-    const spec = internalSpec(pitch, rMajor, yLow, yHigh, hand, proud);
+    hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): Ridge | null {
+    const spec = internalSpec(pitch, rMajor, yLow, yHigh, hand);
     return spec && threadRidge(spec);
 }
 
@@ -624,32 +666,36 @@ function openings(shape: Shape3D, frame: Frame, radius: number, low: number, hig
  * The material a thread stands on, seen at two radii: `near` right behind the ridge's root, `far` a little deeper.
  * Between the two, the edge of the material (where the hole comes out through a face) is carried on in a straight
  * line, along the axis and around it, to each radius of the ridge's profile, as the face itself would run on across
- * the hole.
+ * the hole. The ridge is kept within [low, high] (where it is cut off square); the wall is looked at `margin` past
+ * both, so that a face the hole comes out through just past an end is carried in to the crest too.
  */
 interface Wall {
     near: Openings;
     far: Openings | null;
+    low: number;
+    high: number;
 }
 
-function wallOf(shape: Shape3D, frame: Frame, near: number, far: number, low: number, high: number): Wall | null {
-    const [inner, outer] = [openings(shape, frame, near, low, high), openings(shape, frame, far, low, high)];
+function wallOf(shape: Shape3D, frame: Frame, near: number, far: number, low: number, high: number, margin = 0): Wall | null {
+    const [from, to] = [low - margin, high + margin];
+    const [inner, outer] = [openings(shape, frame, near, from, to), openings(shape, frame, far, from, to)];
     if (!inner && !outer) {
         return null;
     }
-    return { near: inner ?? { radius: near, crossings: () => [], around: (_, angle) => ({ angles: [], at: angle }) }, far: outer };
+    return { near: inner ?? { radius: near, crossings: () => [], around: (_, angle) => ({ angles: [], at: angle }) }, far: outer, low, high };
 }
 
 /** Walls a preview has looked at: while a value is typed it shows the same thread on the same body again and again. */
 const seen = new Map<string, Wall | null>();
 
 /** wallOf, kept for the next preview of the same body and place (`place`: the thread's origin, axis and angle). */
-function wallSeen(shape: Shape3D, frame: Frame, place: string, near: number, far: number, low: number, high: number): Wall | null {
+function wallSeen(shape: Shape3D, frame: Frame, place: string, near: number, far: number, low: number, high: number, margin: number): Wall | null {
     const box = shape.boundingBox;
     const bounds = box.bounds.flat().map((v) => v.toFixed(6)).join(',');
     box.delete();
-    const key = [shape.hashCode, shape.faces.length, measureVolume(shape).toFixed(6), bounds, place, near, far, low, high].join('|');
+    const key = [shape.hashCode, shape.faces.length, measureVolume(shape).toFixed(6), bounds, place, near, far, low, high, margin].join('|');
     if (!seen.has(key)) {
-        seen.set(key, wallOf(shape, frame, near, far, low, high));
+        seen.set(key, wallOf(shape, frame, near, far, low, high, margin));
         while (seen.size > 32) {
             seen.delete(seen.keys().next().value as string);
         }
@@ -675,7 +721,11 @@ function ridgePieces(spec: RidgeSpec, wall: Wall | null, startTurn: number): Rid
     const samples: P2[] = [0, 0.5, 1].map((k) => [spec.rCrest + k * (spec.rBase - spec.rCrest),
         (spec.wCrest + k * (spec.wBase - spec.wCrest)) / 2 + 0.03]);
     const [r0, r1] = [wall.near.radius, wall.far?.radius ?? wall.near.radius];
-    const overlaps = (s: number, half: number, a: number, b: number): boolean => s - half < Math.max(a, b) && s + half > Math.min(a, b);
+    // The profile's stretch along the axis, as far as it is kept (cut off square at the ends of the thread).
+    const overlaps = (s: number, half: number, a: number, b: number): boolean => {
+        const [lo, hi] = [Math.max(s - half, wall.low + 1e-4), Math.min(s + half, wall.high - 1e-4)];
+        return lo < hi && lo < Math.max(a, b) && hi > Math.min(a, b);
+    };
     const held = (t: number): boolean => {
         const angle = sign * 2 * Math.PI * t + ((spec.turn ?? 0) + startTurn) * (Math.PI / 180);
         const s = spec.y0 + lead * t;
@@ -709,6 +759,9 @@ function ridgePieces(spec: RidgeSpec, wall: Wall | null, startTurn: number): Rid
         if (wall.far) {
             for (const [r, half] of samples.slice(0, 2)) {
                 for (const ds of [-half, 0, half]) {
+                    if (s + ds < wall.low || s + ds > wall.high) {
+                        continue;
+                    }
                     const a0 = wall.near.around(s + ds, angle);
                     const a1 = wall.far.around(s + ds, angle);
                     if (a0.angles.length === 0 || a1.angles.length !== a0.angles.length) {
@@ -911,8 +964,8 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
         }
         const place = [...origin, ...axis, f.startAngle ?? 0].join(',');
         const wall = !edge ? null : f.kind === 'external'
-            ? wallSeen(shape, frame, place, core, core - Math.min(0.3, core / 2), low, high)
-            : wallSeen(shape, frame, place, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, low, high);
+            ? wallSeen(shape, frame, place, core, core - Math.min(0.3, core / 2), low, high, 2 * lead + 1)
+            : wallSeen(shape, frame, place, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, low, high, 2 * lead + 1);
         const pieces = Array.from({ length: starts }, (_, i) => ridgePieces(spec, wall, turnOf(i))).flat();
         return { shape, notes, ghosts: pieces.map((piece) => ({ spec: piece, origin, axis, angle: f.startAngle ?? 0 })) };
     }
@@ -923,15 +976,28 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
     if (zone) {
         shape = zone.local;
     }
-    const done = (made: Shape3D): { shape: Shape3D; ghosts: ThreadGhost[]; notes: string[] } => ({
-        shape: zone ? rejoin(zone, made) : made, ghosts: [], notes,
-    });
+    // The key leaves out what does not shape this hole's thread (its name, the other edges), so adding a hole to the
+    // step keeps the threads already made; and the piece is written from a copy, without the triangles a view of the
+    // part before may have left on its faces.
+    const zoneKey = zone ? `${pieceHash(zone.local)} `
+        + JSON.stringify([{ ...f, id: undefined, name: undefined, at: undefined, alsoAt: undefined, preview: undefined }, edge,
+            print.holeTolerance]) : null;
+    const done = (made: Shape3D): { shape: Shape3D; ghosts: ThreadGhost[]; notes: string[] } => {
+        if (zoneKey) {
+            remember(threadedZones, zoneKey, ownCopy(made), ZONE_LIMIT);
+        }
+        return { shape: zone ? rejoin(zone, made) : made, ghosts: [], notes };
+    };
+    const before = zone && zoneKey ? recall(threadedZones, zoneKey) : null;
+    if (zone && before) {
+        return { shape: rejoin(zone, ownCopy(before)), ghosts: [], notes };
+    }
 
     /**
      * The ridge and its copies for the other starts, evenly around the axis, each kept to the `wall` it stands on, and
      * cut off square at `slice` [from, to, reach] (only the pieces that run past it are cut).
      */
-    const ridges = (spec: RidgeSpec | null, wall: Wall | null = null, slice?: [number, number, number]): Shape3D => {
+    const ridges = (spec: RidgeSpec | null, wall: Wall | null = null, slice?: [number, number, number], reuse = false): Shape3D => {
         if (!spec) {
             throw new Error('thread is too short for its pitch');
         }
@@ -941,11 +1007,21 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
             throw new Error('the thread has no wall to stand on: the hole or shaft is open all along it');
         }
         const solids = pieces.map((piece) => {
-            const solid = threadRidge(piece, true).shape;
             const past = slice && (piece.y0 - piece.wBase / 2 < slice[0] || piece.y0 + piece.height + piece.wBase / 2 > slice[1]);
-            return past ? sliceY(solid, slice[2], slice[0], slice[1]) : solid;
+            const key = reuse ? JSON.stringify([piece, past ? slice : null]) : null;
+            const kept = key ? recall(ridgeSolids, key) : null;
+            if (kept) {
+                return kept.clone();
+            }
+            const solid = threadRidge(piece, true).shape;
+            const made = past ? sliceY(solid, slice[2], slice[0], slice[1]) : solid;
+            if (key) {
+                remember(ridgeSolids, key, made.clone(), RIDGE_LIMIT);
+            }
+            return made;
         });
-        // The pieces and starts never overlap, so they go to the kernel together as they are.
+        // The pieces and starts never overlap, so they go to the kernel together as they are. Placing them on the axis
+        // copies their geometry, so the booleans never touch the solids kept.
         return solids.length === 1 ? solids[0] : makeCompound(solids) as Shape3D;
     };
     // Trim with start face / end face: the thread runs on past the end of the hole or shaft and is cut off there, so it
@@ -977,45 +1053,31 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
         throw new Error(add ? 'the thread adds nothing to the part: its ridges lie inside material already'
             : 'the thread takes nothing from the part: it does not reach any material there (check its start, diameter and method)');
     };
-    /**
-     * Cuts what a tap or die removes: `stock` (the bore, or the ring around the shaft) without the ridges. The stock is
-     * built over the thread's own range, and past an end of the hole or shaft where that is free space, so that the
-     * ridge starts and ends inside it and runs out through the part's end face. Where the kernel cannot make the cut
-     * with the far end run out (some shafts threaded over their whole length), that end is left as it would be without
-     * Trim with end face, then the start too: the thread is made either way.
-     */
-    const cutThread = (stock: (from: number, to: number) => Shape3D, ridge: (from: number, to: number) => RidgeSpec | null, reachOut: number): Shape3D => {
-        const before = -2 * lead - 0.5;
-        const canIn = wantIn && free(stock(before, low - 1e-3));
-        const canOut = wantOut && free(stock(high + 1e-3, high + 2 * lead + 0.5));
-        // [run in, run out, end the ridge inside the range]: the last also when the thread was asked longer than the
-        // hole or shaft, so that nothing of the tool's far end lies in the part's own end face.
-        const plans = ([[canIn, canOut, false], [canIn, false, false], [canIn, false, true], [false, false, true]] as [boolean, boolean, boolean][])
-            .map(([runIn, runOut, inside]) => ({ runIn, runOut, to: runOut ? high + 2 * lead : inside ? Math.min(length, high) : length }))
-            .filter((plan, n, all) => all.findIndex((other) => other.runIn === plan.runIn && other.runOut === plan.runOut && other.to === plan.to) === n);
-        let failure: unknown;
-        for (const { runIn, runOut, to } of plans) {
-            try {
-                // Whole leads before the start, so the helix keeps its place around the axis.
-                const span: [number, number] = [runIn ? -2 * lead : 0, to];
-                // A ridge that still runs past the range (asked longer than the hole, or started before its edge, with no
-                // free space there) is cut off square a little outside it: the kernel will not cut with a sweep's raw ends.
-                const pokesIn = !runIn && low > 1e-9;
-                const pokesOut = !runOut && to > high + 1e-9;
-                const kept = ridges(ridge(span[0], span[1]), null, pokesIn || pokesOut
-                    ? [pokesIn ? low - 0.2 : span[0] - 1, pokesOut ? high + 0.2 : span[1] + 1, reachOut] : undefined);
-                return applied(asSolid(stock(runIn ? before : low, runOut ? high + 2 * lead + 0.5 : high).cut(kept), 'thread cutter'), false);
-            } catch (e) {
-                failure = e;
-            }
-        }
-        throw failure;
-    };
     /** The ridges to add, kept to the material they stand on, running out at the ends trimmed with their face. */
     const ridgesToAdd = (ridge: (from: number, to: number) => RidgeSpec | null, reachOut: number, wall: Wall | null): Shape3D => {
         return ridges(ridge(wantIn ? -2 * lead : 0, wantOut ? high + 2 * lead : length), wall,
-            wantIn || wantOut || trim ? [low, high, reachOut] : undefined);
+            wantIn || wantOut || trim ? [low, high, reachOut] : undefined, true);
     };
+    /**
+     * The thread on the piece of the part: `stock` (the bore opened to the major diameter, or the ring turned off a
+     * shaft) taken away over the thread's length, run on past an end where there is free space so that it never ends
+     * in the part's own end face, then the ridges put back where the wall or core stands behind them (`near` and
+     * `far` the radii it is looked for at). One fuse with the ridges, on the small piece around the hole or shaft.
+     */
+    const threadOn = (stock: ((from: number, to: number) => Shape3D) | null, ridge: (from: number, to: number) => RidgeSpec | null,
+        reachOut: number, near: number, far: number): Shape3D => {
+        const wall = picked === null ? null : wallOf(shape, frame, near, far, low, high, 2 * lead + 1);
+        const added = ridgesToAdd(ridge, reachOut, wall);
+        if (stock) {
+            const runIn = wantIn && free(stock(-2 * lead - 0.5, low - 1e-3));
+            const runOut = wantOut && free(stock(high + 1e-3, high + 2 * lead + 0.5));
+            shape = asSolid(shape.cut(at(stock(runIn ? -2 * lead - 0.5 : low, runOut ? high + 2 * lead + 0.5 : high))), 'thread');
+        }
+        return applied(added, true);
+    };
+    /** A ridge with its crest moved to radius `crest` (its flanks carried on to there): kept to where there was material. */
+    const crestAt = (spec: RidgeSpec | null, crest: number): RidgeSpec | null => (!spec || Math.abs(crest - spec.rCrest) < 1e-9 ? spec
+        : { ...spec, rCrest: crest, wCrest: spec.wCrest + 2 * Math.abs(crest - spec.rCrest) * TAN30 });
     if (f.kind === 'external') {
         const rMaj = diameter / 2;
         const rRoot = rMaj - 0.6134 * pitch;
@@ -1029,48 +1091,44 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
             return done(asSolid(turned.fuse(at(rod)), 'thread'));
         }
         const method = f.method ?? (picked < rMaj - 1e-4 ? 'extrude' : 'cut');
+        const core = rRoot - WALL_DEPTH;
+        const coreFar = core - Math.min(0.3, core / 2);
         if (method === 'cut') {
-            // Cut thread: what a die removes, the stock between the ridges. Only ever takes material away, so a shaft
-            // with a slanted end, a cross hole or a bore keeps them, and nothing is left standing in the air.
-            if (picked <= rRoot + 1e-6) {
+            // Cut thread, as a die cuts: the shaft turned down to the root and the ridges between the grooves left, only
+            // where the shaft's material was (its core behind them, and no wider than the shaft: the crests stop just
+            // inside its surface), so a slanted end, a flat or a cross hole keeps nothing standing in the air.
+            if (picked <= rRoot + 0.006) {
                 throw new Error(`Cut thread: the shaft (${fmtMm(2 * picked)}) is no thicker than the root of the thread `
                     + `(${fmtMm(2 * rRoot)}), so there is nothing to cut. Make the shaft ${fmtMm(diameter)} thick, or use Extrude thread`);
             }
-            // The crest lies in the shaft's own surface: sharpened past it, the cutter has neither a face nor an edge there.
-            const proud = picked > rMaj + 1e-4 ? 0 : 0.09;
-            return done(cutThread(ring, (from, to) => externalSpec(pitch, rMaj, rRoot, from, to, hand, proud), rMaj + pitch));
+            const crest = Math.min(rMaj, picked - 0.005);
+            return done(threadOn(ring, (from, to) => crestAt(externalSpec(pitch, rMaj, rRoot, from, to, hand), crest), rMaj + pitch, core, coreFar));
         }
         // Extrude thread: the ridges are added on the shaft, which is first turned down to the root where it is thicker;
         // only where the shaft's core stands behind them (not across a flat or a cross hole).
-        const core = rRoot - WALL_DEPTH;
-        const wall = wallOf(shape, frame, core, core - Math.min(0.3, core / 2), low, high);
-        const added = ridgesToAdd((from, to) => externalSpec(pitch, rMaj, rRoot, from, to, hand), rMaj + pitch, wall);
-        if (picked > rRoot + 1e-4) {
-            shape = asSolid(shape.cut(at(ring(low, high))), 'thread');
-        }
-        return done(applied(added, true));
+        return done(threadOn(picked > rRoot + 1e-4 ? ring : null, (from, to) => externalSpec(pitch, rMaj, rRoot, from, to, hand), rMaj + pitch,
+            core, coreFar));
     }
     const rMaj = (diameter + print.holeTolerance) / 2;
     const rCrest = rMaj - (MINOR_DEPTH * pitch) / 2;
     const method = f.method ?? (picked !== null && picked > rCrest + 1e-4 ? 'extrude' : 'cut');
+    const bore = (from: number, to: number): Shape3D => cylinderY(rMaj, from, to);
     if (method === 'cut') {
-        // Cut thread: what a tap removes, the bore without the ridges. Only ever takes material away, so where the hole
-        // comes out through a slanted or curved face (no wall there) nothing is left hanging in the air.
-        if (picked !== null && picked >= diameter / 2 - 1e-6) {
+        // Cut thread, as a tap cuts: the hole opened to the major diameter and the ridges between the grooves left, only
+        // where there was material (the wall behind them, and outside the hole: where it is wider than the thread's
+        // minor diameter the crests stop just inside its wall), so nothing is left hanging where the hole comes out.
+        if (picked !== null && picked >= Math.min(diameter / 2 - 1e-6, rMaj - 0.006)) {
             throw new Error(`Cut thread: the hole (${fmtMm(2 * picked)}) is already as wide as the thread (${fmtMm(diameter)}), so `
                 + `there is nothing to cut. Make the hole the tap size, ${fmtMm(diameter - MINOR_DEPTH * pitch)}, or use Extrude thread`);
         }
-        // A hole already at the thread's minor diameter: the crest lies in its wall, so it is sharpened on into the hole.
-        const proud = picked !== null && Math.abs(picked - rCrest) < 1e-4 ? 0.1 : 0;
-        return done(cutThread((from, to) => cylinderY(rMaj, from, to), (from, to) => internalSpec(pitch, rMaj, from, to, hand, proud), rMaj + pitch));
+        const crest = picked === null ? rCrest : Math.max(rCrest, picked + 0.005);
+        return done(threadOn(bore, (from, to) => crestAt(internalSpec(pitch, rMaj, from, to, hand), crest), rMaj + pitch,
+            rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3));
     }
     // Extrude thread: the hole is opened to the major diameter where it is narrower, and the ridges are added on its
     // wall, only where the wall stands (not where the hole comes out through a slanted or curved face, or meets
     // another hole).
-    const wall = picked === null ? null : wallOf(shape, frame, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, low, high);
-    const added = ridgesToAdd((from, to) => internalSpec(pitch, rMaj, from, to, hand), rMaj + pitch, wall);
-    shape = shape.cut(at(cylinderY(rMaj, low, high)));
-    return done(applied(added, true));
+    return done(threadOn(bore, (from, to) => internalSpec(pitch, rMaj, from, to, hand), rMaj + pitch, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3));
 }
 
 /** The part split at a cylinder about a thread's axis: the piece inside it (where the thread goes) and the rest. */
