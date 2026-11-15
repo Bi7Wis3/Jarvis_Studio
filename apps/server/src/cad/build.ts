@@ -31,6 +31,7 @@ import {
 
 export { threadEdge } from './thread.js';
 import { toleranceFor, type MeshQuality } from './meshQuality.js';
+import { toolTap, type StepWatch } from './changeTap.js';
 import {
     extrudeRange, extrudeSketch, extrudeTool, isPlainExtrude, loftSketches, pathWire, revolveSketch, sweepProfile, throughRange,
     type SketchFrame,
@@ -940,6 +941,7 @@ function needBody(shape: Shape3D | null): Shape3D {
 
 /** Joins or removes a tool; in add mode it starts the body when there is none yet. */
 function combine(shape: Shape3D | null, tool: Shape3D, mode: 'add' | 'cut', what: string): Shape3D {
+    toolTap.on?.(shape, tool, mode);
     if (mode === 'cut') {
         return cutChecked(needBody(shape), tool, `${what} cut`);
     }
@@ -1501,7 +1503,7 @@ function remember(key: string, shape: Shape3D | null, threads: Map<string, Threa
  * Builds as far as possible: on a failing feature, returns the solid before it and the error. `context` supplies
  * the other parts that combine steps use.
  */
-export function buildPartial(part: PartSpec, print: PrintSettings, context?: CombineContext, stack?: string[]): PartialBuild {
+export function buildPartial(part: PartSpec, print: PrintSettings, context?: CombineContext, stack?: string[], watch?: StepWatch): PartialBuild {
     let shape: Shape3D | null = null;
     let bodies: BodyRecord[] = [];
     // A copy: reference steps are replaced by themselves as found on the body (followRefs.ts) for the steps after them.
@@ -1518,7 +1520,7 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
     // Start from the longest run of first steps that was built before.
     const keys = prefixKeys(part, print, history, context);
     let start = 0;
-    for (let index = features.length - 1; index >= 0 && start === 0; index--) {
+    for (let index = Math.min(features.length, watch?.from ?? Infinity) - 1; index >= 0 && start === 0; index--) {
         const hit = prefixes.get(keys[index]);
         if (hit) {
             prefixes.delete(keys[index]);
@@ -1581,8 +1583,10 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
         const was = solidsOf(shape);
         const marks = state.ghosts.length;
         try {
+            watch?.enter(index, shape, state);
             const next = applyFeature(shape, features[index], state);
             shape = next && normalizeSolid(next, 'the result');
+            watch?.leave(index, shape, state);
         } catch (e) {
             release(was);
             return { shape: withGhosts(shape, state.ghosts), error: `${label}: ${errorMessage(e)}`, followed: found(), bodies, ...said() };
@@ -1660,11 +1664,12 @@ function triangleFaces(mesh: { triangles: number[]; faceGroups: { start: number;
     return faces;
 }
 
-function meshWithOpenCascade(shape: Shape3D, quality: MeshQuality): MeshData {
+/** `reuse`: keep the faces' triangulations (made by meshing their solid at these tolerances) and mesh only the rest. */
+export function meshWithOpenCascade(shape: Shape3D, quality: MeshQuality, reuse?: { tolerance: number; angularTolerance: number }): MeshData {
     // Faces shared with an earlier (already meshed) solid keep stale triangulations that no longer match the
     // edges of new neighbouring faces; drop them so the whole solid is meshed in one consistent pass.
-    getOC().BRepTools.Clean(shape.wrapped, true);
-    const tolerance = meshTolerance(shape, quality);
+    if (!reuse) getOC().BRepTools.Clean(shape.wrapped, true);
+    const tolerance = reuse ?? meshTolerance(shape, quality);
     const mesh = shape.mesh(tolerance);
     const lines = shape.meshEdges(tolerance);
     const seams = seamEdges(shape);
@@ -1703,7 +1708,7 @@ function meshWithOpenCascade(shape: Shape3D, quality: MeshQuality): MeshData {
     return { positions, normals: Float32Array.from(mesh.normals), indices, edges, triFace, segEdge, faceBody, edgeBody };
 }
 
-function mergeMeshes(meshes: MeshData[]): MeshData {
+export function mergeMeshes(meshes: MeshData[]): MeshData {
     const total = (key: 'positions' | 'normals' | 'indices' | 'edges' | 'triFace' | 'segEdge'): number => meshes.reduce((n, m) => n + m[key].length, 0);
     const out: MeshData = {
         positions: new Float32Array(total('positions')),

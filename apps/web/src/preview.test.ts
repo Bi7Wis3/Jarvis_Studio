@@ -99,10 +99,20 @@ describe('toPreview', () => {
     it('leaves out parts that failed to build', () => {
         const part = (id: string) => ({ id, name: id, shape: { kind: 'box', size: [1, 1, 1] }, position: [0, 0, 0], rotation: [0, 0, 0],
             material: { color: '#fff', metalness: 0, roughness: 1 } }) as never;
-        const preview = toPreview({ parts: [part('a'), part('b')], keys: { a: 'ka', b: 'kb' }, errors: { b: 'fillet failed' } });
+        const preview = toPreview({ parts: [part('a'), part('b')], keys: { a: 'ka', b: 'kb' }, changes: { a: 'ka-1-1', b: 'kb-0-0' }, errors: { b: 'fillet failed' } });
         expect(Object.keys(preview.parts)).toEqual(['a']);
         expect(preview.keys).toEqual({ a: 'ka' });
+        expect(preview.changes).toEqual({ a: 'ka-1-1' });
         expect(preview.errors).toEqual({ b: 'fillet failed' });
         expect(preview.error).toBeNull();
+    });
+
+    it('keeps which parts show only what changes, and which show nothing', () => {
+        const part = (id: string) => ({ id, name: id, shape: { kind: 'box', size: [1, 1, 1] }, position: [0, 0, 0], rotation: [0, 0, 0],
+            material: { color: '#fff', metalness: 0, roughness: 1 } }) as never;
+        const preview = toPreview({ parts: [part('a'), part('b'), part('c')], keys: { a: 'ka', b: 'kb', c: 'kc' }, changes: { a: 'ka-2-2', b: null }, errors: {} });
+        // c is not listed: it is drawn whole (a new part).
+        expect(preview.changes).toEqual({ a: 'ka-2-2', b: null });
+        expect(toPreview({ parts: [part('a')], keys: { a: 'ka' }, errors: {} }).changes).toEqual({});
     });
 });

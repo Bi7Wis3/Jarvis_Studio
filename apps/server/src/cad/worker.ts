@@ -10,12 +10,15 @@ import type { MeshQuality } from './meshQuality.js';
 import type { MeshData, PropsResult } from './kernel.js';
 import { massProperties } from './props.js';
 import { modelSketch } from './project.js';
+import { ChangeWatch, type ChangeRange } from './change.js';
 import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projection';
 import { freecadMacro, type FreecadExport } from '../export/freecadMacro.js';
 import type { BodyRecord } from './bodies.js';
 
 export type WorkerRequest =
     | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext; quality?: MeshQuality }
+    /** A preview's mesh with, alongside, what the steps of `range` do (see change.ts). */
+    | { id: number; type: 'change'; part: PartSpec; print: PrintSettings; context?: CombineContext; quality?: MeshQuality; range: ChangeRange }
     | { id: number; type: 'step'; project: Project }
     | { id: number; type: 'props'; part: PartSpec; print: PrintSettings; context?: CombineContext }
     | { id: number; type: 'project'; part: PartSpec; print: PrintSettings; context?: CombineContext; frame: PlaneFrame3; query: ModelQuery }
@@ -24,6 +27,7 @@ export type WorkerRequest =
 export type WorkerResponse =
     | { type: 'ready' }
     | { type: 'fatal'; error: string }
+    | { id: number; ok: true; mesh: MeshData; change: MeshData | null; changeMs: number }
     | { id: number; ok: true; mesh: MeshData }
     | { id: number; ok: true; step: Uint8Array }
     | { id: number; ok: true; props: PropsResult }
@@ -48,15 +52,21 @@ interface Built {
 const SHAPE_CACHE_SIZE = 64;
 const shapes = new Map<string, Built>();
 
-function build(part: PartSpec, print: PrintSettings, context?: CombineContext): Built {
+function build(part: PartSpec, print: PrintSettings, context?: CombineContext, watch?: ChangeWatch): Built {
     const key = meshKey(part, print, context);
     const cached = shapes.get(key);
-    if (cached && !cached.error) {
+    if (cached && !cached.error && !watch) {
         shapes.delete(key);
         shapes.set(key, cached);
         return cached;
     }
-    const built = buildPartial(part, print, context);
+    let built: Built;
+    try {
+        built = buildPartial(part, print, context, undefined, watch);
+    } finally {
+        watch?.finish();
+    }
+    shapes.delete(key);
     shapes.set(key, built);
     while (shapes.size > SHAPE_CACHE_SIZE) {
         const oldest = shapes.keys().next().value as string;
@@ -112,8 +122,10 @@ async function step(project: Project): Promise<Uint8Array> {
 
 async function handle(request: WorkerRequest): Promise<void> {
     try {
-        if (request.type === 'mesh') {
-            const built = build(request.part, request.print, request.context);
+        if (request.type === 'mesh' || request.type === 'change') {
+            // A preview also gets the mesh of what the steps of its range do.
+            const watch = request.type === 'change' ? new ChangeWatch(request.range) : undefined;
+            const built = build(request.part, request.print, request.context, watch);
             // Where its reference steps found the model, for the view to draw them there.
             const extra = {
                 ...(built.followed && Object.keys(built.followed).length ? { followed: built.followed } : {}),
@@ -123,6 +135,7 @@ async function handle(request: WorkerRequest): Promise<void> {
                 ...(built.notes?.length ? { notes: built.notes } : {}),
             };
             if (built.error) {
+                watch?.discard();
                 const partial = built.shape ? { ...meshSolid(built.shape, request.quality), ...extra } : undefined;
                 const response: WorkerResponse = { id: request.id, ok: false, error: built.error, partial };
                 port!.postMessage(response, partial ? meshTransfer(partial) : []);
@@ -130,6 +143,12 @@ async function handle(request: WorkerRequest): Promise<void> {
             }
             // A part with no body yet (an empty shape with only sketches) meshes as nothing.
             const mesh = { ...(built.shape ? meshSolid(built.shape, request.quality) : emptyMesh()), ...extra };
+            if (watch) {
+                const change = watch.mesh(built.shape, mesh, request.quality);
+                port!.postMessage({ id: request.id, ok: true, mesh, change, changeMs: watch.ms } satisfies WorkerResponse,
+                    [...meshTransfer(mesh), ...(change ? meshTransfer(change) : [])]);
+                return;
+            }
             port!.postMessage({ id: request.id, ok: true, mesh } satisfies WorkerResponse, meshTransfer(mesh));
         } else if (request.type === 'props') {
             // A failed history still reports the solid as far as it built, with the error alongside.

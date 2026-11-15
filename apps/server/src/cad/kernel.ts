@@ -11,6 +11,7 @@ import type { MassProps } from './props.js';
 import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projection';
 import type { BodyInfo } from '@jarvis/core/visibility';
 import type { FreecadExport } from '../export/freecadMacro.js';
+import type { ChangeRange } from './change.js';
 
 export { meshKey } from './key.js';
 export { combineContext, type CombineContext, type CombinePart } from './context.js';
@@ -48,6 +49,14 @@ export interface MeshData {
     cosmeticBody?: Uint32Array;
 }
 
+/** A preview's mesh and what the steps of its range do, as a mesh of its own (null: nothing); see change.ts. */
+export interface MeshWithChange {
+    mesh: MeshData;
+    change: MeshData | null;
+    /** Time the kernel spent on the change beyond the build and its mesh. */
+    changeMs: number;
+}
+
 /** A part whose history failed; `partial` is the solid up to the failing step, when there is one. */
 export class CadBuildError extends Error {
     constructor(message: string, readonly partial?: MeshData) {
@@ -68,6 +77,7 @@ export interface CadKernelOptions {
 }
 
 type JobRequest = Omit<Extract<WorkerRequest, { type: 'mesh' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'step' }>, 'id'>
+    | Omit<Extract<WorkerRequest, { type: 'change' }>, 'id'>
     | Omit<Extract<WorkerRequest, { type: 'props' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'project' }>, 'id'>
     | Omit<Extract<WorkerRequest, { type: 'freecad' }>, 'id'>;
 
@@ -139,6 +149,15 @@ export class CadKernel {
             this.cache.delete(this.cache.keys().next().value as string);
         }
         return entry.promise;
+    }
+
+    /**
+     * Mesh of a part as `mesh` gives it, built afresh from step `range.from` on, with the mesh of what the steps of
+     * `range` do (for a tool preview). Not cached: the caller keeps the meshes.
+     */
+    meshWithChange(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, range: ChangeRange, context?: CombineContext,
+        quality: MeshQuality = 'normal'): Promise<MeshWithChange> {
+        return this.run({ type: 'change', part: { shape: part.shape, features: part.features }, print, context, quality, range }) as Promise<MeshWithChange>;
     }
 
     /** STEP (AP214) of the assembled project, Z-up like the STL export, parts named and coloured. */
@@ -241,7 +260,8 @@ export class CadKernel {
         clearTimeout(current.timer);
         this.current = null;
         if (message.ok) {
-            current.job.resolve('mesh' in message ? message.mesh : 'props' in message ? message.props : 'model' in message ? message.model
+            current.job.resolve('change' in message ? { mesh: message.mesh, change: message.change, changeMs: message.changeMs }
+                : 'mesh' in message ? message.mesh : 'props' in message ? message.props : 'model' in message ? message.model
                 : 'freecad' in message ? message.freecad : message.step);
         } else {
             current.job.reject(new CadBuildError(message.error, message.partial));

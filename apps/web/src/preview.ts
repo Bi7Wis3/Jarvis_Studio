@@ -11,6 +11,11 @@ export interface ToolCall {
 export interface Preview {
     parts: Record<string, Part>;
     keys: Record<string, string>;
+    /**
+     * By part: the mesh of only what the form's steps do (a boss's added volume, a cut's removed volume, a fillet's
+     * faces), null when they make nothing to show. A part not listed is drawn whole (a new or moved part).
+     */
+    changes: Record<string, string | null>;
     errors: Record<string, string>;
     error: string | null;
 }
@@ -19,6 +24,7 @@ export interface Preview {
 export interface PreviewResponse {
     parts: Part[];
     keys: Record<string, string>;
+    changes?: Record<string, string | null>;
     errors: Record<string, string>;
     /** What the build says about a part's steps, by part (a thread cut to the length of its hole). */
     notes?: Record<string, string[]>;
@@ -57,6 +63,7 @@ export function toPreview(response: PreviewResponse): Preview {
     return {
         parts: Object.fromEntries(ok.map((p) => [p.id, p])),
         keys: Object.fromEntries(ok.flatMap((p) => (response.keys[p.id] ? [[p.id, response.keys[p.id]]] : []))),
+        changes: Object.fromEntries(ok.flatMap((p) => (response.changes && p.id in response.changes ? [[p.id, response.changes[p.id]]] : []))),
         errors: response.errors,
         error: response.error ?? null,
     };

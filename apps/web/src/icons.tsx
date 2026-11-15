@@ -9,6 +9,7 @@ import { RELATION_ICONS } from './relationIcons';
 import { WHOLE_ICONS } from './wholeIcons';
 import { DRAW_COMMAND_ICONS } from './drawCommandIcons';
 import { TOOLBAR_ICONS } from './toolbarIcons';
+import { DISPLAY_STYLE_ICONS } from './displayStyleIcons';
 
 const PATHS: Record<string, ReactNode> = {
     sketch: (
@@ -616,6 +617,7 @@ const PATHS: Record<string, ReactNode> = {
     ...WHOLE_ICONS,
     ...DRAW_COMMAND_ICONS,
     ...TOOLBAR_ICONS,
+    ...DISPLAY_STYLE_ICONS,
 };
 
 export type IconName = keyof typeof PATHS;

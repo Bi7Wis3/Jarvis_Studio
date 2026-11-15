@@ -189,3 +189,105 @@ export function toolbarWidth(toolbar: Pick<ArrangedToolbar, 'tools' | 'families'
         : buttonWidth(item.tool, toolbar.size, toolbar.labels)));
     return widths.reduce((a, b) => a + b, 0) + (items.length - 1) * BUTTON_GAP + GROUP_PAD;
 }
+
+// ---- Fitting the toolbars into the band at the top --------------------------------------------------------
+
+/** A toolbar's widths as drawn (measured in the page, or estimated until it has been). */
+export interface BarWidths {
+    id: string;
+    /** Lower folds first; none: folds only after every toolbar that has one, from the end of the bar. */
+    collapse?: number;
+    /** With every button. */
+    full: number;
+    /** Folded into one menu button. */
+    menu: number;
+    /** Folded, with its name beside the icon. */
+    named: number;
+    /** Each button's share of `full`, the gap after it included, in order; the rest of `full` is the group's padding. */
+    items: number[];
+    /** The overflow button that lists the buttons left out. */
+    more: number;
+}
+
+export type FitLayout =
+    | { kind: 'hidden' }
+    /** One menu for everything; the part's name only where it still fits. */
+    | { kind: 'all'; showActive: boolean }
+    | {
+        kind: 'groups'; collapsed: Set<string>; named: Set<string>;
+        /** The most important folded toolbar still shows its first `count` buttons, the rest behind an overflow button. */
+        partial: { id: string; count: number } | null;
+        showActive: boolean;
+    };
+
+const sum = (list: number[]): number => list.reduce((a, b) => a + b, 0);
+
+/**
+ * Which toolbars fold into menus so the bar fits `room`: none while all fit; else the least important first (by
+ * `collapse`, then those without one from the end of the bar), only as many as needed. The most important one that had
+ * to fold keeps the buttons that still fit; folded ones show their names where there is room; the part's name
+ * (`reserved` wide) last. `fixed`: the bar's own padding and the workspace switch; `allMenu`: one menu for everything.
+ */
+export function fitToolbars(bars: readonly BarWidths[], fixed: number, room: number, reserved: number, allMenu: number): FitLayout {
+    const collapsed = new Set<string>();
+    const total = () => fixed + sum(bars.map((b) => (collapsed.has(b.id) ? b.menu : b.full)));
+    const order = [
+        ...bars.filter((b) => b.collapse !== undefined).sort((a, b) => a.collapse! - b.collapse!),
+        ...bars.filter((b) => b.collapse === undefined).reverse(),
+    ];
+    const folded: BarWidths[] = [];
+    for (const bar of order) {
+        if (total() <= room) {
+            break;
+        }
+        collapsed.add(bar.id);
+        folded.push(bar);
+    }
+    if (total() > room) {
+        return room >= fixed + allMenu ? { kind: 'all', showActive: room >= fixed + allMenu + reserved } : { kind: 'hidden' };
+    }
+    let used = total();
+    let partial: { id: string; count: number } | null = null;
+    const last = folded[folded.length - 1];
+    if (last && last.items.length > 1) {
+        const spare = room - used + last.menu;
+        let width = last.full - sum(last.items) + last.more;
+        let count = 0;
+        while (count < last.items.length - 1 && width + last.items[count] <= spare) {
+            width += last.items[count];
+            count += 1;
+        }
+        // One button and the overflow say less than the named menu: at least two, or it stays folded.
+        if (count >= 2) {
+            partial = { id: last.id, count };
+            collapsed.delete(last.id);
+            used += width - last.menu;
+        }
+    }
+    // A menu that shows only an icon hides what is in it: name the folded toolbars while there is room.
+    const named = new Set<string>();
+    for (const bar of bars.filter((b) => collapsed.has(b.id))) {
+        if (used + bar.named - bar.menu <= room) {
+            named.add(bar.id);
+            used += bar.named - bar.menu;
+        }
+    }
+    return { kind: 'groups', collapsed, named, partial, showActive: used + reserved <= room };
+}
+
+const MENU_W = 38;
+const LABEL_GAP = 5;
+const MENU_CHAR_W = 6.6;
+const MORE_W = 20;
+
+/** Widths from the CSS sizes, for the first frame before the toolbar has been measured. */
+export function estimatedWidths(toolbar: ArrangedToolbar): BarWidths {
+    const items = arrangedItems(toolbar).map((item, i, all) => ('family' in item
+        ? buttonWidth(item.tools[0], toolbar.size, toolbar.labels) + ARROW_W
+        : buttonWidth(item.tool, toolbar.size, toolbar.labels)) + (i < all.length - 1 ? BUTTON_GAP : 0));
+    const menu = MENU_W + GROUP_PAD;
+    return {
+        id: toolbar.id, collapse: toolbar.collapse, full: toolbarWidth(toolbar), menu,
+        named: menu + LABEL_GAP + (toolbar.short ?? toolbar.label).length * MENU_CHAR_W, items, more: MORE_W,
+    };
+}

@@ -17,6 +17,7 @@ import { finishDefaults, useSketcher } from './sketcher';
 import { useSketchToggles } from './sketchToggles';
 import { sketchCanvas } from './sketchViewMode';
 import { useStudio } from './state';
+import { useDisplayStyle } from './displayStyle';
 import { ALL_TOOLS } from './toolDefs';
 import { useToolForm } from './toolForm';
 
@@ -244,6 +245,17 @@ describe('applying saved settings to the app', () => {
         expect(s).toMatchObject({ filletRadius: 1.5, chamferDistance: 2, sides: 8 });
         expect(shownText(1.26)).toBe('1.3');
         expect(readSketchBlob(sketch as unknown as Record<string, unknown>)).toEqual(currentSketch());
+    });
+
+    it('puts the display style into the view; Show model edges is Shaded with edges against Shaded', () => {
+        applySettings({ ...defaultSettings(), display: { ...DEFAULT_SETTINGS.display, style: 'hiddenVisible', hiddenEdges: 'solid', seeThrough: true } });
+        expect(useDisplayStyle.getState()).toEqual({ style: 'hiddenVisible', hiddenEdges: 'solid', seeThrough: true });
+        applySettings({ ...defaultSettings(), display: { ...DEFAULT_SETTINGS.display, style: 'shadedEdges', edges: false } });
+        expect(useDisplayStyle.getState().style).toBe('shaded');
+        expect(useStudio.getState().edges).toBe(false);
+        applySettings({ ...defaultSettings(), display: { ...DEFAULT_SETTINGS.display, style: 'shaded', edges: true } });
+        expect(useDisplayStyle.getState()).toEqual({ style: 'shadedEdges', hiddenEdges: 'dashed', seeThrough: false });
+        expect(useStudio.getState().edges).toBe(true);
     });
 
     it('reads a damaged sketch category leniently', () => {

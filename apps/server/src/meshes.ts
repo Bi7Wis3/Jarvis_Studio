@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { DEFAULT_PRINT, effectivePart, partsAtTimeline, type MeshStatus, type Part, type Project } from '@jarvis/core';
 import { viewPart } from '@jarvis/core/visibility';
 import { CadBuildError, combineContext, meshKey, type CadKernel, type CombineContext, type MeshData } from './cad/kernel.js';
 import { qualityKey, type MeshQuality } from './cad/meshQuality.js';
+import type { ChangeRange } from './cad/change.js';
 
 const MAX_ENCODED = 500;
 
@@ -62,6 +64,8 @@ export class MeshService {
     private failed = new Map<string, string>();
     /** Display quality of the meshes the view gets (Options > Display); exports always use fine. */
     private quality: MeshQuality = 'normal';
+    /** Preview change meshes asked for (key of the part's mesh, then the range), and whether there was anything. */
+    private changes = new Map<string, boolean>();
 
     constructor(private kernel: CadKernel, private changed: (status: MeshStatus) => void) {}
 
@@ -183,14 +187,20 @@ export class MeshService {
     /**
      * Builds a part of a project that is not (yet) the real one, for tool previews. The mesh is served by key like
      * any other, but the published status is left alone. `key` is null when nothing could be built; a failed
-     * feature still gives the partial solid with `error`.
+     * feature still gives the partial solid with `error`. With `range`, `change` is the key of a mesh of what those
+     * steps do (null when they make nothing), for the view to highlight only that.
      */
-    async preview(part: Part, project: Project): Promise<{ key: string | null; error?: string; notes?: string[] }> {
+    async preview(part: Part, project: Project, range?: ChangeRange): Promise<{ key: string | null; change?: string | null; error?: string; notes?: string[] }> {
         const shown = partsAtTimeline(project);
         const effective = shownPart(part, shown, project);
         const print = project.print ?? DEFAULT_PRINT;
         const context = combineContext(part, shown);
         try {
+            if (range) {
+                const { key, change } = await this.buildWithChange(effective, print, range, context);
+                const notes = this.meshes.get(key)?.notes;
+                return { key, change, ...(notes?.length ? { notes } : {}) };
+            }
             const key = await this.build(effective, print, context);
             const failure = this.failed.get(key);
             const notes = this.meshes.get(key)?.notes;
@@ -198,6 +208,38 @@ export class MeshService {
         } catch (error) {
             const key = this.key(effective, print, context);
             return { key: this.meshes.has(key) ? key : null, error: error instanceof Error ? error.message : String(error) };
+        }
+    }
+
+    /** Like build, with the mesh of what the steps of `range` do, kept under a key of its own (absent: nothing). */
+    private async buildWithChange(part: Part, print: NonNullable<Project['print']>, range: ChangeRange, context?: CombineContext):
+        Promise<{ key: string; change: string | null }> {
+        const quality = this.quality;
+        const key = this.key(part, print, context, quality);
+        // A key like the others (24 hex digits), so /api/mesh2 serves it.
+        const changeKey = createHash('sha1').update(`${key} change ${range.steps?.join(',') ?? `${range.from}-${range.to}`}`).digest('hex').slice(0, 24);
+        const known = this.changes.get(changeKey);
+        if (this.meshes.has(key) && known !== undefined && (!known || this.meshes.has(changeKey))) {
+            return { key, change: known ? changeKey : null };
+        }
+        try {
+            const { mesh, change } = await this.kernel.meshWithChange(part, print, range, context, quality);
+            this.remember(key, mesh);
+            this.failed.delete(key);
+            if (change) {
+                this.remember(changeKey, change);
+            }
+            this.changes.set(changeKey, !!change);
+            if (this.changes.size > MAX_ENCODED) {
+                this.changes.delete(this.changes.keys().next().value!);
+            }
+            return { key, change: change ? changeKey : null };
+        } catch (error) {
+            if (error instanceof CadBuildError && error.partial) {
+                this.remember(key, error.partial);
+                this.failed.set(key, error.message);
+            }
+            throw error;
         }
     }
 

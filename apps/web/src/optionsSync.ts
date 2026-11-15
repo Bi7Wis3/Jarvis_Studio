@@ -1,9 +1,10 @@
 // Keeps the app's own setting stores and the saved settings (options.ts) in step. The sketch settings, snaps, sketch
 // toggles, spline options, perspective, edges and grid live in their own modules (and their localStorage, as a quick
-// cache); the settings file on the server is where they are kept. Saved settings are pushed into the modules, and a
-// change made with the toolbar or a sketch form is saved back.
+// cache), the display style in displayStyle.ts; the settings file on the server is where they are kept. Saved
+// settings are pushed into the modules, and a change made with the toolbar or a sketch form is saved back.
 
-import type { StudioSettings, StudioSettingsView } from '@jarvis/core/settings';
+import { shownStyle, type StudioSettings, type StudioSettingsView } from '@jarvis/core/settings';
+import { setDisplay, useDisplayStyle } from './displayStyle';
 import { setShownPrecision } from './numberText';
 import { loadOptions, saveOptions, useOptions } from './options';
 import { setSketchSettings, setSnapKind, useSketcher } from './sketcher';
@@ -114,6 +115,10 @@ export function applySketch(blob: SketchBlob): void {
 let appliedTools = '';
 let appliedView = '';
 
+/** The view settings the toolbar can change too, as one string. */
+const viewKey = (display: StudioSettings['display']): string =>
+    JSON.stringify([display.perspective, display.edges, display.grid, display.style, display.seeThrough, display.hiddenEdges]);
+
 /** Applies saved settings to the app: shown precision, the sketch modules, the view toggles, the sketch tools' sizes. */
 export function applySettings(settings: StudioSettings | StudioSettingsView): void {
     const { units, display } = settings;
@@ -125,7 +130,7 @@ export function applySettings(settings: StudioSettings | StudioSettingsView): vo
     applying = true;
     try {
         // Only when they changed in the settings, so a value changed for this session is not put back on every save.
-        const view = JSON.stringify([display.perspective, display.edges, display.grid]);
+        const view = viewKey(display);
         if (view !== appliedView) {
             appliedView = view;
             const { perspective, edges, grid } = useStudio.getState();
@@ -138,6 +143,8 @@ export function applySettings(settings: StudioSettings | StudioSettingsView): vo
             if (edges !== display.edges || grid !== display.grid) {
                 useStudio.setState({ edges: display.edges, grid: display.grid });
             }
+            // After the edges: between Shaded with edges and Shaded, Show model edges decides.
+            setDisplay({ style: shownStyle(display), seeThrough: display.seeThrough, hiddenEdges: display.hiddenEdges });
         }
         const tools = settings.defaults[SKETCH_TOOL_DEFAULTS] ?? {};
         const key = JSON.stringify(tools);
@@ -170,14 +177,14 @@ function changedElsewhere(): void {
         const saved = useOptions.getState().settings;
         const sketch = currentSketch();
         const { perspective, edges, grid } = useStudio.getState();
-        const display = { ...saved.display, perspective: { ...perspective }, edges, grid };
+        const display = { ...saved.display, perspective: { ...perspective }, edges, grid, ...useDisplayStyle.getState() };
         const patch: Partial<StudioSettings> = {};
         if (!same(readSketchBlob(saved.sketch), sketch)) {
             patch.sketch = sketch as unknown as Record<string, unknown>;
         }
         if (!same(display, saved.display)) {
             patch.display = display;
-            appliedView = JSON.stringify([display.perspective, display.edges, display.grid]);
+            appliedView = viewKey(display);
         }
         if (Object.keys(patch).length) {
             void saveOptions(patch);
@@ -198,7 +205,10 @@ export async function startOptions(): Promise<void> {
         if (!readSketchBlob(saved.sketch)) {
             // First start with a settings file: this browser's sketch settings and view toggles become the saved ones.
             const { perspective, edges, grid } = useStudio.getState();
-            await saveOptions({ sketch: currentSketch() as unknown as Record<string, unknown>, display: { ...saved.display, perspective, edges, grid } });
+            await saveOptions({
+                sketch: currentSketch() as unknown as Record<string, unknown>,
+                display: { ...saved.display, perspective, edges, grid, ...useDisplayStyle.getState() },
+            });
         }
         applySettings(useOptions.getState().settings);
     }
@@ -229,4 +239,6 @@ export async function startOptions(): Promise<void> {
             changedElsewhere();
         }
     });
+    // The display style flyout on the View toolbar.
+    useDisplayStyle.subscribe(changedElsewhere);
 }

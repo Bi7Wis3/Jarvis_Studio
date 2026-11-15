@@ -865,6 +865,31 @@
     height: auto;
 }
 
+/* The hidden copy of the toolbar whose widths decide what folds (Toolbar.tsx, readWidths): never squeezed. */
+.toolbar.tb-measure {
+    position: fixed;
+    top: -400px;
+    left: 0;
+    width: max-content;
+    transform: none;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.toolbar.tb-measure > * {
+    flex-shrink: 0;
+}
+
+/* After the buttons of a toolbar shown in part: the rest in a menu. */
+.tb-btn.tb-menu.tb-overflow {
+    width: 20px;
+}
+
+.tb-group.tb-small .tb-btn.tb-menu.tb-overflow,
+.tb-group.tb-large .tb-btn.tb-menu.tb-overflow {
+    width: 20px;
+}
+
 .tb-btn-label {
     max-width: 58px;
     overflow: hidden;

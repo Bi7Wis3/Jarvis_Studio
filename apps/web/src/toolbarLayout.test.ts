@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { ToolDef, ToolGroup } from './toolDefs';
 import {
-    addedTool, arrangedIds, arrangedItems, arrangeToolbars, modeTools, movedTool, removedTool, toolbarKey, toolbarWidth, withOption, withTools,
-    type ToolbarArrangement,
+    addedTool, arrangedIds, arrangedItems, arrangeToolbars, estimatedWidths, fitToolbars, modeTools, movedTool, removedTool, toolbarKey, toolbarWidth,
+    withOption, withTools, type BarWidths, type ToolbarArrangement,
 } from './toolbarLayout';
 import { cleanArrangement, loadArrangement, resetArrangement, setToolbarPrefs, useToolbarArrangement } from './toolbarStore';
 
@@ -86,6 +86,50 @@ describe('toolbar arrangement', () => {
         expect(modeTools(groups).map((t) => t.id)).toEqual([
             'sk-select', 'sk-finish', 'sk-line', 'sk-centerline', 'sk-rect', 'sk-centerRect', 'sk-circle', 'sk-trim', 'sk-extend', 'sk-offset', 'view-fit',
         ]);
+    });
+});
+
+describe('fitting the toolbars into the band', () => {
+    /** A toolbar of `n` 30 px buttons (gap included) and 9 px of padding; folded 47, named 80. */
+    const bar = (id: string, n: number, collapse?: number): BarWidths => ({
+        id, collapse, full: n * 30 + 9, menu: 47, named: 80, items: Array.from({ length: n }, () => 30), more: 20,
+    });
+    // The part toolbar's shape: fixed toolbars (sketch, pattern, history) and ranked ones (features most important).
+    const BARS = [bar('sketch', 4), bar('solid', 15, 4), bar('reference', 4, 2), bar('pattern', 2), bar('view', 8, 3), bar('inspect', 4, 1), bar('history', 2)];
+    const FIXED = 142;
+    const full = FIXED + BARS.reduce((a, b) => a + b.full, 0);
+
+    it('shows every toolbar open while they all fit, and the part name when it fits too', () => {
+        expect(fitToolbars(BARS, FIXED, full, 0, 47)).toEqual({ kind: 'groups', collapsed: new Set(), named: new Set(), partial: null, showActive: true });
+        expect(fitToolbars(BARS, FIXED, full + 50, 60, 47)).toMatchObject({ collapsed: new Set(), showActive: false });
+    });
+
+    it('folds only as many as needed, least important first, and the last one folded keeps the buttons that fit', () => {
+        // One pixel short: Inspect folds, and the room it leaves takes three of its four buttons and the overflow.
+        const layout = fitToolbars(BARS, FIXED, full - 1, 0, 47);
+        expect(layout).toMatchObject({ kind: 'groups', collapsed: new Set(), partial: { id: 'inspect', count: 3 } });
+        // 300 px short: Inspect and Reference fold whole, View keeps the two buttons that fit.
+        const narrow = fitToolbars(BARS, FIXED, full - 300, 0, 47);
+        expect(narrow).toMatchObject({ collapsed: new Set(['inspect', 'reference']), partial: { id: 'view', count: 2 } });
+    });
+
+    it('names folded toolbars when there is room, and folds the unranked ones before giving up to one menu', () => {
+        // Room for one name, not for two of Features' buttons: Features stays folded and gets its name.
+        const folded = fitToolbars(BARS, FIXED, FIXED + 4 * 47 + 4 * 30 + 9 + 2 * 30 + 9 + 2 * 30 + 9 + 35, 0, 47);
+        expect(folded).toMatchObject({ collapsed: new Set(['inspect', 'reference', 'view', 'solid']), named: new Set(['solid']), partial: null });
+        // Too narrow for the unranked toolbars too: History, then Pattern fold before Sketch.
+        const tight = fitToolbars(BARS, FIXED, FIXED + 6 * 47 + 4 * 30 + 9, 0, 47);
+        expect(tight.kind === 'groups' && [...tight.collapsed].sort()).toEqual(['history', 'inspect', 'pattern', 'reference', 'solid', 'view']);
+        expect(fitToolbars(BARS, FIXED, FIXED + 100, 0, 47)).toEqual({ kind: 'all', showActive: true });
+        expect(fitToolbars(BARS, FIXED, FIXED + 100, 60, 47)).toEqual({ kind: 'all', showActive: false });
+        expect(fitToolbars(BARS, FIXED, FIXED + 20, 0, 47)).toEqual({ kind: 'hidden' });
+    });
+
+    it('estimates from the CSS sizes match the toolbar widths until it is measured', () => {
+        const draw = arrangeToolbars('sketch', GROUPS, {})[1];
+        const w = estimatedWidths(draw);
+        expect(w.full).toBe(toolbarWidth(draw));
+        expect(w.items.reduce((a, b) => a + b, 0) + 9).toBe(w.full);
     });
 });
 

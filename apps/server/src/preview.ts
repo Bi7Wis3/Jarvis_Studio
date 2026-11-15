@@ -2,8 +2,9 @@
 // browser can show the result before it is applied. Nothing here touches the real project, its file or its undo.
 
 import { z } from 'zod';
-import { partsAtTimeline, type Part, type Project } from '@jarvis/core';
+import { effectivePart, partsAtTimeline, type Part, type Project } from '@jarvis/core';
 import type { MeshService } from './meshes.js';
+import { changeRange } from './previewRange.js';
 import { ProjectStore } from './store.js';
 import { createTools } from './tools.js';
 
@@ -23,6 +24,11 @@ export interface PreviewResult {
     /** Parts that are new or changed, as they would be. */
     parts: Part[];
     keys: Record<string, string>;
+    /**
+     * By part: the mesh key of only what the form's steps do (the volume a boss adds or a cut removes, the faces a
+     * fillet makes), null when they make nothing to show. A part not listed is shown whole (a new or moved part).
+     */
+    changes: Record<string, string | null>;
     errors: Record<string, string>;
     /** What the build says about a part's steps, by part (a thread cut to the length of its hole). */
     notes?: Record<string, string[]>;
@@ -80,12 +86,12 @@ export async function runPreview(
         const tool = tools.find((t) => t.name === call.name)!;
         const parsed = z.object(tool.schema).safeParse(call.args);
         if (!parsed.success) {
-            return { parts: [], keys: {}, errors: {}, error: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') };
+            return { parts: [], keys: {}, changes: {}, errors: {}, error: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') };
         }
         try {
             tool.run(parsed.data);
         } catch (e) {
-            return { parts: [], keys: {}, errors: {}, error: e instanceof Error ? e.message : String(e) };
+            return { parts: [], keys: {}, changes: {}, errors: {}, error: e instanceof Error ? e.message : String(e) };
         }
     }
 
@@ -97,11 +103,26 @@ export async function runPreview(
         return !old || JSON.stringify(old) !== JSON.stringify(part) || meshes.keyFor(old, project) !== meshes.keyFor(part, next);
     });
     const keys: Record<string, string> = {};
+    const changes: Record<string, string | null> = {};
     const errors: Record<string, string> = {};
     const notes: Record<string, string[]> = {};
+    const oldParts = partsAtTimeline(project);
+    const newParts = partsAtTimeline(next);
     // One at a time: the kernel runs one job at a time anyway, and identical instances then share one build.
     for (const part of changed) {
-        const { key, error, notes: said } = await meshes.preview(quickThreads(part, before.get(part.id)), next);
+        const old = before.get(part.id);
+        // Steps compared as built: an instance as its source's design.
+        let range = changeRange(old && effectivePart(old, oldParts), effectivePart(part, newParts));
+        if (range === 'none' && old && meshes.keyFor(old, project) !== meshes.keyFor(part, next)) {
+            range = 'whole'; // the same steps on a body that changes (a combine with a part that changes)
+        }
+        const { key, change, error, notes: said } = await meshes.preview(quickThreads(part, old), next,
+            typeof range === 'object' ? range : undefined);
+        if (range === 'none') {
+            changes[part.id] = null;
+        } else if (change !== undefined) {
+            changes[part.id] = change;
+        }
         if (said?.length) {
             notes[part.id] = said;
         }
@@ -112,5 +133,5 @@ export async function runPreview(
             errors[part.id] = error;
         }
     }
-    return { parts: changed, keys, errors, ...(Object.keys(notes).length ? { notes } : {}) };
+    return { parts: changed, keys, changes, errors, ...(Object.keys(notes).length ? { notes } : {}) };
 }

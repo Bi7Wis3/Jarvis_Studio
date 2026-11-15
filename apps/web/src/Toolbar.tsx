@@ -25,25 +25,22 @@ import { openSketchXpert } from './sketchXpertAuto';
 import { useSketchToggles } from './sketchToggles';
 import { lastSketchCommand, noteSketchCommand } from './sketchRepeat';
 import { confirmDiscard, isSketchForm, keepSketch, sketchPlaneText, sketchStatusText, useDiscardAsk } from './sketchBar';
-import { arrangedItems, arrangeToolbars, ICON_SIZES, toolbarWidth, withOption, type ArrangedToolbar } from './toolbarLayout';
+import {
+    arrangedItems, arrangeToolbars, estimatedWidths, fitToolbars, ICON_SIZES, withOption, type ArrangedToolbar, type BarWidths, type FitLayout,
+} from './toolbarLayout';
 import { setToolbarPrefs, useToolbarArrangement } from './toolbarStore';
 import { modeGroups, toolbarOptionsTool } from './toolbarOptions';
+import { useDisplayStyle } from './displayStyle';
 
-// Estimated widths matching the CSS, used to decide which groups collapse into menus (buttons: toolbarLayout.ts).
-const GROUP_PAD = 9;
-const MENU_W = 38;
 const FAMILY_KEY = 'jarvis.toolbar.families';
-// A collapsed group's name beside its icon: gap, then about this much per letter.
-const LABEL_GAP = 5;
-const LABEL_CHAR_W = 6.6;
+// Until the hidden copy of the toolbar has been measured (readWidths): its padding and switch, and the Tools menu.
 const BAR_PAD = 10;
 const SWITCH_W = 142;
+const ALL_MENU_W = 47;
 const SIDE_GAP = 20;
 /** Bottom of the toolbar (top 12 + 38 high), see .toolbar in styles.css. */
 const BAND_BOTTOM = 52;
 
-type Layout = { kind: 'hidden' } | { kind: 'all' }
-    | { kind: 'groups'; collapsed: Set<string>; named: Set<string>; showActive: boolean };
 
 interface Anchor {
     left: number;
@@ -66,10 +63,6 @@ function tip(tool: ToolDef, part: boolean): string {
     return `${tool.label}${tool.hint ? ` · ${tool.hint}` : ''}${tool.shortcut ? ` (${tool.shortcut})` : ''}`;
 }
 
-function groupWidth(group: ArrangedToolbar, collapsed: boolean): number {
-    return collapsed ? MENU_W + GROUP_PAD : toolbarWidth(group);
-}
-
 /** The free band for the toolbar between the title and the activity panel. */
 function measureRoom(): { room: number; centre: number } {
     const width = window.innerWidth;
@@ -89,35 +82,62 @@ function measureRoom(): { room: number; centre: number } {
     return { room: Math.max(centred, right - left), centre: centred >= right - left - 1 ? width / 2 : (left + right) / 2 };
 }
 
-/** Collapses groups into menus, lowest priority first, until the toolbar fits. */
-function computeLayout(groups: ArrangedToolbar[], room: number, reserved = 0): Layout {
+/** The toolbar's widths as drawn: read from the hidden copy of it (see the measure copy in Toolbar). */
+interface Measured {
+    fixed: number;
+    allMenu: number;
+    bars: BarWidths[];
+}
+
+const box = (e: Element) => e.getBoundingClientRect();
+
+/** Each button's share of its group's width, the gap after it included. */
+function itemShares(group: Element): number[] {
+    const items = [...group.children];
+    return items.map((e, i) => (i < items.length - 1 ? box(items[i + 1]).left - box(e).left : box(e).width));
+}
+
+function readWidths(copy: HTMLElement, groups: ArrangedToolbar[]): Measured | null {
+    const style = getComputedStyle(copy);
+    const px = (v: string) => parseFloat(v) || 0;
+    const switcher = copy.querySelector('.tb-switch');
+    const all = copy.querySelector('[data-measure-all]');
+    const more = copy.querySelector('[data-measure-more] .tb-btn');
+    // Not laid out (a narrow window hides the toolbar): keep what was measured before.
+    if (!switcher || !all || !more || box(switcher).width === 0) {
+        return null;
+    }
+    const switchStyle = getComputedStyle(switcher);
+    const bars: BarWidths[] = [];
+    for (const g of groups) {
+        const full = copy.querySelector(`[data-measure="${g.id}"]`);
+        const menu = copy.querySelector(`[data-measure-menu="${g.id}"]`);
+        const named = copy.querySelector(`[data-measure-named="${g.id}"]`);
+        if (!full || !menu || !named) {
+            return null;
+        }
+        bars.push({
+            id: g.id, collapse: g.collapse, full: box(full).width, menu: box(menu).width, named: box(named).width,
+            items: itemShares(full), more: box(more).width,
+        });
+    }
+    return {
+        fixed: px(style.paddingLeft) + px(style.paddingRight) + px(style.borderLeftWidth) + px(style.borderRightWidth)
+            + box(switcher).width + px(switchStyle.marginLeft) + px(switchStyle.marginRight),
+        allMenu: box(all).width,
+        bars,
+    };
+}
+
+/** Folds toolbars into menus until the bar fits the room, least important first (toolbarLayout.fitToolbars). */
+function computeLayout(groups: ArrangedToolbar[], measured: Measured | null, room: number, reserved = 0): FitLayout {
     if (window.innerWidth < 760) {
         return { kind: 'hidden' };
     }
-    const collapsed = new Set<string>();
-    const total = () => BAR_PAD + SWITCH_W + groups.reduce((sum, g) => sum + groupWidth(g, collapsed.has(g.id)), 0);
-    const order = groups.filter((g) => g.collapse !== undefined).sort((a, b) => a.collapse! - b.collapse!);
-    for (const group of order) {
-        if (total() <= room) {
-            break;
-        }
-        collapsed.add(group.id);
-    }
-    if (total() <= room) {
-        // A menu that shows only an icon hides what is in it: name the collapsed groups while there is room.
-        const named = new Set<string>();
-        let used = total();
-        for (const group of groups.filter((g) => collapsed.has(g.id))) {
-            const width = LABEL_GAP + (group.short ?? group.label).length * LABEL_CHAR_W;
-            if (used + width <= room) {
-                named.add(group.id);
-                used += width;
-            }
-        }
-        // The name of the part being edited (`reserved` wide) is also in the tree: it only stays when it still fits.
-        return { kind: 'groups', collapsed, named, showActive: used + reserved <= room };
-    }
-    return room >= MENU_W + BAR_PAD + SWITCH_W ? { kind: 'all' } : { kind: 'hidden' };
+    // The measured widths, once they are for these toolbars; estimates before that.
+    const fresh = measured && measured.bars.length === groups.length && measured.bars.every((b, i) => b.id === groups[i].id) ? measured : null;
+    const bars = fresh?.bars ?? groups.map(estimatedWidths);
+    return fitToolbars(bars, fresh?.fixed ?? BAR_PAD + SWITCH_W, room, reserved, fresh?.allMenu ?? ALL_MENU_W);
 }
 
 function useCtx(): Ctx {
@@ -282,6 +302,8 @@ export function Toolbar() {
     const ctx = useCtx();
     const grid = useStudio((s) => s.grid);
     const edges = useStudio((s) => s.edges);
+    // The display style flyout shows the style in use.
+    useDisplayStyle();
     const perspective = useStudio((s) => s.perspective);
     const selected = useStudio((s) => s.selected);
     const history = useStudio((s) => s.history);
@@ -305,7 +327,31 @@ export function Toolbar() {
     const [band, setBand] = useState(() => measureRoom());
     // The name of the part being edited sits at the end of the bar (see .tb-active).
     const activeNameWidth = workspace === 'part' && !sketchActive && ctx.part ? Math.min(140, ctx.part.name.length * 7) + 24 : 0;
-    const layout = computeLayout(groups, band.room, activeNameWidth);
+    // The widths of the toolbar as drawn, read from a hidden copy of it with every toolbar both open and folded.
+    const [measured, setMeasured] = useState<Measured | null>(null);
+    const measureCopy = useRef<HTMLDivElement | null>(null);
+    const latestGroups = useRef(groups);
+    latestGroups.current = groups;
+    const measure = useCallback(() => {
+        const copy = measureCopy.current;
+        const next = copy ? readWidths(copy, latestGroups.current) : null;
+        if (next) {
+            setMeasured((old) => (JSON.stringify(old) === JSON.stringify(next) ? old : next));
+        }
+    }, []);
+    const copyObserver = useRef<ResizeObserver | null>(null);
+    const setMeasureCopy = useCallback((element: HTMLDivElement | null) => {
+        measureCopy.current = element;
+        copyObserver.current?.disconnect();
+        if (element) {
+            // Its size changes when fonts arrive, icons or text change, or tools are added or removed.
+            copyObserver.current = new ResizeObserver(measure);
+            copyObserver.current.observe(element);
+            measure();
+        }
+    }, [measure]);
+    useLayoutEffect(measure, [groups, measure]);
+    const layout = computeLayout(groups, measured, band.room, activeNameWidth);
     const [popup, setPopup] = useState<{ tool: ToolDef; anchor: Anchor } | null>(null);
     const [menu, setMenu] = useState<{ group: string; anchor: Anchor } | null>(null);
     // The variant last used in each family is the one its button shows.
@@ -352,9 +398,17 @@ export function Toolbar() {
             observer.observe(element);
         }
         window.addEventListener('resize', update);
+        // The title's width changes when its font arrives; the measured toolbar too.
+        const fontsLoaded = () => {
+            update();
+            measure();
+        };
+        void document.fonts?.ready.then(fontsLoaded);
+        document.fonts?.addEventListener('loadingdone', fontsLoaded);
         return () => {
             observer.disconnect();
             window.removeEventListener('resize', update);
+            document.fonts?.removeEventListener('loadingdone', fontsLoaded);
         };
     }, []);
 
@@ -370,7 +424,7 @@ export function Toolbar() {
     }, [current]);
 
     const anchorFor = (id: string): Anchor => {
-        const element = document.querySelector(`[data-tool="${id}"]`) ?? bar.current;
+        const element = bar.current?.querySelector(`[data-tool="${id}"]`) ?? bar.current;
         return anchorOf(element);
     };
 
@@ -501,10 +555,11 @@ export function Toolbar() {
         const tool = ALL_TOOLS.find((t) => t.id === id)!;
         const group = groups.find((g) => g.tools.includes(tool));
         const family = familyOf(id);
-        const element = document.querySelector(`[data-tool="${id}"]`)
-            ?? (family && document.querySelector(`[data-family="${family.id}"]`))
-            ?? (group && document.querySelector(`[data-group="${group.id}"]`))
-            ?? document.querySelector('[data-group="all"]') ?? bar.current;
+        const within = (selector: string) => bar.current?.querySelector(selector) ?? null;
+        const element = within(`[data-tool="${id}"]`)
+            ?? (family && within(`[data-family="${family.id}"]`))
+            ?? (group && (within(`[data-group="${group.id}"]`) ?? within(`[data-group="more:${group.id}"]`)))
+            ?? within('[data-group="all"]') ?? bar.current;
         open(tool, anchorOf(element));
     };
 
@@ -640,7 +695,8 @@ export function Toolbar() {
     }
 
     const settings: UiSettings = { grid, edges, perspective: sketchActive && sketchStage === 'draw' ? perspective.sketch : perspective.model, showOthers, sketchTool: sketchActive ? sketchTool : null };
-    const button = (tool: ToolDef, toolbar: ArrangedToolbar) => {
+    // `copy`: for the hidden copy that is measured, without the attributes that find the real buttons.
+    const button = (tool: ToolDef, toolbar: ArrangedToolbar, copy = false) => {
         const disabled = !!tool.soon || (!!tool.needsPart && !ctx.part);
         const on = tool.active?.(ctx, settings) ?? false;
         const openNow = popup?.tool.id === tool.id;
@@ -649,7 +705,7 @@ export function Toolbar() {
                 key={tool.id}
                 type="button"
                 className={`tb-btn ${on ? 'on' : ''} ${openNow ? 'open' : ''} ${tool.danger ? 'danger' : ''}`}
-                data-tool={tool.id}
+                data-tool={copy ? undefined : tool.id}
                 data-tip={openNow || toolbar.tips === 'off' ? undefined
                     : toolbar.tips === 'name' && !disabled ? tool.label : tip(tool, !!ctx.part)}
                 aria-label={tool.label}
@@ -663,12 +719,12 @@ export function Toolbar() {
         );
     };
     /** One button for a family: the variant in use (active, else last used), and an arrow that lists them all. */
-    const familyButton = (family: ToolFamily, tools: ToolDef[], toolbar: ArrangedToolbar) => {
+    const familyButton = (family: ToolFamily, tools: ToolDef[], toolbar: ArrangedToolbar, copy = false) => {
         const key = `family:${family.id}`;
         const shown = tools.find((t) => t.active?.(ctx, settings)) ?? tools.find((t) => t.id === lastUsed[family.id]) ?? tools[0];
         return (
-            <span key={key} className={`tb-family ${menu?.group === key ? 'open' : ''}`} data-family={family.id}>
-                {button(shown, toolbar)}
+            <span key={key} className={`tb-family ${menu?.group === key ? 'open' : ''}`} data-family={copy ? undefined : family.id}>
+                {button(shown, toolbar, copy)}
                 <button
                     type="button"
                     className="tb-more"
@@ -687,12 +743,20 @@ export function Toolbar() {
             </span>
         );
     };
-    const items = (group: ArrangedToolbar) => arrangedItems(group)
-        .map((item) => ('family' in item ? familyButton(item.family, item.tools, group) : button(item.tool, group)));
-    /** What an open menu lists: every group, one group, or the variants of one family. */
+    const items = (group: ArrangedToolbar, copy = false) => arrangedItems(group)
+        .map((item) => ('family' in item ? familyButton(item.family, item.tools, group, copy) : button(item.tool, group, copy)));
+    /** The buttons left out of a toolbar shown in part (layout.partial), as its overflow menu lists them. */
+    const overflowTools = (group: ArrangedToolbar, count: number): ToolDef[] => arrangedItems(group).slice(count)
+        .flatMap((item) => ('family' in item ? item.tools : [item.tool]));
+    /** What an open menu lists: every group, one group, a toolbar's overflow, or the variants of one family. */
     const menuGroups = (id: string): ToolGroup[] => {
         if (id === 'all') {
             return groups;
+        }
+        if (id.startsWith('more:')) {
+            const group = groups.find((g) => `more:${g.id}` === id);
+            const count = layout.kind === 'groups' && layout.partial?.id === group?.id ? layout.partial!.count : 0;
+            return group ? [{ id, label: group.label, icon: group.icon, tools: overflowTools(group, count) }] : [];
         }
         if (!id.startsWith('family:')) {
             return groups.filter((g) => g.id === id);
@@ -706,15 +770,15 @@ export function Toolbar() {
         }
         return [];
     };
-    const menuButton = (group: ToolGroup | null) => {
+    const menuButton = (group: ToolGroup | null, copy?: { named: boolean }) => {
         const id = group?.id ?? 'all';
-        const named = !!group && layout.kind === 'groups' && layout.named.has(group.id);
+        const named = !!group && (copy ? copy.named : layout.kind === 'groups' && layout.named.has(group.id));
         return (
             <button
                 key={id}
                 type="button"
                 className={`tb-btn tb-menu ${menu?.group === id ? 'open' : ''} ${named ? 'named' : ''}`}
-                data-group={id}
+                data-group={copy ? undefined : id}
                 data-tip={menu?.group === id ? undefined : group?.label ?? 'Tools'}
                 aria-label={group?.label ?? 'Tools'}
                 aria-haspopup="menu"
@@ -732,6 +796,41 @@ export function Toolbar() {
             </button>
         );
     };
+    /** The button after a toolbar shown in part: its other tools in a menu. */
+    const overflowButton = (group: ArrangedToolbar | null, copy = false) => {
+        const id = `more:${group?.id ?? ''}`;
+        return (
+            <button
+                key={id}
+                type="button"
+                className={`tb-btn tb-menu tb-overflow ${menu?.group === id ? 'open' : ''}`}
+                data-group={copy ? undefined : id}
+                data-tip={menu?.group === id ? undefined : `More ${group?.label.toLowerCase() ?? ''} tools`}
+                aria-label={`More ${group?.label.toLowerCase() ?? ''} tools`}
+                aria-haspopup="menu"
+                onClick={(event) => {
+                    const anchor = anchorOf(event.currentTarget);
+                    setPopup(null);
+                    setMenu((m) => (m?.group === id ? null : { group: id, anchor }));
+                }}
+            >
+                <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                    <path d="M2.5 3l3 3-3 3M6.5 3l3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                </svg>
+            </button>
+        );
+    };
+    /** A toolbar as the layout says: every button, folded into a menu, or its first buttons and an overflow menu. */
+    const toolbarContent = (group: ArrangedToolbar) => {
+        if (layout.kind !== 'groups') {
+            return items(group);
+        }
+        if (layout.partial?.id === group.id) {
+            return [...items(group).slice(0, layout.partial.count), overflowButton(group)];
+        }
+        return layout.collapsed.has(group.id) ? menuButton(group) : items(group);
+    };
+    const groupClass = (group: ArrangedToolbar) => `tb-group g-${group.id} tb-${group.size} ${group.labels ? 'tb-labels' : ''}`;
 
     return (
         <>
@@ -752,19 +851,30 @@ export function Toolbar() {
                 {layout.kind === 'all'
                     ? <div className="tb-group">{menuButton(null)}</div>
                     : groups.map((group) => (
-                        <div
-                            key={group.id}
-                            className={`tb-group g-${group.id} tb-${group.size} ${group.labels ? 'tb-labels' : ''}`}
-                            role="group"
-                            aria-label={group.label}
-                        >
-                            {layout.collapsed.has(group.id) ? menuButton(group) : items(group)}
+                        <div key={group.id} className={groupClass(group)} role="group" aria-label={group.label}>
+                            {toolbarContent(group)}
                         </div>
                     ))}
-                {workspace === 'part' && !sketchActive && ctx.part && (layout.kind !== 'groups' || layout.showActive) && (
+                {workspace === 'part' && !sketchActive && ctx.part && layout.showActive && (
                     <span className="tb-active" title="Part being edited">{ctx.part.name}</span>
                 )}
             </div>
+            {createPortal(
+                // Every toolbar open and folded, named and not, hidden: its widths decide what folds (readWidths).
+                <div className="toolbar tb-measure" ref={setMeasureCopy} aria-hidden="true" inert>
+                    <WorkspaceSwitch />
+                    {groups.map((group) => <div key={group.id} className={groupClass(group)} data-measure={group.id}>{items(group, true)}</div>)}
+                    {groups.map((group) => (
+                        <div key={`m-${group.id}`} className={groupClass(group)} data-measure-menu={group.id}>{menuButton(group, { named: false })}</div>
+                    ))}
+                    {groups.map((group) => (
+                        <div key={`n-${group.id}`} className={groupClass(group)} data-measure-named={group.id}>{menuButton(group, { named: true })}</div>
+                    ))}
+                    <div className="tb-group" data-measure-more="">{overflowButton(null, true)}</div>
+                    <div className="tb-group" data-measure-all="">{menuButton(null, { named: false })}</div>
+                </div>,
+                document.body,
+            )}
             <SketchBar centre={band.centre} top={barBottom + 6} onFinish={() => openById(finishTool.id)} />
             {barMenu && (
                 <ContextMenu

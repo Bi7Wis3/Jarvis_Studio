@@ -5,6 +5,18 @@
 export type MeshQuality = 'coarse' | 'normal' | 'fine';
 export const MESH_QUALITIES: MeshQuality[] = ['coarse', 'normal', 'fine'];
 
+/** SolidWorks' display styles for the 3D view (View > Display), in its order. */
+export type DisplayStyle = 'shadedEdges' | 'shaded' | 'hiddenRemoved' | 'hiddenVisible' | 'wireframe';
+export const DISPLAY_STYLE_IDS: DisplayStyle[] = ['shadedEdges', 'shaded', 'hiddenRemoved', 'hiddenVisible', 'wireframe'];
+
+/**
+ * The display style the settings show. Shaded with edges and Shaded are Show model edges on and off, so for those two
+ * `edges` decides (a settings file from before the styles, or one edited by hand, stays consistent).
+ */
+export function shownStyle(display: { style: DisplayStyle; edges: boolean }): DisplayStyle {
+    return display.style === 'shadedEdges' || display.style === 'shaded' ? (display.edges ? 'shadedEdges' : 'shaded') : display.style;
+}
+
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -83,6 +95,12 @@ export interface DisplaySettings {
     edges: boolean;
     edgeColor: string;
     edgeOpacity: number;
+    /** Display style; between Shaded with edges and Shaded `edges` decides (see shownStyle). */
+    style: DisplayStyle;
+    /** The whole model drawn see-through, in the shaded styles. */
+    seeThrough: boolean;
+    /** Hidden edges in Hidden lines visible (System Options > Display: Hidden edges displayed as). */
+    hiddenEdges: 'dashed' | 'solid';
     grid: boolean;
     background: string;
     transition: ViewTransition;
@@ -202,6 +220,9 @@ export const DEFAULT_SETTINGS: StudioSettings = {
         edges: true,
         edgeColor: '#000000',
         edgeOpacity: 0.35,
+        style: 'shadedEdges',
+        seeThrough: false,
+        hiddenEdges: 'dashed',
         grid: true,
         background: '#04060b',
         transition: 'normal',
@@ -379,6 +400,9 @@ export function normaliseSettings(raw: unknown, base: StudioSettings = DEFAULT_S
             edges: bool(display.edges, d.display.edges),
             edgeColor: colour(display.edgeColor, d.display.edgeColor),
             edgeOpacity: num(display.edgeOpacity, d.display.edgeOpacity, 0, 1),
+            style: pick(display.style, DISPLAY_STYLE_IDS, d.display.style),
+            seeThrough: bool(display.seeThrough, d.display.seeThrough),
+            hiddenEdges: pick(display.hiddenEdges, ['dashed', 'solid'] as const, d.display.hiddenEdges),
             grid: bool(display.grid, d.display.grid),
             background: colour(display.background, d.display.background),
             transition: pick(display.transition, ['off', 'fast', 'normal', 'slow'] as const, d.display.transition),

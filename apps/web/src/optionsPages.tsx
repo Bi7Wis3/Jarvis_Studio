@@ -2,9 +2,10 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import {
-    EFFORTS, LIGHTING_PRESETS, MAX_LIGHTS, type DirectionalLight, type Effort, type Lightformer, type StudioSettings,
-    type StudioSettingsView,
+    EFFORTS, LIGHTING_PRESETS, MAX_LIGHTS, shownStyle, type DirectionalLight, type DisplayStyle, type Effort, type Lightformer,
+    type StudioSettings, type StudioSettingsView,
 } from '@jarvis/core/settings';
+import { DISPLAY_STYLES } from './displayStyle';
 import { testAiConnection, type AiTestResult } from './options';
 import { changeDefault, defaultsOf, DEFAULTS_TOOLS, shownDefaults } from './optionsDefaults';
 import type { Draft, PageId } from './optionsDraft';
@@ -312,9 +313,13 @@ export function UnitsPage({ draft, setDraft }: PageProps) {
     );
 }
 
+/** Shaded with edges and Shaded: the two styles Show model edges switches between. */
+const shadedPair = (style: DisplayStyle): boolean => style === 'shadedEdges' || style === 'shaded';
+
 export function DisplayPage({ draft, setDraft, onPage }: PageProps) {
     const d = draft.settings.display;
     const set = (patch: Partial<typeof d>) => setDraft(withCategory(draft, 'display', { ...d, ...patch }));
+    const style = shownStyle(d);
     return (
         <>
             <Section title="Model display">
@@ -346,8 +351,29 @@ export function DisplayPage({ draft, setDraft, onPage }: PageProps) {
                     <button type="button" className="op-link" onClick={() => onPage('lighting')}>Lighting</button>.
                 </Note>
             </Section>
+            <Section title="Display style">
+                <Choice
+                    label="Display style"
+                    value={style}
+                    options={DISPLAY_STYLES.map((s): [DisplayStyle, string] => [s.id, s.label])}
+                    onChange={(next) => set({ style: next, ...(shadedPair(next) ? { edges: next === 'shadedEdges' } : {}) })}
+                />
+                <Check label="See-through model (shaded styles)" value={d.seeThrough} onChange={(seeThrough) => set({ seeThrough })} />
+                <Choice
+                    label="Hidden edges displayed as"
+                    value={d.hiddenEdges}
+                    options={[['dashed', 'Dashed'], ['solid', 'Solid']]}
+                    onChange={(hiddenEdges) => set({ hiddenEdges })}
+                />
+                <Note>Hidden edges are the ones behind the model in Hidden lines visible. The style is on the View toolbar too.</Note>
+            </Section>
             <Section title="Edges and grid">
-                <Check label="Show model edges" value={d.edges} onChange={(edges) => set({ edges })} />
+                <Check
+                    label="Show model edges (Shaded with edges)"
+                    value={d.edges}
+                    disabled={!shadedPair(style)}
+                    onChange={(edges) => set({ edges, style: edges ? 'shadedEdges' : 'shaded' })}
+                />
                 <ColourRow label="Edge colour" value={d.edgeColor} onChange={(edgeColor) => set({ edgeColor })} />
                 <NumberRow label="Edge opacity" value={d.edgeOpacity} min={0} max={1} onChange={(edgeOpacity) => set({ edgeOpacity })} />
                 <Check label="Show the ground grid" value={d.grid} onChange={(grid) => set({ grid })} />

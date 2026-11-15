@@ -61,6 +61,7 @@ import { twoDToThreeDTools } from './sketch2d3dForms';
 import { askDiscard } from './sketchBar';
 import { primitiveEditor, primitiveFeatureTools } from './primitiveToolDefs';
 import { hiddenStepsNow } from './stepVisibility';
+import { displayStyleTools } from './displayStyleTools';
 
 export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
@@ -2441,13 +2442,6 @@ const perspectiveTool: ToolDef = {
     },
     active: (_, s) => s.perspective,
 };
-const edgesTool: ToolDef = {
-    id: 'edges',
-    label: 'Edges',
-    icon: 'edges',
-    instant: () => useStudio.setState((s) => ({ edges: !s.edges })),
-    active: (_, s) => s.edges,
-};
 const labelsTool: ToolDef = {
     id: 'labels',
     label: 'Labels',
@@ -2621,7 +2615,7 @@ export const PART_GROUPS: ToolGroup[] = [
     { id: 'reference', label: 'Reference geometry', short: 'Planes', icon: 'ref-plane', collapse: 2, tools: referenceTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [linearPatternTool, circularPatternTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
-    { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, edgesTool, perspectiveTool, othersTool, sketchesTool, sketchVisibilityTool] },
+    { id: 'view', label: 'View', icon: 'views', collapse: 3, tools: [viewsTool, fitTool, gridTool, ...displayStyleTools, perspectiveTool, othersTool, sketchesTool, sketchVisibilityTool] },
     { id: 'inspect', label: 'Inspect', icon: 'check', collapse: 1, tools: [checkTool, ...evaluateTools] },
     { id: 'history', label: 'History', icon: 'undo', tools: historyTools },
 ];
@@ -2642,7 +2636,7 @@ export const SKETCH_GROUPS: ToolGroup[] = [
     { id: 'dimensions', label: 'Dimensions', icon: 'dimension', collapse: 3.5, tools: constrainTools.filter(isDimensionTool) },
     { id: 'relations', label: 'Relations', icon: 'c-coincident', collapse: 3, tools: constrainTools.filter((t) => !isDimensionTool(t)) },
     { id: 'view', label: 'View and snaps', short: 'View', icon: 'views', collapse: 1,
-        tools: [viewsTool, fitTool, perspectiveTool, othersTool, ...sketchTools(SKETCH_SETUP), ...sketchToggleTools, rapidSketchTool] },
+        tools: [viewsTool, fitTool, perspectiveTool, othersTool, ...sketchTools(SKETCH_SETUP), ...sketchToggleTools, rapidSketchTool, ...displayStyleTools] },
     { id: '2d-to-3d', label: '2D to 3D', short: '2D to 3D', icon: 'add-front', collapse: 0, tools: twoDToThreeDTools },
     { id: 'history', label: 'History', icon: 'undo', tools: sketchHistoryTools },
 ];
@@ -2652,7 +2646,7 @@ export const ASSEMBLY_GROUPS: ToolGroup[] = [
     { id: 'transform', label: 'Transform', icon: 'move', collapse: 4, tools: transformTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool, explodeTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },
-    { id: 'view', label: 'View', icon: 'views', collapse: 5, tools: [viewsTool, fitTool, gridTool, edgesTool, perspectiveTool, labelsTool] },
+    { id: 'view', label: 'View', icon: 'views', collapse: 5, tools: [viewsTool, fitTool, gridTool, ...displayStyleTools, perspectiveTool, labelsTool] },
     { id: 'export', label: 'Export', icon: 'stl', collapse: 1, tools: exportTools },
     { id: 'history', label: 'History', icon: 'undo', tools: historyTools },
 ];

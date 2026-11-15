@@ -29,6 +29,8 @@ const FAMILIES: (ToolFamily & { tools: string[] })[] = [
     { id: 'sk-convert', label: 'Convert entities', tools: ['sk-convert', 'sk-intersection', 'sk-silhouette', 'sk-pierce', 'sk-copy-model'] },
     { id: 'sk-dim', label: 'Smart dimension', tools: ['sk-dimension', 'sk-dim-horizontal', 'sk-dim-vertical', 'sk-dim-ordinate', 'sk-dim-ordinate-v', 'sk-dim-path', 'sk-dim-ordinate-auto', 'sk-dim-running'] },
     { id: 'primitive', label: 'Primitives', tools: ['prim-box', 'prim-cylinder', 'prim-sphere', 'prim-cone', 'prim-torus', 'prim-tube', 'prim-wedge', 'prim-capsule'] },
+    { id: 'display-style', label: 'Display style', tools: ['display-shadedEdges', 'display-shaded', 'display-hiddenRemoved', 'display-hiddenVisible',
+        'display-wireframe', 'display-see-through'] },
 ];
 
 const RELATIONS: ToolFamily = { id: 'relation', label: 'Add relation' };

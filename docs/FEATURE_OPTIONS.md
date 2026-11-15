@@ -418,8 +418,11 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
   dialog.
 - [x] Perspective on/off (View > Perspective): off is a flat, parallel view. Sketching and the 3D view each keep
   their own choice; sketching is flat unless turned on, the 3D view has perspective unless turned off.
-- [ ] Display styles: shaded with edges, shaded, hidden lines removed, hidden lines visible, wireframe; hide/show
-  items (planes, axes, sketches, bodies, components).
+- [~] Display styles: shaded with edges, shaded, hidden lines removed, hidden lines visible (hidden edges grey,
+  dashed or solid), wireframe, with the outline of curved faces, and the whole model see-through; a flyout on the
+  View toolbar and the Options page's Display page, saved with the display settings (SolidWorks sets no default
+  shortcut keys for them). Still open: hide/show items (planes, axes, sketches, components); tangent edges as
+  phantom or removed.
 - [x] Sketch visibility: a sketch a feature is built from is hidden when the feature is confirmed (its eye shows it
   again; a further feature from it hides it again); an unused sketch stays shown. A shown sketch draws all of its
   curves, construction lines dashed and its points, in the part workspace and in the assembly (in its part's

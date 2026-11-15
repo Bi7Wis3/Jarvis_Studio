@@ -11,7 +11,7 @@ import {
 import { explodeOffsets, shapeHalfExtents, type Part, type Project, type Vec3 } from '@jarvis/core';
 import { buildGeometry, instanceTransforms } from '@jarvis/core/geometry';
 import { layoutLabels } from './Labels';
-import { useKernelMesh, useMeshByKey, type KernelMesh } from './meshes';
+import { useKernelMesh, type KernelMesh } from './meshes';
 import { edgeSegments, faceSoup, nearestEdge, pixelSize, type P3, type PickedEntity } from './picking';
 import { clearPicked, pickEntity, select, setWorkspace, useStudio } from './state';
 import { chooseFace, sketchWasDiscarded, useSketcher } from './sketcher';
@@ -33,6 +33,9 @@ import { SketchViewMode, sketchCanvas, usePlainSketchView, useSketchView } from 
 import { CosmeticMarks, SEE_THROUGH, useBodyDisplay } from './bodyView';
 import { easeOnce, SceneLook, transitionTimes, useDisplay } from './sceneLook';
 import { useOptions } from './options';
+import { GhostPart } from './previewGhost';
+import { faceMaterial, styleLook, useDisplayStyle } from './displayStyle';
+import { ModelLines } from './modelLines';
 
 export { anim };
 
@@ -42,8 +45,6 @@ const SELECT_COLOR = '#c48bff';
 const CLICK_SLOP_PX = 4;
 /** The entity of a selection box row under the pointer (SolidWorks highlights it in the view). */
 const ROW_HOVER_COLOR = '#ff6fcf';
-/** Colour of the ghost that shows what an open tool form would make. */
-const GHOST_COLOR = '#ffd34d';
 const NO_OFFSET: Vec3 = [0, 0, 0];
 /** A pointer this close (screen pixels) to an edge picks the edge rather than the face under it. */
 const EDGE_PICK_PX = 6;
@@ -432,49 +433,6 @@ function CursorTracker() {
 
 const noRaycast = () => null;
 
-/**
- * What an open tool form would make of a part, as a see-through copy over the untouched model: its surface where it
- * sticks out, and all its edges (also the ones inside the model, so a cut or a fillet shows). Never clickable.
- */
-function GhostPart({ part, meshKey, offset }: { part: Part; meshKey: string | null; offset: Vec3 }) {
-    const group = useRef<Group>(null);
-    const committed = useStudio((s) => s.meshes.keys[part.id] ?? null);
-    const kernel = useMeshByKey(meshKey ?? committed);
-    const placeholder = useMemo(() => buildGeometry(part.shape), [JSON.stringify(part.shape)]);
-    const instances = useMemo(() => instanceTransforms(part), [JSON.stringify(part.repeat)]);
-    useEffect(() => () => placeholder.dispose(), [placeholder]);
-    useFrame(() => {
-        group.current?.position.set(offset[0] * anim.explode, offset[1] * anim.explode, offset[2] * anim.explode);
-    });
-    const rotation = part.rotation.map(MathUtils.degToRad) as Vec3;
-    return (
-        <group ref={group}>
-            {instances.map((matrix, i) => (
-                <group key={i} matrix={matrix} matrixAutoUpdate={false}>
-                    <mesh geometry={kernel?.surface ?? placeholder} position={part.position} rotation={rotation} raycast={noRaycast} renderOrder={3}>
-                        {/* Pushed a hair back, so where the ghost matches the model the model shows, untinted. */}
-                        <meshBasicMaterial
-                            color={GHOST_COLOR}
-                            transparent
-                            opacity={0.3}
-                            depthWrite={false}
-                            side={DoubleSide}
-                            polygonOffset
-                            polygonOffsetFactor={1}
-                            polygonOffsetUnits={2}
-                        />
-                    </mesh>
-                    {kernel && (
-                        <lineSegments geometry={kernel.edges} position={part.position} rotation={rotation} raycast={noRaycast} renderOrder={4}>
-                            <lineBasicMaterial color={GHOST_COLOR} transparent opacity={0.6} depthTest={false} />
-                        </lineSegments>
-                    )}
-                </group>
-            ))}
-        </group>
-    );
-}
-
 function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: boolean }) {
     const sketching = useStudio((s) => s.mode === 'sketch');
     const placingDecal = useStudio((s) => !!s.placingDecal);
@@ -487,7 +445,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
     const instances = useMemo(() => instanceTransforms(part), [JSON.stringify(part.repeat)]);
     // The part workspace shows only the part being edited at full strength, so it needs no selection glow.
     const selected = useStudio((s) => s.selected === part.id && s.workspace !== 'part');
-    const showEdges = useStudio((s) => s.edges);
+    const look = styleLook(useDisplayStyle(), { sketching, dimmed });
     const [hovered, setHovered] = useState(false);
     // Face and edge picking: the active part in the part workspace, in plain select mode (sketching and decal
     // placement use clicks on the part themselves). Hover stays local so a mouse move re-renders only this part.
@@ -660,21 +618,19 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                         geometry={geometry}
                         position={part.position}
                         rotation={rotation}
-                        castShadow={!sketching}
+                        castShadow={!sketching && look.faces === 'shaded'}
                         receiveShadow
                         userData={{ partId: part.id }}
                         {...handlers}
                     >
-                        <PartDecals part={part} />
+                        {look.faces === 'shaded' && <PartDecals part={part} />}
                         <meshPhysicalMaterial
                             color={m.color}
                             metalness={m.metalness}
                             roughness={m.roughness}
                             emissive={highlight ? SELECT_COLOR : m.emissive ?? '#000000'}
                             emissiveIntensity={plain ? 0 : highlight || (m.emissiveIntensity ?? 1)}
-                            transparent={opacity < 1}
-                            opacity={opacity}
-                            depthWrite={opacity >= 1}
+                            {...faceMaterial(look, opacity)}
                             side={DoubleSide}
                             clearcoat={plain ? 0 : m.clearcoat ?? (m.metalness > 0.5 ? 0.3 : 0)}
                             clearcoatRoughness={0.15}
@@ -682,7 +638,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                             thickness={m.transmission ? 2 : 0}
                         />
                     </mesh>
-                    {bodyDisplay.seeThrough && (
+                    {bodyDisplay.seeThrough && look.faces === 'shaded' && (
                         <mesh geometry={bodyDisplay.seeThrough} position={part.position} rotation={rotation} raycast={noRaycast} renderOrder={1}>
                             <meshPhysicalMaterial
                                 color={m.color}
@@ -699,15 +655,10 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                         <CosmeticMarks geometry={bodyDisplay.marks} dimmed={dimmed} />
                         {bodyDisplay.highlight && <PickOverlay faces={bodyDisplay.highlight} edges={null} strong={false} />}
                     </group>
-                    {edges && !dimmed && (selected || (kernel && (showEdges || sketching))) && (
-                        <lineSegments geometry={edges} position={part.position} rotation={rotation} raycast={noRaycast}>
-                            <lineBasicMaterial
-                                color={selected ? SELECT_COLOR : sketching ? '#9fb4d0' : edgeLook.edgeColor}
-                                transparent
-                                opacity={selected ? 1 : sketching ? 0.45 : edgeLook.edgeOpacity}
-                                depthWrite={!sketching}
-                            />
-                        </lineSegments>
+                    {edges && !dimmed && (selected || (kernel && (look.edges !== 'none' || sketching))) && (
+                        <ModelLines edges={edges} kernel={kernel} surface={geometry} look={look} sketching={sketching}
+                            color={selected ? SELECT_COLOR : undefined} edgeColor={edgeLook.edgeColor} edgeOpacity={edgeLook.edgeOpacity}
+                            hovered={!!highlight} position={part.position} rotation={rotation} />
                     )}
                     {pickable && (
                         <group position={part.position} rotation={rotation}>
@@ -1160,7 +1111,7 @@ export function Scene({ project }: { project: Project }) {
                 return <PartMesh key={part.id} part={part} offset={offsets[part.id] ?? NO_OFFSET} dimmed={look === 'dimmed'} />;
             })}
             {ghosts.map((part) => (
-                <GhostPart key={part.id} part={part} meshKey={preview?.keys[part.id] ?? null} offset={offsets[part.id] ?? NO_OFFSET} />
+                <GhostPart key={part.id} part={part} offset={offsets[part.id] ?? NO_OFFSET} />
             ))}
             <SketchSteps
                 part={(workspace === 'part' && project.parts.find((p) => p.id === activePart)) || null}
