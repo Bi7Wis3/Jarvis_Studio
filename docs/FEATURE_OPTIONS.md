@@ -93,13 +93,18 @@ Fillet
 - [~] Blends the kernel's builder gives up on (constant radius): a closed loop of edges, such as the rim of a hole
   leaving a curved or lofted surface at a shallow angle with a face edge ending on the rim, is rolled section by
   section (loopBlend.ts); straight edges between flat faces that end on an earlier, smaller fillet or chamfer run
-  out into it (runoutBlend.ts). A failure names the place and the cause, and calls the size too large only when a
-  tenth of it works. Not yet: open chains on curved faces, variable radius.
+  out into it (runoutBlend.ts); inside corners between flat faces along straight edges are filled with the round's
+  material where the faces end square across the corner (else the kernel's failure stands). A result of the kernel's
+  that takes material away at inside corners, or adds it at outside edges, is refused. Tangent propagation follows an
+  edge on only where the faces beside it carry on too (not from an inside corner into the outside edge in line with
+  it). A failure names the place and the cause, and calls the size too large only when a tenth of it works. Not yet:
+  open chains on curved faces, variable radius.
 
 Chamfer
 - [x] Equal distance on an edge group.
 - [~] As for fillets: closed loops chamfered section by section, straight edges between flat faces run out into an
-  earlier smaller blend. Not yet: a mitre where a loop bends towards one face (refused with the place).
+  earlier smaller blend, inside corners filled, wrong-way results refused, tangent propagation as for fillets. Not
+  yet: a mitre where a loop bends towards one face (refused with the place).
 - [ ] Selected edges, faces, features and loops; tangent propagation; previews.
 - [ ] Types: angle-distance, distance-distance (symmetric or asymmetric), vertex (three distances or equal),
   offset face (multi-distance), face-face (symmetric, asymmetric, chord width, hold line); flip direction.

@@ -3,6 +3,7 @@ import opencascade from 'replicad-opencascadejs';
 import { makeBox, measureArea, measureVolume, setOC, type Shape3D } from 'replicad';
 import { chamferEdges, draftFaces, filletEdges, filletFaces, shellFaces } from './applied.js';
 import { distanceToShape, resolveEdges, resolveFaces } from './refs.js';
+import { insideCorner, runoutBlend } from './runoutBlend.js';
 
 const SLOW = 120_000;
 const BOX = 40 * 10 * 20;
@@ -77,6 +78,44 @@ describe('chamferEdges', () => {
         within(measureVolume(angled), measureVolume(two), 0.001);
         expect(distanceToShape([20, 10, 2.5], angled)).toBeLessThan(1e-6);
     });
+});
+
+describe('inside corners', () => {
+    // A wall on the left half of the block, overhanging its front: along y = 10, z = 0 the line is an inside corner
+    // (block front and wall underside) for x 0..20 and the block's outside top edge for x 20..40.
+    const walled = (wall: Shape3D): Shape3D => makeBox([0, 0, 0], [40, 10, 10]).fuse(wall);
+    const square = () => walled(makeBox([0, 10, -10], [20, 20, 10]));
+
+    it('tells inside corners from outside edges', () => {
+        const body = square();
+        expect(insideCorner(body, resolveEdges(body, [[10, 10, 0]])[0])).toBe(true);
+        expect(insideCorner(body, resolveEdges(body, [[30, 10, 0]])[0])).toBe(false);
+    }, SLOW);
+
+    it('fills an inside corner with the chamfer or round, ending square where the faces do', () => {
+        const body = square();
+        const v = measureVolume(body);
+        const edges = resolveEdges(body, [[10, 10, 0]], { tangent: true });
+        const chamfer = runoutBlend(body, edges, { kind: 'chamfer', distances: [2, 2] });
+        expect(chamfer).not.toBeNull();
+        expect(measureVolume(chamfer!) - v).toBeCloseTo((2 * 2) / 2 * 20, 6);
+        const round = runoutBlend(body, edges, { kind: 'fillet', radius: 2 });
+        expect(round).not.toBeNull();
+        expect(measureVolume(round!) - v).toBeCloseTo((4 - Math.PI) * 20, 6);
+        // The round meets both faces tangentially: its surface passes 2 (sqrt 2 - 1) mm from the corner line.
+        expect(distanceToShape([10, 10 - 2 * (1 - Math.SQRT1_2), -2 * (1 - Math.SQRT1_2)], round!)).toBeLessThan(1e-6);
+        within(measureVolume(chamferEdges(body, edges, { distance: 2 })) - v, 40, 1e-6);
+    }, SLOW);
+
+    it('is not filled square where the corner ends against a slanted face', () => {
+        // The wall's end leans 45 degrees, so the inside corner ends along a slanted line, not square.
+        const cutter = makeBox([20, 0, -40], [80, 40, 40]).rotate(45, [20, 10, 0], [0, 1, 0]);
+        const body = walled(makeBox([0, 10, -10], [30, 20, 10]).cut(cutter));
+        const edges = resolveEdges(body, [[5, 10, 0]], { tangent: true });
+        expect(edges).toHaveLength(1);
+        expect(insideCorner(body, edges[0])).toBe(true);
+        expect(runoutBlend(body, edges, { kind: 'chamfer', distances: [2, 2] })).toBeNull();
+    }, SLOW);
 });
 
 describe('shellFaces', () => {

@@ -135,10 +135,35 @@ function edgeEnds(edge: Edge): EdgeEnd[] | null {
     }
 }
 
-/** All edges joined to the seeds through vertices where the two edges continue in the same direction (within 1°). */
-function tangentChain(all: Edge[], seeds: Edge[]): Edge[] {
+/**
+ * All edges joined to the seeds through vertices where the two edges continue in the same direction (within 1°) and
+ * the faces along them carry on too: each face beside the one edge has a face beside the other with the same normal
+ * at the vertex. An edge that only runs on in a straight line, like the outside edge of a boss carrying on from the
+ * inside corner where the boss meets the body, is not part of the chain (a blend could not run on smoothly there).
+ */
+export function tangentChain(shape: Shape3D, all: Edge[], seeds: Edge[]): Edge[] {
     const ends = all.map(edgeEnds);
     const index = (edge: Edge): number => all.findIndex((e) => e.isSame(edge));
+    const faces = shape.faces;
+    const faceEdges: Edge[][] = [];
+    const besides = new Map<number, Face[]>();
+    const facesBeside = (i: number): Face[] => {
+        let found = besides.get(i);
+        if (!found) {
+            found = faces.filter((face, k) => (faceEdges[k] ??= face.edges).some((e) => e.isSame(all[i])));
+            besides.set(i, found);
+        }
+        return found;
+    };
+    const facesCarryOn = (i: number, j: number, at: V): boolean => {
+        const [a, b] = [facesBeside(i), facesBeside(j)];
+        if (a.length === 0 || b.length === 0) {
+            return true;
+        }
+        const normals = (list: Face[]) => list.map((face) => normalOf(face, at)).filter((n): n is V => !!n);
+        const [na, nb] = [normals(a), normals(b)];
+        return na.every((n) => nb.some((m) => dot(n, m) >= SMOOTH_COS)) && nb.every((m) => na.some((n) => dot(n, m) >= SMOOTH_COS));
+    };
     const inChain = new Set<number>(seeds.map(index).filter((i) => i >= 0));
     const queue = [...inChain];
     while (queue.length > 0) {
@@ -149,7 +174,8 @@ function tangentChain(all: Edge[], seeds: Edge[]): Edge[] {
                     continue;
                 }
                 // Smooth continuation: the other edge leaves the shared vertex opposite to how this one arrives.
-                if ((ends[j] ?? []).some((b) => dist(a.point, b.point) < SAME_POINT && dot(a.out, b.out) <= -SMOOTH_COS)) {
+                if ((ends[j] ?? []).some((b) => dist(a.point, b.point) < SAME_POINT && dot(a.out, b.out) <= -SMOOTH_COS)
+                    && facesCarryOn(i, j, a.point)) {
                     inChain.add(j);
                     queue.push(j);
                 }
@@ -186,7 +212,7 @@ export function resolveEdges(shape: Shape3D, picks: Vec3[], options: ResolveOpti
         found.push(all[best]);
     });
     const picked = uniqueBySame(found);
-    return options.tangent ? tangentChain(all, picked) : picked;
+    return options.tangent ? tangentChain(shape, all, picked) : picked;
 }
 
 // ---- Faces --------------------------------------------------------------------------------------------------

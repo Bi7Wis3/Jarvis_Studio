@@ -21,7 +21,7 @@
 import { cast, getOC, measureVolume, Plane, type ChamferRadius, type Edge, type Face, type Shape3D } from 'replicad';
 import type { Vec3 } from '@jarvis/core';
 import { blendLoop, closedLoops, LoopBlendError, type LoopBlend } from './loopBlend.js';
-import { runoutBlend, type RunoutBlend } from './runoutBlend.js';
+import { insideCorner, runoutBlend, type RunoutBlend } from './runoutBlend.js';
 
 /**
  * A fillet or chamfer that could not be made. `tooLarge`: OpenCascade does make it at a tenth of the size, so the size
@@ -186,7 +186,11 @@ function blendWithFallbacks(shape: Shape3D, edges: Edge[], label: string, kernel
     loop: LoopBlend | null, runout: RunoutBlend | null): Shape3D {
     let first: unknown;
     try {
-        return kernel(1);
+        const made = kernel(1);
+        if (blendGoesTheRightWay(shape, edges, made)) {
+            return made;
+        }
+        first = new Error('OpenCascade made a blend that takes material away at inside corners, or adds it at outside edges');
     } catch (e) {
         first = e;
     }
@@ -231,6 +235,20 @@ function blendWithFallbacks(shape: Shape3D, edges: Edge[], label: string, kernel
         + `at a tenth of the size either, so the size is not the cause${angles ? `: along these edges the faces meet at `
         + `${round1(angles[0])}° to ${round1(angles[1])}°` : ''}. Blends where faces meet nearly tangentially or at a knife `
         + 'edge, or where another face edge ends on the selected edges there, are the usual trouble; try picking fewer edges', false);
+}
+
+/**
+ * A blend only adds material at inside corners and only removes it at outside edges. OpenCascade sometimes returns a
+ * valid solid that does the opposite (a round in an inside corner that cuts into the body); such a result is refused.
+ * Edges of both kinds together are not judged.
+ */
+function blendGoesTheRightWay(shape: Shape3D, edges: Edge[], made: Shape3D): boolean {
+    const kinds = edges.map((e) => insideCorner(shape, e));
+    if (kinds.some((k) => k === null) || (kinds.some((k) => k) && kinds.some((k) => !k))) {
+        return true;
+    }
+    const change = measureVolume(made) - measureVolume(shape);
+    return kinds[0] ? change > 0 : change < 0;
 }
 
 /** The edges of `shape` at the same places as `edges` (after an earlier loop's blend rebuilt the body). */

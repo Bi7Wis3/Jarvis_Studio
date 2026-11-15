@@ -41,6 +41,19 @@ describe('resolveEdges', () => {
         // 4 straight edges + 4 arcs of the top outline; the vertical seams meet them at right angles.
         expect(resolveEdges(rounded, [[20, 10, 0]], { tangent: true })).toHaveLength(8);
     });
+
+    it('does not run on into the outside edge that carries on from an inside corner in a straight line', () => {
+        // A wall on the left half of the block, overhanging its front: along y = 10, z = 0 the line is an inside corner
+        // (block front and wall underside) for x 0..20 and the block's outside top edge for x 20..40.
+        const block = makeBox([0, 0, 0], [40, 10, 10]);
+        const wall = makeBox([0, 10, -10], [20, 20, 10]);
+        const body = block.fuse(wall);
+        const inside = resolveEdges(body, [[10, 10, 0]], { tangent: true });
+        expect(inside).toHaveLength(1);
+        expect(inside[0].length).toBeCloseTo(20, 6);
+        expect(resolveEdges(body, [[30, 10, 0]], { tangent: true })).toHaveLength(1);
+        expect(() => body.chamfer(2, (e) => e.inList(inside))).not.toThrow();
+    }, SLOW);
 });
 
 describe('resolveFaces', () => {
