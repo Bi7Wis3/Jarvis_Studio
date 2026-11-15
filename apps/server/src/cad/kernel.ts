@@ -58,7 +58,7 @@ export class CadBuildError extends Error {
 
 export interface CadKernelOptions {
     /**
-     * Per-job timeout; on expiry the worker is restarted. Default 5 minutes: a part with long modelled threads takes
+     * Per-job timeout; on expiry the worker is restarted. Default 15 minutes: a part with long modelled threads takes
      * more than a minute to build from nothing (after a server restart, when no step is cached yet), and a limit
      * below that makes it fail every time.
      */
@@ -100,7 +100,7 @@ export class CadKernel {
     private nextId = 1;
 
     private constructor(options: CadKernelOptions) {
-        this.timeoutMs = options.timeoutMs ?? (Number(process.env.JARVIS_CAD_TIMEOUT_MS) || 300_000);
+        this.timeoutMs = options.timeoutMs ?? (Number(process.env.JARVIS_CAD_TIMEOUT_MS) || 900_000);
         this.cacheSize = options.cacheSize ?? 500;
     }
 
