@@ -101,16 +101,53 @@ describe('a thread hidden in the view', () => {
         expect(shown.bodies).toEqual([{ key: 'base', by: 't' }]);
         const mesh = meshSolid(shown.shape!);
         expect(mesh.triFace.length).toBe(meshSolid(plain.shape!).triFace.length);
-        // Circles at both ends and lines along it, all at the major radius (5 mm plus half the hole tolerance) about X.
+        // One helix on the hole's own surface (lifted 0.02 mm into the hole) from its mouth (x = 10) for the 12 mm
+        // of the thread, a turn per 1.5 mm, all of it one line.
         const lines = mesh.cosmetic!;
         expect(lines.length).toBeGreaterThan(0);
         expect(mesh.cosmeticBody).toHaveLength(lines.length / 6);
-        const radius = (10 + DEFAULT_PRINT.holeTolerance) / 2;
+        const radius = (8 + DEFAULT_PRINT.holeTolerance) / 2 - 0.02;
         for (let i = 0; i < lines.length; i += 3) {
             expect(Math.hypot(lines[i + 1], lines[i + 2])).toBeCloseTo(radius, 4);
         }
         const xs = [...lines].filter((_, i) => i % 3 === 0);
-        expect(Math.max(...xs)).toBeGreaterThan(10);
-        expect(Math.min(...xs)).toBeLessThan(10 - 11.5);
+        expect(Math.max(...xs)).toBeCloseTo(10, 6);
+        expect(Math.min(...xs)).toBeCloseTo(-2, 6);
+        for (let i = 6; i < lines.length; i += 6) {
+            expect(Math.hypot(lines[i] - lines[i - 3], lines[i + 1] - lines[i - 2], lines[i + 2] - lines[i - 1])).toBeLessThan(1e-6);
+        }
+        let turned = 0;
+        for (let i = 0; i < lines.length; i += 6) {
+            const [a, b] = [Math.atan2(lines[i + 2], lines[i + 1]), Math.atan2(lines[i + 5], lines[i + 4])];
+            turned += Math.atan2(Math.sin(b - a), Math.cos(b - a));
+        }
+        expect(Math.abs(turned) / (2 * Math.PI)).toBeCloseTo(12 / 1.5, 3);
+    }, SLOW);
+
+    it('draws the helix only on the hole\'s surface, up to where the hole comes out through a slanted face', () => {
+        // The far top edge cut off at 45 degrees, 12 mm deep: the hole comes out through that face (y - x = 8).
+        const slanted: Feature[] = [{ id: 's', op: 'chamfer', size: 12, at: [[-10, 10, 0]] }, ...drilled,
+            { id: 't', name: 'Thread1', op: 'thread', kind: 'internal', at: [10, 4.1, 0], diameter: 10, pitch: 1.5, length: 30 }];
+        const view = viewPart({ ...block, features: slanted }, 'p1', { hiddenSketches: ['p1/t'] });
+        const shown = buildPartial(view, DEFAULT_PRINT);
+        expect(shown.error).toBeNull();
+        const lines = meshSolid(shown.shape!).cosmetic!;
+        expect(lines.length).toBeGreaterThan(0);
+        const radius = (8 + DEFAULT_PRINT.holeTolerance) / 2;
+        let past = -Infinity;
+        let far = Infinity;
+        for (let i = 0; i < lines.length; i += 3) {
+            const [x, y, z] = [lines[i], lines[i + 1], lines[i + 2]];
+            expect(Math.abs(Math.hypot(y, z) - (radius - 0.02))).toBeLessThan(1e-4);
+            expect(x).toBeGreaterThan(-10 - 1e-6);
+            expect(x).toBeLessThan(10 + 1e-6);
+            // On the hole's surface (the point taken out to it), on the part's side of the slanted face.
+            past = Math.max(past, (y * radius) / (radius - 0.02) - x);
+            far = Math.min(far, x);
+        }
+        expect(past).toBeLessThan(8 + 1e-3);
+        expect(past).toBeGreaterThan(8 - 0.01);
+        // It runs on into the last turn before the far face (x = -10), below the slant, where the hole's wall does.
+        expect(far).toBeLessThan(-8.5);
     }, SLOW);
 });

@@ -281,12 +281,23 @@ export function markSegments(mark: ThreadMark): number[] {
     return out;
 }
 
-/** The marks of the cosmetic threads among `ghosts`, as line segments with the body each lies on. */
+/**
+ * The marks of the cosmetic threads among `ghosts`, as line segments with the body each lies on: the helix a thread
+ * step draws on its hole's or shaft's surface (see ThreadGhost.spiral), else circles and lines where it runs.
+ */
 export function cosmeticMarks(shape: Shape3D | null, ghosts: ThreadGhost[]): { lines: Float32Array; body: Uint32Array } | null {
     const marks: ThreadMark[] = [];
+    const spirals: { mark: ThreadMark; segments: number[] }[] = [];
     const seen = new Set<string>();
     for (const ghost of ghosts.filter(isCosmetic)) {
         const mark = threadMark(ghost);
+        if (ghost.spiral) {
+            const segments = ghost.spiral.flatMap((line) => line.slice(1).flatMap((p, i) => [...line[i], ...p]));
+            if (segments.length) {
+                spirals.push({ mark, segments });
+            }
+            continue;
+        }
         // Every start of a multi-start thread has its own ghost on the same cylinder.
         const key = JSON.stringify([mark.origin, mark.axis, mark.radius, mark.low, mark.high].flat().map((v) => Math.round(v * 1e6)));
         if (!seen.has(key)) {
@@ -294,7 +305,7 @@ export function cosmeticMarks(shape: Shape3D | null, ghosts: ThreadGhost[]): { l
             marks.push(mark);
         }
     }
-    if (!marks.length) {
+    if (!marks.length && !spirals.length) {
         return null;
     }
     const solids = shape ? shape.solids : [];
@@ -302,11 +313,12 @@ export function cosmeticMarks(shape: Shape3D | null, ghosts: ThreadGhost[]): { l
     release(solids);
     const lines: number[] = [];
     const body: number[] = [];
-    for (const mark of marks) {
+    for (const { mark, segments } of [...marks.map((m) => ({ mark: m, segments: markSegments(m) })), ...spirals]) {
         const middle = [0, 1, 2].map((k) => mark.origin[k] + mark.axis[k] * (mark.low + mark.high) / 2) as Vec3;
         const index = Math.max(0, boxes.findIndex((box) => contains(box, middle, mark.radius)));
-        const segments = markSegments(mark);
-        lines.push(...segments);
+        for (let i = 0; i < segments.length; i++) {
+            lines.push(segments[i]);
+        }
         for (let i = 0; i < segments.length / 6; i++) {
             body.push(index);
         }

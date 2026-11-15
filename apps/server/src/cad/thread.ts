@@ -368,6 +368,11 @@ export interface ThreadGhost {
     axis: Vec3;
     /** Degrees about the axis (the start angle). */
     angle: number;
+    /**
+     * A hidden thread's mark, carried by the first ghost of its step (the others carry none): one helix per start on
+     * the surface of the hole or shaft, as polylines in the part's space, broken where that surface is not.
+     */
+    spiral?: Vec3[][];
 }
 
 /** The ghost's ridge, meshed analytically and placed on its axis. */
@@ -687,20 +692,110 @@ function wallOf(shape: Shape3D, frame: Frame, near: number, far: number, low: nu
 
 /** Walls a preview has looked at: while a value is typed it shows the same thread on the same body again and again. */
 const seen = new Map<string, Wall | null>();
+/** Surfaces hidden threads are drawn on, as `seen`: a hidden thread is drawn again on every rebuild. */
+const surfaces = new Map<string, Wall | null>();
 
-/** wallOf, kept for the next preview of the same body and place (`place`: the thread's origin, axis and angle). */
-function wallSeen(shape: Shape3D, frame: Frame, place: string, near: number, far: number, low: number, high: number, margin: number): Wall | null {
+/** The body as a key: the same body (the same step before the thread) gives the same key. */
+function bodyKey(shape: Shape3D): string {
     const box = shape.boundingBox;
     const bounds = box.bounds.flat().map((v) => v.toFixed(6)).join(',');
     box.delete();
-    const key = [shape.hashCode, shape.faces.length, measureVolume(shape).toFixed(6), bounds, place, near, far, low, high, margin].join('|');
-    if (!seen.has(key)) {
-        seen.set(key, wallOf(shape, frame, near, far, low, high, margin));
-        while (seen.size > 32) {
-            seen.delete(seen.keys().next().value as string);
+    return [shape.hashCode, shape.faces.length, measureVolume(shape).toFixed(6), bounds].join('|');
+}
+
+function keep<T>(cache: Map<string, T>, key: string, make: () => T): T {
+    if (!cache.has(key)) {
+        cache.set(key, make());
+        while (cache.size > 32) {
+            cache.delete(cache.keys().next().value as string);
         }
     }
-    return seen.get(key) ?? null;
+    return cache.get(key) as T;
+}
+
+/** wallOf, kept for the next preview of the same body and place (`place`: the thread's origin, axis and angle). */
+function wallSeen(shape: Shape3D, frame: Frame, place: string, near: number, far: number, low: number, high: number, margin: number): Wall | null {
+    return keep(seen, [bodyKey(shape), place, near, far, low, high, margin].join('|'), () => wallOf(shape, frame, near, far, low, high, margin));
+}
+
+/** Lift of a hidden thread's helix off the surface it is drawn on (into the hole, out from a shaft), so it shows. */
+const SPIRAL_LIFT = 0.02;
+
+/**
+ * A hidden thread's helix for each start (`turns`, degrees), on the ridge's own turn (lead, hand, start angle), at
+ * `radius`, from `low` to `high` along the axis, placed by `frame`. With `surface` (the material behind the hole's or
+ * shaft's surface, seen a little way in and carried on to `on`, the surface's own radius) it stops where that surface
+ * does: at a breakout, or another hole.
+ */
+function spiralLines(frame: Frame, spec: RidgeSpec, turns: number[], radius: number, surface: Wall | null, on: number,
+    low: number, high: number): Vec3[][] {
+    const lead = spec.lead ?? spec.pitch;
+    const sign = spec.leftHanded ? -1 : 1;
+    // A tenth of a radian a step, and no more than 0.25 mm along a wide helix.
+    const count = Math.max(2, Math.ceil(((high - low) / lead) * 2 * Math.PI / Math.min(0.1, 0.25 / radius)));
+    const lines: Vec3[][] = [];
+    for (const start of turns) {
+        const angleAt = (s: number): number => sign * 2 * Math.PI * ((s - spec.y0) / lead) + ((spec.turn ?? 0) + start) * (Math.PI / 180);
+        const there = (s: number): boolean => {
+            if (!surface) {
+                return true;
+            }
+            const c0 = surface.near.crossings(angleAt(s));
+            const c1 = surface.far?.crossings(angleAt(s)) ?? [];
+            const k = (on - surface.near.radius) / ((surface.far?.radius ?? on) - surface.near.radius);
+            const c = c1.length === c0.length && Number.isFinite(k) ? c0.map((v, i) => v + k * (c1[i] - v)) : c0;
+            // An opening that runs to an end of the thread takes that end too.
+            for (let i = 0; i + 1 < c.length; i += 2) {
+                if (s >= c[i] && s <= c[i + 1]) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const point = (s: number): Vec3 => {
+            const a = angleAt(s);
+            return frame.toWorld([radius * Math.cos(a), s, -radius * Math.sin(a)]);
+        };
+        /** Where the surface starts or stops between a and b, to a millionth of a millimetre along the axis. */
+        const edgeOf = (a: number, b: number): number => {
+            const was = there(a);
+            for (let k = 0; k < 40 && b - a > 1e-6; k++) {
+                const m = (a + b) / 2;
+                if (there(m) === was) {
+                    a = m;
+                } else {
+                    b = m;
+                }
+            }
+            return was ? a : b;
+        };
+        let line: Vec3[] = [];
+        let last = low;
+        let lastOn = there(low);
+        if (lastOn) {
+            line.push(point(low));
+        }
+        for (let i = 1; i <= count; i++) {
+            const s = low + ((high - low) * i) / count;
+            const now = there(s);
+            if (now !== lastOn) {
+                const edge = edgeOf(last, s);
+                line.push(point(edge));
+                if (!now) {
+                    lines.push(line);
+                    line = [];
+                }
+            }
+            if (now) {
+                line.push(point(s));
+            }
+            [last, lastOn] = [s, now];
+        }
+        if (line.length > 1) {
+            lines.push(line);
+        }
+    }
+    return lines.filter((line) => line.length > 1);
 }
 
 /**
@@ -967,7 +1062,23 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
             ? wallSeen(shape, frame, place, core, core - Math.min(0.3, core / 2), low, high, 2 * lead + 1)
             : wallSeen(shape, frame, place, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, low, high, 2 * lead + 1);
         const pieces = Array.from({ length: starts }, (_, i) => ridgePieces(spec, wall, turnOf(i))).flat();
-        return { shape, notes, ghosts: pieces.map((piece) => ({ spec: piece, origin, axis, angle: f.startAngle ?? 0 })) };
+        const ghosts: ThreadGhost[] = pieces.map((piece) => ({ spec: piece, origin, axis, angle: f.startAngle ?? 0 }));
+        if (f.cosmetic && ghosts.length) {
+            // Hidden: one helix per start drawn on the hole's or shaft's own surface, where that surface is; from a
+            // point, at the thread's major (hole) or minor (shaft) diameter.
+            const external = f.kind === 'external';
+            const inward = external ? -1 : 1;
+            const surface = picked === null ? null
+                : keep(surfaces, [bodyKey(shape), place, picked, low, high, f.kind].join('|'),
+                    () => wallOf(shape, frame, picked! + inward * 0.05, picked! + inward * 0.15, low, high));
+            const radius = picked === null ? (external ? rMaj - 0.6134 * pitch : rMaj) : picked - inward * SPIRAL_LIFT;
+            const spiral = spiralLines(frame, spec, Array.from({ length: starts }, (_, i) => turnOf(i)), radius, surface, picked ?? radius,
+                low, high);
+            ghosts.forEach((ghost, i) => {
+                ghost.spiral = i === 0 ? spiral : [];
+            });
+        }
+        return { shape, notes, ghosts };
     }
     // Every boolean below runs on the piece of the part within a cylinder about the thread, which is then sewn back to
     // the rest: on a big part the kernel otherwise compares each turn of the ridge with every large face of the part.

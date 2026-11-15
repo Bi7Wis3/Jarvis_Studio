@@ -146,9 +146,11 @@ Thread
   ghost and the real cut is made on OK. Each hole is threaded on a small piece of the part, and a rebuild after an
   edit away from the hole reuses the thread. Not yet mirror profile, rotation angle, preview options.
 - [ ] Cosmetic thread: standard, type, size, minor/major diameter, end condition (blind, through, up to next).
-- [x] Hide the thread in the view (its eye in the tree): the hole or shaft is drawn plain with cosmetic thread marks
-  (dashed circles at both ends and lines along it, at a hole's major or a shaft's minor diameter), and the thread is
-  not modelled for the view, so rebuilds are quick; STL, STEP, FreeCAD and mass properties keep the modelled thread.
+- [x] Hide the thread in the view (its eye in the tree): the hole or shaft is drawn plain with the thread as one
+  helix per start on its surface (with the thread's lead, hand and start angle, only where that surface is, so it
+  stops at the hole's ends and where it breaks out; from a point, at a hole's major or a shaft's minor diameter), and
+  the thread is not modelled for the view, so rebuilds are quick; STL, STEP, FreeCAD and mass properties keep the
+  modelled thread.
 
 Mirror (feature)
 - [x] Whole body across a base plane.
