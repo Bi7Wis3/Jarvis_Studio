@@ -2004,10 +2004,10 @@ const featureTools: Record<string, ToolDef> = {
                 show: (v) => v.start !== 'edge' || !!v.override },
             { key: 'pitch', label: 'Pitch', kind: 'number', unit: 'mm', min: 0, step: 0.05, section: 'Specification' },
             // Cut thread only removes material (hole at tap size, shaft at the major diameter); Extrude thread adds
-            // the ridges (hole at the major diameter, shaft at the root). Older threads chose by the size they found.
+            // the ridges (hole at the major diameter, shaft at the root). Automatic picks one per edge by its size, so a
+            // full-size hole gets ridges instead of an error.
             { key: 'method', label: 'Thread method', kind: 'select', section: 'Specification', show: (v) => v.start === 'edge',
-                options: opts(['cut', 'Cut thread'], ['extrude', 'Extrude thread'], ...(edited(ctx, 'thread') && !edited(ctx, 'thread')!.method
-                    ? [['auto', 'By the size of the hole or shaft (as built)'] as [string, string]] : [])) },
+                options: opts(['auto', 'Automatic (by the size of each hole or shaft)'], ['cut', 'Cut thread'], ['extrude', 'Extrude thread']) },
             { key: 'hand', label: 'Hand', kind: 'select', options: opts(['right', 'Right-hand'], ['left', 'Left-hand']), section: 'Thread options' },
             { key: 'starts', label: 'Starts', kind: 'number', min: 1, max: 8, step: 1, section: 'Thread options' },
             { key: 'trimStart', label: 'Trim with start face', kind: 'check', section: 'Thread options' },
@@ -2035,7 +2035,7 @@ const featureTools: Record<string, ToolDef> = {
                 start: 'edge', edges: [], ...vecValues('pos', [c[0], c[1] - hy, c[2]]), offset: '0',
                 startAngle: '0', end: 'blind', length: '10', revolutions: '8', kind: 'external', size: 'M8', override: false,
                 diameter: '8', pitch: '1.25', hand: 'right', starts: '1', second: false, length2: '5',
-                method: 'cut', trimStart: true, trimEnd: true,
+                method: 'auto', trimStart: true, trimEnd: true,
             };
         },
         onChange: (key, v) => {
