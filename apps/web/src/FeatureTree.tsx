@@ -24,8 +24,16 @@ import { DEFAULT_COLOR, newPart } from './newPart';
 import { loadSolver, solverReady } from './solver';
 import { definitionMark, updateRecent, type RecentSteps } from './sketchState';
 import {
-    buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, nodeSketch, reorderIds, treeGuides, type TreeNode,
+    buildFeatureTree, filterKeys, gapCount, isRolled, markerGap, nodeSketch, treeGuides, type TreeNode,
 } from './featureTree';
+import type { TreePlace } from '@jarvis/core/folders';
+import {
+    barFolders, dragIds, dropPlace, folderChain, folderKey, folderRows, isDragged, rangeKeys, rowIndex, rowsIn, rowSteps, siblingRun,
+    stepRowsIn, treeLines, type DropZone, type FolderRow, type TreeRow,
+} from './treeFolders';
+import { setTreePicks, useViewPick } from './treeSelection';
+import { useSlowRename } from './treeSlowClick';
+import './treeFolders.css';
 import { load, menuAt, NONE, store, STORAGE_KEY, type Menu } from './browserUtil';
 import { basePlaneEntries, featureStepExtras, referenceStepEntries, sketchStepEntries } from './contextMenus';
 import { appActions, menuContext } from './viewMenu';
@@ -132,7 +140,20 @@ type Entry =
     | { kind: 'bodies'; key: string; depth: 1 }
     | { kind: 'solid'; key: string; depth: 2; row: BodyRow }
     | { kind: 'node'; key: string; depth: number; node: TreeNode }
-    | { kind: 'gap'; key: string; gap: number };
+    | { kind: 'gap'; key: string; gap: number; depth?: number }
+    /** A folder of the feature tree (treeFolders.ts). */
+    | { kind: 'ufolder'; key: string; depth: number; row: FolderRow };
+
+/** A place in the tree as features_move takes it. */
+function placeArgs(place: TreePlace): Record<string, string> {
+    if ('before' in place) {
+        return { before: place.before };
+    }
+    if ('after' in place) {
+        return { after: place.after };
+    }
+    return { ...(place.into ? { into: place.into } : {}), at: place.at ?? 'end' };
+}
 
 export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () => void }) {
     const { part, parts, onMinimise } = props;
@@ -143,6 +164,9 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     const hiddenSteps = useHiddenSteps();
     const features = useMemo(() => part.features ?? [], [part.features]);
     const tree = useMemo(() => buildFeatureTree(features), [features]);
+    // The top-level rows wrapped in the part's folders (treeFolders.ts).
+    const treeRows = useMemo(() => folderRows(tree, features, part.folders), [tree, features, part.folders]);
+    const rowsByKey = useMemo(() => rowIndex(treeRows), [treeRows]);
     const byId = useMemo(() => new Map(features.map((f) => [f.id, f])), [features]);
     const total = features.length;
     const count = rollback?.partId === part.id ? Math.min(Math.max(0, rollback.count), total) : total;
@@ -171,11 +195,15 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     const [rootOpen, setRootOpen] = useState(() => load(rootKey, 'open') !== 'closed');
     const [filter, setFilter] = useState('');
     const [current, setCurrent] = useState<string | null>(null);
+    // Rows selected together (Shift / Ctrl+click), for Add to new folder and dragging; `current` is the anchor.
+    const [selection, setSelection] = useState<string[]>([]);
     const [renaming, setRenaming] = useState<string | null>(null);
     const [confirming, setConfirming] = useState<string | null>(null);
     const [menu, setMenu] = useState<Menu>(null);
-    const [dragKey, setDragKey] = useState<string | null>(null);
-    const [drop, setDrop] = useState<{ key: string; after: boolean } | null>(null);
+    const [dragging, setDragging] = useState<string[] | null>(null);
+    const [drop, setDrop] = useState<{ key: string; zone: DropZone } | null>(null);
+    const dragged = useMemo(() => new Set(dragging ?? []), [dragging]);
+    const slow = useSlowRename((key) => startRename(key));
     // Rollback count shown while the bar is dragged, and after a change until the server confirms it.
     const [preview, setPreview] = useState<number | null>(null);
     const draggingBar = useRef(false);
@@ -212,6 +240,28 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     }, [current, part.id]);
     useEffect(() => () => pickBody(null, null), []);
 
+    /** Selects one row, which is also where Shift+click ranges start. */
+    const pick = (key: string) => {
+        setCurrent(key);
+        setSelection([key]);
+    };
+    // A sketch or reference step clicked in the view is selected here (treeSelection.ts); inside a closed folder,
+    // the folder shows it.
+    const sketchPick = useSketcher((s) => s.picked);
+    const stepPick = useViewPick();
+    const seenPicks = useRef({ sketch: sketchPick?.n ?? 0, step: stepPick.n });
+    useEffect(() => {
+        const seen = seenPicks.current;
+        const id = stepPick.n !== seen.step && stepPick.partId === part.id ? stepPick.stepId
+            : sketchPick && sketchPick.n !== seen.sketch ? sketchPick.id : null;
+        seenPicks.current = { sketch: sketchPick?.n ?? 0, step: stepPick.n };
+        if (id && byId.has(id)) {
+            pick(id);
+            scrollTo.current = id;
+        }
+    }, [sketchPick, stepPick]);
+    useEffect(() => () => setTreePicks(null, []), []);
+
     const shownCount = preview ?? count;
     // While a step (or its sketch) is edited, the steps after it are greyed like rolled-back ones.
     const editTarget = editing?.partId === part.id && editing.featureId
@@ -246,7 +296,10 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             saveExpanded(next);
         }
     };
-    const isOpen = (key: string) => filtering || (key === ROOT ? rootOpen : key === BODIES ? bodiesOpen : expanded.has(key));
+    // A folder the rollback bar is inside shows open, with what is below the bar greyed.
+    const barInside = barFolders(treeRows, shownGap);
+    const isOpen = (key: string) => filtering || barInside.has(key)
+        || (key === ROOT ? rootOpen : key === BODIES ? bodiesOpen : expanded.has(key));
 
     // ---- Visible lines ----
 
@@ -287,23 +340,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         if (part.shape.kind !== 'empty' && (!query || 'base body'.includes(query))) {
             entries.push({ kind: 'body', key: BODY, depth: 1 });
         }
-        if (!filtering) {
-            entries.push({ kind: 'gap', key: 'gap-0', gap: 0 });
-        }
-        tree.forEach((node, i) => {
-            if (matches && !matches.has(node.key)) {
-                return;
-            }
-            entries.push({ kind: 'node', key: node.key, depth: 1, node });
-            if (node.children.length && isOpen(node.key)) {
-                node.children
-                    .filter((c) => !matches || matches.has(c.key))
-                    .forEach((c) => entries.push({ kind: 'node', key: c.key, depth: 2, node: c }));
-            }
-            if (!filtering) {
-                entries.push({ kind: 'gap', key: `gap-${i + 1}`, gap: i + 1 });
-            }
-        });
+        // The steps in their folders, with the rollback gaps between them (treeFolders.ts).
+        entries.push(...treeLines(treeRows, { open: isOpen, matches, query: filter, gaps: !filtering }));
     }
     const keys = entries.filter((e) => e.kind !== 'gap').map((e) => e.key);
     // Does the line open onto children (the next row is deeper)?
@@ -312,18 +350,46 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         const next = depths.slice(i + 1).find((n) => n !== null);
         return d !== null && next !== undefined && next !== null && next > d;
     });
-    const guides = treeGuides(depths);
+    const guides = treeGuides(depths, (i) => {
+        const e = entries[i];
+        return e.kind === 'gap' ? e.depth ?? 1 : 1;
+    });
     const nodeOf = (key: string | null): TreeNode | undefined => {
         const entry = entries.find((e) => e.key === key);
         return entry?.kind === 'node' ? entry.node : undefined;
     };
+    const folderOf = (key: string | null): FolderRow | undefined => {
+        const row = key ? rowsByKey.get(key) : undefined;
+        return row?.kind === 'folder' ? row : undefined;
+    };
+    /** Selected: in the multi-selection, or the current row when there is none. */
+    const isSel = (key: string) => (selection.length ? selection.includes(key) : current === key);
+    /** A closed folder or step holding a selected row (a step picked in the view) is highlighted for it. */
+    const holdsSel = (key: string): boolean => {
+        if (isOpen(key)) {
+            return false;
+        }
+        const folder = folderOf(key);
+        const inside = folder ? rowsIn(folder) : [];
+        const nodes = folder ? stepRowsIn(folder).map((r) => r.node) : [nodeOf(key)].filter((n): n is TreeNode => !!n);
+        return inside.some((r) => isSel(r.key)) || nodes.some((n) => n.children.some((c) => isSel(c.key)));
+    };
+    // What is selected here is drawn highlighted in the view: a step, or every step in a folder.
+    useEffect(() => {
+        const ids = (selection.length ? selection : current ? [current] : []).flatMap((key) => {
+            const folder = folderOf(key);
+            return folder ? stepRowsIn(folder).map((r) => r.node.stepId!) : nodeOf(key)?.stepId ?? [];
+        });
+        setTreePicks(part.id, ids);
+    });
 
     // ---- Actions ----
 
-    const reorder = async (ids: string[]) => {
-        const result = await runTool('features_reorder', { partId: part.id, ids });
+    /** Moves steps and folders in the tree; the history order changes with it (features_move). */
+    const move = async (ids: string[], place: TreePlace) => {
+        const result = await runTool('features_move', { partId: part.id, ids, ...placeArgs(place) });
         if (result.isError) {
-            showError(/is not an earlier/.test(result.text)
+            showError(/can only use steps above it/.test(result.text)
                 ? 'A step can only use steps above it. Move the step it uses up first, or this one further down.'
                 : result.text);
         }
@@ -362,9 +428,64 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         void tool('features_remove', { partId: part.id, ids });
     };
     const startRename = (key: string | null) => {
-        if (key === ROOT || (key && nodeOf(key)?.stepId)) {
+        if (key === ROOT || (key && (nodeOf(key)?.stepId || folderOf(key)))) {
             setRenaming(key);
         }
+    };
+
+    // ---- Folders (SolidWorks user folders; treeFolders.ts, and the folder tools on the server) ----
+
+    /** After a folder is made: select it and name it in place, as SolidWorks does. */
+    const named = (result: { text: string; isError: boolean }) => {
+        const id = /\(id ([^)]+)\)/.exec(result.text)?.[1];
+        if (!result.isError && id) {
+            pick(folderKey(id));
+            setRenaming(folderKey(id));
+            scrollTo.current = folderKey(id);
+        }
+    };
+    const addToNewFolder = async (keys: string[]) => {
+        const run = siblingRun(rowsByKey, treeRows, keys);
+        if (run) {
+            named(await tool('folders_add', { partId: part.id, items: dragIds(run) }));
+        }
+    };
+    /** An empty folder just above the row. */
+    const createFolder = async (row: TreeRow) => {
+        named(await tool('folders_add', { partId: part.id, ...placeArgs(dropPlace(treeRows, row, 'before', new Set(), false)) }));
+    };
+    const deleteFolder = (row: FolderRow) => {
+        focusList();
+        void tool('folders_remove', { partId: part.id, ids: [row.id] });
+    };
+    /** Suppress or unsuppress everything the rows hold, sub-folders included (with the usual parent/child rules). */
+    const suppressRows = (list: TreeRow[], on: boolean) => {
+        const updates = new Map<string, { id: string; suppressed: boolean }>();
+        for (const id of list.flatMap(rowSteps)) {
+            for (const u of on ? suppressUpdates(features, id) : unsuppressUpdates(features, id, false)) {
+                updates.set(u.id, u);
+            }
+        }
+        if (updates.size) {
+            void tool('features_update', { partId: part.id, updates: [...updates.values()] });
+        }
+    };
+    const canHide = (f: Feature | undefined): f is Feature => !!f && (f.op === 'sketch' || f.op === 'thread' || REFERENCE_OPS.has(f.op));
+    const shown = (f: Feature) => !hiddenSteps.has(`${part.id}/${f.id}`);
+    /** The steps of a folder its Hide and Show act on: its own rows; Hide also the sketches shown under them. */
+    const hideables = (row: FolderRow, hiding: boolean): Feature[] => stepRowsIn(row)
+        .flatMap((r) => [r.node, ...(hiding ? r.node.children : [])])
+        .map((n) => (n.stepId ? byId.get(n.stepId) : undefined))
+        .filter(canHide);
+    const hideRows = (row: FolderRow, hidden: boolean) => {
+        hideables(row, hidden).filter((f) => shown(f) === hidden).forEach((f) => setSketchHidden(part.id, f.id, hidden));
+    };
+    /** Expand / Collapse Item (the folder only) and All (with everything inside it). */
+    const openRows = (row: FolderRow, open: boolean, all: boolean) => {
+        const inner = all ? rowsIn(row).filter((r) => r.kind === 'folder' || r.node.children.length).map((r) => r.key) : [];
+        const next = new Set(expanded);
+        [row.key, ...inner].forEach((k) => (open ? next.add(k) : next.delete(k)));
+        saveExpanded(next);
     };
     const sketchOn = (plane: SketchPlaneName) => {
         startSketch(part.id, 'sketch');
@@ -373,10 +494,13 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     /** Selects a step in the tree (opening the step it is nested under) and scrolls to it. */
     const jump = (stepId: string) => {
         const owner = tree.find((n) => n.children.some((c) => c.stepId === stepId));
-        if (owner) {
-            setOpen(owner.key, true);
+        // Open its step and the folders round it.
+        const chain = folderChain(rowsByKey.get(owner?.key ?? stepId)).map((f) => f.key);
+        const opening = [...chain, ...(owner ? [owner.key] : [])].filter((k) => !expanded.has(k));
+        if (opening.length) {
+            saveExpanded(new Set([...expanded, ...opening]));
         }
-        setCurrent(stepId);
+        pick(stepId);
         scrollTo.current = stepId;
         focusList();
     };
@@ -384,7 +508,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     /** Opens the Material form for this part (the toolbar owns the form). */
     const editMaterial = () => window.dispatchEvent(new CustomEvent('jarvis:open-tool', { detail: 'material' }));
     const activate = (key: string) => {
-        if (key === ROOT || key === HISTORY || key === BODIES) {
+        if (key === ROOT || key === HISTORY || key === BODIES || folderOf(key)) {
             setOpen(key, !isOpen(key));
         } else if (key.startsWith(RECENT)) {
             if (key !== RECENT) {
@@ -465,7 +589,70 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             { label: 'Delete', hint: 'Del', danger: true, onSelect: () => askDelete(node) },
         ];
     };
-    const allParents = tree.filter((n) => n.children.length).map((n) => n.key);
+    /** Add to new folder and Create new folder, for a row of the tree (not a sketch nested under a step). */
+    const folderEntries = (key: string): MenuEntry[] => {
+        const row = rowsByKey.get(key);
+        return row ? [
+            { label: 'Add to new folder', onSelect: () => void addToNewFolder([key]) },
+            { label: 'Create new folder', title: 'An empty folder above this item', onSelect: () => void createFolder(row) },
+        ] : [];
+    };
+    /** Inserts the folder entries before the last group (Rename, Delete) of a step's menu. */
+    const withFolderEntries = (items: MenuEntry[], key: string): MenuEntry[] => {
+        const extra = folderEntries(key);
+        const at = items.lastIndexOf('separator');
+        return extra.length && at >= 0 ? [...items.slice(0, at), 'separator', ...extra, ...items.slice(at)] : items;
+    };
+    const folderMenu = (row: FolderRow): MenuEntry[] => {
+        const steps = row.items.length ? rowSteps(row).map((id) => byId.get(id)).filter((f): f is Feature => !!f) : [];
+        const empty = !row.items.length;
+        const hiding = hideables(row, true);
+        const showing = hideables(row, false);
+        return [
+            { label: 'Rename tree item', hint: 'F2', onSelect: () => setRenaming(row.key) },
+            'separator',
+            { label: 'Expand all', title: 'This folder and everything in it', onSelect: () => openRows(row, true, true), disabled: empty },
+            { label: 'Collapse all', title: 'This folder and everything in it', onSelect: () => openRows(row, false, true), disabled: empty },
+            isOpen(row.key)
+                ? { label: 'Collapse item', onSelect: () => openRows(row, false, false), disabled: empty || barInside.has(row.key) }
+                : { label: 'Expand item', onSelect: () => openRows(row, true, false), disabled: empty },
+            'separator',
+            { label: 'Suppress', title: 'Everything in the folder', onSelect: () => suppressRows([row], true), disabled: !steps.some((f) => !f.suppressed) },
+            { label: 'Unsuppress', title: 'Everything in the folder', onSelect: () => suppressRows([row], false), disabled: !steps.some((f) => f.suppressed) },
+            ...(hiding.length ? [
+                { label: 'Hide', title: 'The sketches, threads and reference geometry in it', onSelect: () => hideRows(row, true), disabled: !hiding.some(shown) },
+                { label: 'Show', title: 'The sketches, threads and reference geometry in it', onSelect: () => hideRows(row, false), disabled: showing.every(shown) },
+            ] : []),
+            'separator',
+            ...folderEntries(row.key),
+            'separator',
+            ...rollEntries(gapCount(tree, row.start)),
+            'separator',
+            { label: 'Delete folder', hint: 'Del', title: 'The steps in it stay where they are', danger: true, onSelect: () => deleteFolder(row) },
+        ];
+    };
+    /** Several rows selected: what applies to all of them together. */
+    const selectionMenu = (keys: string[]): MenuEntry[] => {
+        const run = siblingRun(rowsByKey, treeRows, keys);
+        const picked = keys.map((k) => rowsByKey.get(k)).filter((r): r is TreeRow => !!r);
+        const steps = picked.flatMap(rowSteps).map((id) => byId.get(id)).filter((f): f is Feature => !!f);
+        return [
+            { header: `${keys.length} items selected` },
+            {
+                label: 'Add to new folder',
+                onSelect: () => void addToNewFolder(keys),
+                disabled: !run,
+                title: run ? undefined : 'A folder holds items that follow one another at one level of the tree',
+            },
+            'separator',
+            { label: 'Suppress', onSelect: () => suppressRows(picked, true), disabled: !steps.some((f) => !f.suppressed) },
+            { label: 'Unsuppress', onSelect: () => suppressRows(picked, false), disabled: !steps.some((f) => f.suppressed) },
+        ];
+    };
+    const allParents = [
+        ...tree.filter((n) => n.children.length).map((n) => n.key),
+        ...[...rowsByKey.values()].filter((r) => r.kind === 'folder' && r.items.length).map((r) => r.key),
+    ];
     const rootMenu: MenuEntry[] = [
         ...(part.shape.kind !== 'empty' ? [{ label: 'Edit body', onSelect: () => editItem(part.id, null) }] : []),
         { label: 'Rename part', hint: 'F2', onSelect: () => setRenaming(ROOT) },
@@ -495,7 +682,9 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                 return entry.plane ? [{ label: 'Sketch on this plane', onSelect: () => sketchOn(entry.plane!) }, ...basePlaneEntries(part, entry.plane, appActions)]
                     : entry.key === MATERIAL ? [{ label: 'Edit material', hint: 'double-click', onSelect: editMaterial }] : [];
             case 'node':
-                return nodeMenu(entry.node);
+                return entry.node.parentId === null ? withFolderEntries(nodeMenu(entry.node), entry.key) : nodeMenu(entry.node);
+            case 'ufolder':
+                return folderMenu(entry.row);
             default:
                 return [];
         }
@@ -507,7 +696,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         if (!key) {
             return;
         }
-        setCurrent(key);
+        pick(key);
         list.current?.querySelector(`[data-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'nearest' });
     };
     const onKey = (event: KeyboardEvent<HTMLOListElement>) => {
@@ -523,7 +712,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         }
         const at = current ? keys.indexOf(current) : -1;
         const node = nodeOf(current);
-        const hasChildren = current === ROOT || current === HISTORY || current === BODIES || !!node?.children.length;
+        const folder = folderOf(current);
+        const hasChildren = current === ROOT || current === HISTORY || current === BODIES || !!node?.children.length || !!folder?.items.length;
         switch (event.key) {
             case 'ArrowDown':
                 choose(keys[at < 0 ? 0 : Math.min(at + 1, keys.length - 1)]);
@@ -553,6 +743,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     choose(BODIES);
                 } else if (node?.parentId) {
                     choose(node.parentId);
+                } else if (current && rowsByKey.get(current)?.parent) {
+                    choose(rowsByKey.get(current)!.parent!.key);
                 } else if (current && current !== ROOT) {
                     choose(ROOT);
                 }
@@ -568,6 +760,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             case 'Delete':
                 if (node) {
                     askDelete(node);
+                } else if (folder) {
+                    deleteFolder(folder);
                 }
                 break;
             default:
@@ -618,42 +812,72 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         }
     };
 
-    // ---- Drag to reorder (top-level rows; nested sketches move with their step) ----
+    // ---- Drag to reorder and into or out of folders (rows; nested sketches move with their step) ----
 
-    const dragOver = (event: DragEvent<HTMLLIElement>, key: string, after?: boolean) => {
-        if (!dragKey) {
+    /** A row, or the selected rows round it when they follow one another, starts to drag. */
+    const startDrag = (event: DragEvent<HTMLLIElement>, key: string) => {
+        slow.cancel();
+        const run = selection.length > 1 && selection.includes(key) ? siblingRun(rowsByKey, treeRows, selection) : null;
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', key);
+        setDragging(run ? run.map((r) => r.key) : [key]);
+    };
+    const endDrag = () => {
+        setDragging(null);
+        setDrop(null);
+    };
+    const dragOver = (event: DragEvent<HTMLLIElement>, key: string, zone?: DropZone) => {
+        const row = rowsByKey.get(key);
+        // Nothing lands on what is dragged or inside a dragged folder.
+        if (!dragging || !row || isDragged(row, dragged)) {
             return;
         }
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
         const rect = event.currentTarget.getBoundingClientRect();
-        const below = after ?? event.clientY > rect.top + rect.height / 2;
-        if (drop?.key !== key || drop.after !== below) {
-            setDrop({ key, after: below });
+        const y = (event.clientY - rect.top) / rect.height;
+        // On a folder: its top edge is above it, the rest into it (a closed folder's bottom edge is below it).
+        const at = zone ?? (row.kind === 'folder'
+            ? (y < 0.25 ? 'before' : !isOpen(row.key) && y > 0.75 ? 'after' : 'into')
+            : (y < 0.5 ? 'before' : 'after'));
+        if (drop?.key !== key || drop.zone !== at) {
+            setDrop({ key, zone: at });
         }
     };
     const dropOn = (event: DragEvent<HTMLLIElement>) => {
         event.preventDefault();
-        if (dragKey && drop) {
-            const ids = reorderIds(features, tree, dragKey, drop.key, drop.after);
-            if (ids) {
-                void reorder(ids);
-            }
+        const target = drop ? rowsByKey.get(drop.key) : undefined;
+        const moving = (dragging ?? []).map((k) => rowsByKey.get(k)).filter((r): r is TreeRow => !!r);
+        if (drop && target && moving.length && !isDragged(target, dragged)) {
+            // Dropped into a folder from above it, the items go in at its start, else at its end.
+            const fromAbove = target.kind === 'folder' && moving.every((r) => (r.kind === 'node' ? r.pos : r.end) <= target.start);
+            void move(dragIds(moving), dropPlace(treeRows, target, drop.zone, dragged, fromAbove));
         }
-        setDragKey(null);
-        setDrop(null);
+        endDrag();
     };
     // The line showing where a drop lands: after an open step's last nested sketch.
     const dropLine = (() => {
-        if (!drop || drop.key === dragKey) {
+        const target = drop ? rowsByKey.get(drop.key) : undefined;
+        if (!drop || !target) {
             return null;
         }
-        const target = tree.find((n) => n.key === drop.key);
-        const shownChildren = target && isOpen(target.key) ? target.children : [];
-        return drop.after && shownChildren.length
-            ? { key: shownChildren[shownChildren.length - 1].key, after: true }
-            : drop;
+        const shownChildren = target.kind === 'node' && isOpen(target.key) ? target.node.children : [];
+        return drop.zone === 'after' && shownChildren.length ? { key: shownChildren[shownChildren.length - 1].key, zone: drop.zone } : drop;
     })();
+    const dropClass = (key: string): string => (dropLine?.key !== key ? ''
+        : dropLine.zone === 'after' ? 'drop-after' : dropLine.zone === 'before' ? 'drop-before' : 'drop-into');
+    /** A plain click selects the row; Shift+click selects from the current row to it, Ctrl+click adds or takes it. */
+    const select = (key: string, event: MouseEvent) => {
+        if (event.shiftKey && current && current !== key) {
+            setSelection(rangeKeys(entries, current, key));
+        } else if (event.ctrlKey || event.metaKey) {
+            const now = selection.length ? selection : current ? [current] : [];
+            setSelection(now.includes(key) ? now.filter((k) => k !== key) : [...now, key]);
+            setCurrent(key);
+        } else {
+            pick(key);
+        }
+    };
 
     // ---- Rendering ----
 
@@ -700,6 +924,30 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         } else if (isRolled(node, greyCount)) {
             lines.push('After the step being edited');
         }
+        return lines.join('\n');
+    };
+
+    /** "(-) " before a folder's name when a sketch in it (sub-folders included) is under defined, as on sketches. */
+    const folderMark = (row: FolderRow): string => (stepRowsIn(row).some((r) => [r.node, ...r.node.children]
+        .some((n) => markOf(n, n.stepId ? byId.get(n.stepId) : undefined) === '(-) ')) ? '(-) ' : '');
+    const folderFailed = (row: FolderRow): boolean => !!failing && !isOpen(row.key) && rowSteps(row).includes(failing);
+    const folderTitle = (row: FolderRow): string => {
+        const count = stepRowsIn(row).length;
+        const steps = rowSteps(row).map((id) => byId.get(id)).filter((f): f is Feature => !!f);
+        const lines = [`Folder ${row.name}: ${count ? `${count} item${count === 1 ? '' : 's'}` : 'empty'}`];
+        if (folderFailed(row) && error) {
+            lines.unshift(`⚠ ${errorText(error)}`);
+        }
+        if (folderMark(row)) {
+            lines.push('A sketch in it is under defined');
+        }
+        if (steps.length && steps.every((f) => f.suppressed)) {
+            lines.push('Suppressed');
+        }
+        if (markerGap(tree, shownCount) <= row.start && markerGap(tree, shownCount) < tree.length) {
+            lines.push('Below the rollback bar: not built');
+        }
+        lines.push('Drag items onto it to put them in, or out of it to take them out');
         return lines.join('\n');
     };
 
@@ -760,13 +1008,29 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
         'data-key': entry.key,
         role: 'treeitem',
         'aria-level': entry.depth + 1,
-        'aria-selected': current === entry.key,
+        'aria-selected': isSel(entry.key),
         style: { '--depth': entry.depth } as CSSProperties,
-        onClick: () => (entry.kind === 'recent' && entry.stepId ? jump(entry.stepId) : setCurrent(entry.key)),
-        onDoubleClick: () => activate(entry.key),
+        // Two slow clicks on the name rename it (treeSlowClick.ts).
+        onMouseDown: (event: MouseEvent) => slow.down(entry.key, event.button === 0 && current === entry.key && selection.length <= 1),
+        onClick: (event: MouseEvent) => {
+            if (entry.kind === 'recent' && entry.stepId) {
+                jump(entry.stepId);
+                return;
+            }
+            select(entry.key, event);
+            slow.click(entry.key, event);
+        },
+        onDoubleClick: () => {
+            slow.cancel();
+            activate(entry.key);
+        },
         onContextMenu: (event: MouseEvent) => {
-            setCurrent(entry.key);
-            const items = menuFor(entry);
+            // Right-click in a multi-selection acts on all of it.
+            const together = selection.length > 1 && selection.includes(entry.key);
+            if (!together) {
+                pick(entry.key);
+            }
+            const items = together ? selectionMenu(selection) : menuFor(entry);
             if (items.length) {
                 setMenu(menuAt(event, items));
             } else {
@@ -780,7 +1044,13 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
             case 'gap': {
                 const here = entry.gap === shownGap;
                 return (
-                    <li key={entry.key} className={`ft-gap ${here ? 'has-bar' : ''}`} data-gap={entry.gap} role="none">
+                    <li
+                        key={entry.key}
+                        className={`ft-gap ${here ? 'has-bar' : ''}`}
+                        data-gap={entry.gap}
+                        role="none"
+                        style={{ '--depth': entry.depth ?? 1 } as CSSProperties}
+                    >
                         {lines(i, 0)}
                         {here ? (
                             <div
@@ -1018,12 +1288,12 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                     feature && REFERENCE_OPS.has(feature.op) ? 'ref' : '',
                     suppressed ? 'suppressed' : '',
                     isRolled(node, greyCount) ? 'rolled' : '',
-                    current === node.key ? 'current' : '',
+                    isSel(node.key) || holdsSel(node.key) ? 'current' : '',
                     hideable && !visible ? 'hidden' : '',
                     node.stepId && editTarget === node.stepId ? 'editing' : '',
                     failed ? 'failed' : '',
-                    dragKey === node.key ? 'dragged' : '',
-                    dropLine?.key === node.key ? (dropLine.after ? 'drop-after' : 'drop-before') : '',
+                    isDragged(rowsByKey.get(node.key), dragged) ? 'dragged' : '',
+                    dropClass(node.key),
                 ].join(' ');
                 return (
                     <li
@@ -1033,17 +1303,10 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                         aria-expanded={node.children.length ? isOpen(node.key) : undefined}
                         title={nodeTitle(node, feature)}
                         draggable={draggable}
-                        onDragStart={draggable ? (event) => {
-                            event.dataTransfer.effectAllowed = 'move';
-                            event.dataTransfer.setData('text/plain', node.key);
-                            setDragKey(node.key);
-                        } : undefined}
-                        onDragOver={(event) => (nested ? dragOver(event, node.parentId!, true) : dragOver(event, node.key))}
+                        onDragStart={draggable ? (event) => startDrag(event, node.key) : undefined}
+                        onDragOver={(event) => (nested ? dragOver(event, node.parentId!, 'after') : dragOver(event, node.key))}
                         onDrop={dropOn}
-                        onDragEnd={() => {
-                            setDragKey(null);
-                            setDrop(null);
-                        }}
+                        onDragEnd={endDrag}
                     >
                         {lead(i, entry, node.children.length > 0)}
                         <span className="ft-icon"><StepIcon name={feature ? featureIcon(feature) : 'sketch'} /></span>
@@ -1075,6 +1338,43 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                                 </svg>
                             </button>
                         )}
+                    </li>
+                );
+            }
+            case 'ufolder': {
+                // A folder of the tree: its own icon, (-) when a sketch in it is under defined, greyed below the bar.
+                const { row } = entry;
+                const open = isOpen(row.key);
+                const steps = rowSteps(row).map((id) => byId.get(id)).filter((f): f is Feature => !!f);
+                const failed = folderFailed(row);
+                const draggable = !filtering && renaming !== row.key;
+                const classes = [
+                    'ft-row',
+                    'ufolder',
+                    steps.length && steps.every((f) => f.suppressed) ? 'suppressed' : '',
+                    markerGap(tree, greyCount) <= row.start && markerGap(tree, greyCount) < tree.length ? 'rolled' : '',
+                    isSel(row.key) || holdsSel(row.key) ? 'current' : '',
+                    failed ? 'failed' : '',
+                    isDragged(row, dragged) ? 'dragged' : '',
+                    dropClass(row.key),
+                ].join(' ');
+                return (
+                    <li
+                        key={row.key}
+                        {...rowProps(entry)}
+                        className={classes}
+                        aria-expanded={row.items.length ? open : undefined}
+                        title={folderTitle(row)}
+                        draggable={draggable}
+                        onDragStart={draggable ? (event) => startDrag(event, row.key) : undefined}
+                        onDragOver={(event) => dragOver(event, row.key)}
+                        onDrop={dropOn}
+                        onDragEnd={endDrag}
+                    >
+                        {lead(i, entry, row.items.length > 0)}
+                        <span className="ft-icon"><StepIcon name={open && row.items.length ? 'folder-open' : 'folder'} /></span>
+                        {nameOrInput(row.key, row.name, (name) => void tool('folders_rename', { partId: part.id, id: row.id, name }), folderMark(row))}
+                        {failed && <span className="ft-err" aria-label="Build error">⚠</span>}
                     </li>
                 );
             }

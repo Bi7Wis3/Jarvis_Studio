@@ -206,16 +206,23 @@ export interface Guide {
 
 /**
  * Connector lines for the visible lines in order, given their depths (0 is the root). A null depth is a spacer
- * between top-level rows (the rollback gaps): only depth 1's line passes through it, when more rows follow.
+ * between rows (the rollback gaps): the lines of depth 1 up to `spacer(i)` (1 by default; deeper inside folders)
+ * pass through it, where more rows follow.
  */
-export function treeGuides(depths: (number | null)[]): Guide[] {
+export function treeGuides(depths: (number | null)[], spacer: (i: number) => number = () => 1): Guide[] {
     // more[k]: a later line at depth k follows before any shallower one, so the line at depth k continues.
     const more: boolean[] = [];
     const guides: Guide[] = new Array(depths.length);
     for (let i = depths.length - 1; i >= 0; i--) {
         const d = depths[i];
         if (d === null) {
-            guides[i] = { through: more[1] ? [1] : [], last: true };
+            const through: number[] = [];
+            for (let k = 1; k <= spacer(i); k++) {
+                if (more[k]) {
+                    through.push(k);
+                }
+            }
+            guides[i] = { through, last: true };
             continue;
         }
         const through: number[] = [];

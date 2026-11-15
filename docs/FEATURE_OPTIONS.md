@@ -447,5 +447,14 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
 - [ ] Feature tree behaviour: rollback bar, suppress/unsuppress per configuration, drag reorder, parent/child
   view, edit feature vs edit sketch, rename, folders, sketch status prefixes ((+) over defined, (-) under
   defined, (?) unsolved), error/warning icons and a What's Wrong list, rebuild all.
+- [~] Feature tree folders (E6b, parts): Add to new folder (one row or a Shift/Ctrl selection of rows that follow
+  one another), Create new folder (empty), sub-folders, drag rows and folders in and out (history order follows;
+  an order where a step would use one below it is refused), rename (two slow clicks, F2, Rename tree item),
+  Expand/Collapse item and all, Suppress/Unsuppress and Hide/Show on everything inside, Delete folder (steps stay),
+  (-) when a sketch inside is under defined, error mark on a closed folder holding the failing step, rollback bar
+  inside a folder (shown open), filter finds steps inside folders and folders by name, saved and undoable, assistant
+  tools folders_add / folders_rename / folders_remove / features_move. Not yet: highlighting a folder's solid
+  features in the view (the kernel's mesh does not say which step made which face; sketches and reference
+  geometry highlight), the (-) mark for missing references (the tree has no such check yet), assembly folders.
 - [ ] Values and equations: "=" in any number field to type an expression with units and variables, global
   variables, equations folder, linked values, configurations (design table) per feature value.

@@ -4,6 +4,7 @@ import {
 } from '@jarvis/core';
 import { hideConsumed } from '@jarvis/core/visibility';
 import { slug, type ProjectStore } from './store.js';
+import { folderTools } from './folders.js';
 
 export interface StudioTool {
     name: string;
@@ -694,6 +695,8 @@ const partFields = {
         mode: z.enum(['planar', 'box']).optional(),
         depth: z.number().positive().optional(),
     })).optional().describe('Pictures on the surface; usually added with decals_add'),
+    folders: z.array(z.object({ id: z.string(), name: z.string(), items: z.array(z.string()), before: z.string().optional() }))
+        .optional().describe('Feature tree folders; usually made with folders_add'),
 };
 
 /** Gives every decal an id, keeping ones already set (copies of a part keep their decal ids). */
@@ -1209,5 +1212,6 @@ export function createTools(store: ProjectStore): StudioTool[] {
             schema: {},
             run: () => (store.redo() ? 'Redone.' : 'Nothing to redo.'),
         },
+        ...folderTools(store),
     ];
 }

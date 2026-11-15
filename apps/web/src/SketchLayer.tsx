@@ -37,6 +37,7 @@ import { shownSketchSteps, stepDrawing } from './sketchStepView';
 import { useHiddenSteps } from './stepVisibility';
 import { designId } from './bodyView';
 import { effectivePart } from '@jarvis/core';
+import { useTreePicked } from './treeSelection';
 
 export { regionsOf, useRegionPick } from './regionPick';
 
@@ -274,7 +275,9 @@ export function sketchView(part: Part | null): { centre: Vector3; normal: Vector
  * regions are being picked (useRegionPick), they are drawn as fills to click.
  */
 function SketchStep({ partId, id, sketch, used, before }: { partId: string; id: string; sketch: Sketch; used: boolean; before: Feature[] }) {
-    const picked = useSketcher((s) => s.picked?.id === id);
+    // Picked in the view, or selected in the feature tree (treeSelection.ts).
+    const treePicked = useTreePicked(partId, id);
+    const picked = useSketcher((s) => s.picked?.id === id) || treePicked;
     const [hover, setHover] = useState(false);
     // The whole sketch: its curves, construction curves dashed, its points (sketchStepView.ts).
     const drawing = useMemo(() => stepDrawing(sketch), [sketch]);

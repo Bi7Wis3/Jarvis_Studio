@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEFAULT_VIEW, type Project, type ProjectEntry } from '@jarvis/core';
+import { fitProjectFolders, repairProjectFolders } from '@jarvis/core/folders';
 import { PROJECTS_DIR } from './paths.js';
 import { demoProject } from './seed.js';
 
@@ -54,6 +55,8 @@ export class ProjectStore {
         const before = JSON.stringify(this.project);
         const draft: Project = JSON.parse(before);
         change(draft);
+        // Feature tree folders follow any change of the step order (@jarvis/core/folders).
+        fitProjectFolders(this.project, draft);
         if ((options.undoable ?? true) && !this.memory) {
             this.undoStack.push(before);
             if (this.undoStack.length > MAX_UNDO) {
@@ -195,6 +198,7 @@ export class ProjectStore {
     private read(file: string): Project {
         const project: Project = JSON.parse(readFileSync(file, 'utf8'));
         project.view = { ...DEFAULT_VIEW, ...project.view };
+        repairProjectFolders(project);
         return project;
     }
 

@@ -22,6 +22,7 @@ import { usePickSession, type PickItem } from './pickField';
 import {
     axisDefinition, linePickTarget, planeCount, planeDefinition, pointSteps, refItem, refPickPatch, stepItem, type RefValues,
 } from './referenceDefs';
+import { useTreePicks, viewPick } from './treeSelection';
 
 /** Sends a clicked reference to the open form's active box, if that box takes references; true when it did. */
 function pickIntoBox(partId: string, item: PickItem | null): boolean {
@@ -77,6 +78,9 @@ function usePick(part: Part, step: Feature) {
             if (patch) {
                 e.stopPropagation();
                 session.set!(patch);
+            } else if (!session.set) {
+                // No form open: select the step in the feature tree (treeSelection.ts).
+                viewPick(part.instanceOf ?? part.id, step.id);
             }
         },
         // The view's right-click menu (viewMenu.tsx): Sketch, Normal to, Edit, Hide.
@@ -315,6 +319,7 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
     const values = useToolSession((s) => s.values);
     const toolId = useToolSession((s) => s.toolId);
     const editing = useToolSession((s) => s.ctx?.edit?.feature?.id ?? null);
+    const treePicks = useTreePicks((t) => (part && t.partId === (part.instanceOf ?? part.id) ? t.steps : null));
     // The Plane, Axis or Point form's planes, axis or points as they stand, drawn as a live preview.
     const drafts = useMemo((): Feature[] => {
         try {
@@ -358,6 +363,8 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
             chosen.add(item.ref.replace(/^(plane|axis|point):/, ''));
         }
     }
+    // Steps selected in the feature tree (a folder selects all of its own).
+    treePicks?.forEach((id) => chosen.add(id));
     const referenceForm = toolId === 'plane' || toolId === 'axis' || toolId === 'point';
     const marks = boxItems.flatMap(({ key, item }): { item: PickItem; at?: Vec3 }[] => {
         if (item.kind === 'ref' && item.ref === 'xyz') {

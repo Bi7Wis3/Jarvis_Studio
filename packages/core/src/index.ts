@@ -989,6 +989,21 @@ export interface Part {
     purchased?: boolean;
     /** Pictures applied onto the part's surface (deck graphics, labels, logos). Visual only: not in STL or STEP. */
     decals?: Decal[];
+    /** Folders of the feature tree, nested ones too (folders.ts). They group steps only: the model does not change. */
+    folders?: FeatureFolder[];
+}
+
+/**
+ * A folder of the feature tree (SolidWorks user folder): a named group of consecutive history steps. What it holds,
+ * sub-folders included, is always one unbroken run of the history (folders.ts keeps it so).
+ */
+export interface FeatureFolder {
+    id: string;
+    name: string;
+    /** What it holds in tree order: step ids and the ids of its sub-folders. */
+    items: string[];
+    /** Only for an empty top-level folder: the step it sits above (none: at the end). */
+    before?: string;
 }
 
 /**
@@ -1356,6 +1371,7 @@ export function effectivePart(part: Part, parts: Part[]): Part {
         ...part,
         shape: source.shape,
         features: source.features,
+        folders: source.folders,
         material: source.material,
         decals: source.decals,
         purchased: source.purchased,

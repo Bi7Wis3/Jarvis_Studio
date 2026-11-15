@@ -1,0 +1,18 @@
+/* Folders in the feature tree (treeFolders.ts): dropping into one, and rollback gaps inside them. */
+
+.ft-row.drop-into,
+.ft-tree:focus .ft-row.drop-into {
+    background: rgba(53, 224, 255, 0.24);
+    box-shadow: inset 0 0 0 2px var(--accent-2);
+}
+
+/* Inside a folder the bar and its click strip start at the folder's indent. */
+.ft-gap > .ft-bar {
+    left: calc((var(--depth, 1) - 1) * 16px);
+}
+
+.br .ft-gap > .ft-gap-hit {
+    right: 0;
+    left: calc((var(--depth, 1) - 1) * 16px);
+    width: auto;
+}

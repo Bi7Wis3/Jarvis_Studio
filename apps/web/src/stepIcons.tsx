@@ -284,6 +284,17 @@ const ICONS: Record<string, { color: string; body: ReactNode }> = {
             </>
         ),
     },
+    // A folder of the feature tree, closed and open.
+    folder: { color: '#e8c36a', body: <path d="M2 5.5h7l2 2.5h11v12H2z" {...FILL} /> },
+    'folder-open': {
+        color: '#e8c36a',
+        body: (
+            <>
+                <path d="M2 20V5.5h7l2 2.5h9v3" />
+                <path d="M2 20l3.5-9H23l-3.5 9z" {...FILL} />
+            </>
+        ),
+    },
 };
 
 /** A history step icon: the tree's own coloured drawing, else the toolbar icon of that name. */
