@@ -19,6 +19,7 @@ const PREVIEW_DELAY_MS = 250;
 function useToolPreview(tool: ToolDef, ctx: Ctx, values: Values, enabled: boolean, busy: boolean) {
     const picks = useRegionPick((s) => s.picked);
     const [note, setNote] = useState<string | null>(null);
+    const [said, setSaid] = useState<string | null>(null);
     const latest = useRef({ values, ctx });
     latest.current = { values, ctx };
     const queue = useRef<LatestOnly<ToolCall[], PreviewResponse> | null>(null);
@@ -32,6 +33,7 @@ function useToolPreview(tool: ToolDef, ctx: Ctx, values: Values, enabled: boolea
         const q = new LatestOnly<ToolCall[], PreviewResponse>(fetchPreview, (response) => {
             const failure = response.error ?? Object.values(response.errors)[0] ?? null;
             setNote(failure);
+            setSaid(Object.values(response.notes ?? {}).flat().join(' ') || null);
             if (response.error) {
                 // The calls themselves failed: the committed model stays in view.
                 clearPreview();
@@ -39,7 +41,10 @@ function useToolPreview(tool: ToolDef, ctx: Ctx, values: Values, enabled: boolea
                 setPreview(toPreview(response));
             }
             shown = true;
-        }, (error) => setNote(error instanceof Error ? error.message : String(error)));
+        }, (error) => {
+            setNote(error instanceof Error ? error.message : String(error));
+            setSaid(null);
+        });
         queue.current = q;
         return () => {
             q.close();
@@ -90,7 +95,7 @@ function useToolPreview(tool: ToolDef, ctx: Ctx, values: Values, enabled: boolea
         queue.current?.cancel();
         sent.current = null;
     };
-    return { note, hold };
+    return { note, said, hold };
 }
 
 /**
@@ -157,7 +162,8 @@ export function useToolForm(tool: ToolDef, ctx: Ctx, onClose: () => void) {
             run(() => tool.apply!(values, ctx));
         }
     };
-    const shown = result ?? (preview.note ? { text: previewNote(preview.note, ctx), isError: true } : null);
+    const shown = result ?? (preview.note ? { text: previewNote(preview.note, ctx), isError: true }
+        : preview.said ? { text: preview.said, isError: false } : null);
     return { values, result: shown, busy, form, missingPart, fields, change, api, submit };
 }
 

@@ -20,6 +20,8 @@ export interface PreviewResponse {
     parts: Part[];
     keys: Record<string, string>;
     errors: Record<string, string>;
+    /** What the build says about a part's steps, by part (a thread cut to the length of its hole). */
+    notes?: Record<string, string[]>;
     error?: string;
 }
 

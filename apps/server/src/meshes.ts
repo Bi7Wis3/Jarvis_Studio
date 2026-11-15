@@ -121,7 +121,7 @@ export class MeshService {
      * any other, but the published status is left alone. `key` is null when nothing could be built; a failed
      * feature still gives the partial solid with `error`.
      */
-    async preview(part: Part, project: Project): Promise<{ key: string | null; error?: string }> {
+    async preview(part: Part, project: Project): Promise<{ key: string | null; error?: string; notes?: string[] }> {
         const shown = partsAtTimeline(project);
         const effective = effectivePart(part, shown);
         const print = project.print ?? DEFAULT_PRINT;
@@ -129,7 +129,8 @@ export class MeshService {
         try {
             const key = await this.build(effective, print, context);
             const failure = this.failed.get(key);
-            return failure ? { key, error: failure } : { key };
+            const notes = this.meshes.get(key)?.notes;
+            return { key, ...(failure ? { error: failure } : {}), ...(notes?.length ? { notes } : {}) };
         } catch (error) {
             const key = meshKey(effective, print, context);
             return { key: this.meshes.has(key) ? key : null, error: error instanceof Error ? error.message : String(error) };

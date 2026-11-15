@@ -92,6 +92,40 @@ function expectBounds(mesh: MeshData, min: Vec3, max: Vec3, tolerance = 0.05): v
 }
 
 const sharpBox = (size: Vec3): Shape => ({ kind: 'box', size, radius: 0 });
+
+/**
+ * Whether a point lies in the solid of a closed mesh, or within `tolerance` of its surface: rays along +X, +Y and +Z
+ * must all cross the surface an odd number of times, from the point nudged out by the tolerance in each direction.
+ */
+function insideMesh(mesh: MeshData, point: Vec3, tolerance: number): boolean {
+    const p = mesh.positions;
+    const crossings = (q: Vec3, axis: number): number => {
+        const [u, v] = [(axis + 1) % 3, (axis + 2) % 3];
+        let n = 0;
+        for (let t = 0; t < mesh.indices.length; t += 3) {
+            const [a, b, c] = [mesh.indices[t] * 3, mesh.indices[t + 1] * 3, mesh.indices[t + 2] * 3];
+            const d = (p[b + u] - p[a + u]) * (p[c + v] - p[a + v]) - (p[b + v] - p[a + v]) * (p[c + u] - p[a + u]);
+            if (Math.abs(d) < 1e-14) {
+                continue;
+            }
+            const [qu, qv] = [q[u] + 1.234e-7, q[v] + 2.345e-7];
+            const s = ((qu - p[a + u]) * (p[c + v] - p[a + v]) - (qv - p[a + v]) * (p[c + u] - p[a + u])) / d;
+            const w = ((p[b + u] - p[a + u]) * (qv - p[a + v]) - (p[b + v] - p[a + v]) * (qu - p[a + u])) / d;
+            if (s < 0 || w < 0 || s + w > 1) {
+                continue;
+            }
+            if (p[a + axis] + s * (p[b + axis] - p[a + axis]) + w * (p[c + axis] - p[a + axis]) > q[axis]) {
+                n++;
+            }
+        }
+        return n;
+    };
+    // Inside (or on the surface) if, nudged by the tolerance in some direction, it is inside along all three rays.
+    return [[0, 0, 0], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].some((step) => {
+        const q: Vec3 = [point[0] + step[0] * tolerance, point[1] + step[1] * tolerance, point[2] + step[2] * tolerance];
+        return [0, 1, 2].every((axis) => crossings(q, axis) % 2 === 1);
+    });
+}
 const mesh = (shape: Shape, features?: Feature[]): Promise<MeshData> => kernel.mesh({ shape, features }, DEFAULT_PRINT);
 
 describe('primitive shapes', () => {
@@ -472,18 +506,58 @@ describe('features', () => {
         const r = (8 + DEFAULT_PRINT.holeTolerance) / 2;
         // The far top edge cut off at 45 degrees: the hole comes out through that slanted face (y - x = 8).
         const slant: Feature = { id: 's', op: 'chamfer', size: 12, at: [[-10, 10, 0]] };
-        const thread: Feature = { id: 't', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5, length: 19, diameter: 8, method: 'extrude' };
+        const thread: Feature = { id: 't', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5, length: 30, diameter: 8, method: 'extrude' };
         const drilled = await mesh(block, [slant, hole]);
         const threaded = await mesh(block, [slant, hole, thread]);
         expect(openEdges(threaded)).toBe(0);
         expect(volume(threaded)).toBeGreaterThan(volume(drilled) + 20);
         // No ridge stands in the air past the slanted face.
         let past = -Infinity;
+        // The hole's wall runs on to the far face (x = -10) below the slant: the thread runs as far as the wall does.
+        let far = Infinity;
         for (let i = 0; i < threaded.positions.length; i += 3) {
-            past = Math.max(past, threaded.positions[i + 1] - threaded.positions[i]);
+            const [x, y, z] = [threaded.positions[i], threaded.positions[i + 1], threaded.positions[i + 2]];
+            past = Math.max(past, y - x);
+            if (y < 0 && Math.hypot(y, z) < r - 0.3) {
+                far = Math.min(far, x);
+            }
         }
         expect(past).toBeLessThan(8 + 1e-3);
+        expect(far).toBeLessThan(-8.5);
         expectBounds(threaded, [-10, -10, -10], [10, 10, 10]);
+        // Asked 30 mm in a hole 20 mm long at most: it stops at the end, and the build says so.
+        expect(threaded.notes?.join(' ')).toMatch(/cut to the length of the hole: 20 mm \(30 mm asked\)/);
+    }, SLOW);
+
+    it('keeps an extruded thread inside the part where the hole grazes a thin curved wall', async () => {
+        // A block 30 x 20 x 20 with a 5 mm hole along X; a large round cut (radius 60, axis along Y) passes over the
+        // hole at a grazing angle: for x > 0 it leaves a wall over the hole that thins to nothing, for x < 0 the hole
+        // is open along its top.
+        const block = sharpBox([30, 20, 20]);
+        const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 4.8 }, position: [15, 0, 0], direction: [-1, 0, 0] };
+        const r = (4.8 + DEFAULT_PRINT.holeTolerance) / 2;
+        const round: Feature = { id: 'c', op: 'cut', shape: { kind: 'cylinder', radius: 60, height: 40, bevel: 0 }, position: [-8.9, 0, 61.93] };
+        const thread: Feature = { id: 't', op: 'thread', kind: 'internal', at: [15, r, 0], pitch: 0.8, length: 30, diameter: 4.8, method: 'extrude' };
+        const plugged = await mesh(block, [round]);
+        const drilled = await mesh(block, [round, hole]);
+        const threaded = await mesh(block, [round, hole, thread]);
+        // (The mesher folds a few triangles on the long bore face split by the ridges here; the solid itself is valid.)
+        expect(volume(threaded)).toBeGreaterThan(volume(drilled) + 5);
+        // Every point of the ridges lies in the part as it was before the hole was drilled: nothing stands out past
+        // the curved face, however thin the wall beside the hole gets.
+        let ridge = 0;
+        let outside = 0;
+        for (let i = 0; i < threaded.positions.length; i += 3) {
+            const p: Vec3 = [threaded.positions[i], threaded.positions[i + 1], threaded.positions[i + 2]];
+            if (Math.hypot(p[1], p[2]) < r - 0.05) {
+                ridge++;
+                if (!insideMesh(plugged, p, 1e-3)) {
+                    outside++;
+                }
+            }
+        }
+        expect(ridge).toBeGreaterThan(100);
+        expect(outside).toBe(0);
     }, SLOW);
 
     it('threads several holes in one step, each from its own edge, and names the edge that fails', async () => {
@@ -526,6 +600,18 @@ describe('features', () => {
         }
         expect(least).toBeGreaterThan(-10.01);
         expect(most).toBeLessThan(10.01);
+
+        // The ghost shows only what the build keeps: nothing past a slanted face the hole comes out through, and the
+        // build says the thread stops at the end of the hole.
+        const slant: Feature = { id: 's', op: 'chamfer', size: 12, at: [[-10, 10, 0]] };
+        const slanted = await mesh(block, [slant, hole, { id: 't', name: 'Thread1', op: 'thread', kind: 'internal', at: [10, r, 0], pitch: 1.5,
+            length: 40, diameter: 8, method: 'extrude', preview: true }]);
+        let past = -Infinity;
+        for (let i = 0; i < slanted.positions.length; i += 3) {
+            past = Math.max(past, slanted.positions[i + 1] - slanted.positions[i]);
+        }
+        expect(past).toBeLessThan(8 + 1e-3);
+        expect(slanted.notes?.join(' ')).toMatch(/Thread1: cut to the length of the hole: [\d.]+ mm \(40 mm asked\)/);
     }, SLOW);
 });
 

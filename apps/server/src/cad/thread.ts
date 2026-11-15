@@ -17,6 +17,8 @@ export const MINOR_DEPTH = 1.0825;
 const TAN30 = Math.tan(Math.PI / 6);
 /** Thread ridges overlap their core / wall by this much so they are one connected body. */
 const THREAD_OVERLAP = 0.02;
+/** How far past the major radius (into the wall, or the shaft's core) the material behind a ridge is looked for. */
+const WALL_DEPTH = THREAD_OVERLAP + 0.005;
 /** Angular mesh step of a ghost ridge, in radians (as the kernel meshes). */
 const ANGULAR_TOLERANCE = 0.2;
 
@@ -424,7 +426,49 @@ export function threadEdge(shape: Shape3D, at: Vec3): ThreadEdge {
     const rel = sub3(onFace, centre);
     const radial = sub3(rel, scale3(axis, dot3(rel, axis)));
     const outward = face.normalAt(onFace).toTuple() as Vec3;
-    return { centre, axis, radius, reach: 2 * Math.abs(along), hole: dot3(outward, radial) < 0 };
+    return { centre, axis, radius, reach: Math.max(2 * Math.abs(along), cylinderReach(shape, centre, axis, radius)), hole: dot3(outward, radial) < 0 };
+}
+
+/**
+ * How far a hole or shaft runs from its edge along the axis: over every face of the same cylinder (a hole that breaks
+ * out through a curved wall is split into several, partial ones) that follows on from the edge without a gap.
+ */
+function cylinderReach(shape: Shape3D, centre: Vec3, axis: Vec3, radius: number): number {
+    const spans: [number, number][] = [];
+    for (const face of cylinderFaces(shape, centre, axis, radius)) {
+        const along = face.edges.flatMap((e) => Array.from({ length: 17 }, (_, i) => dot3(sub3(e.pointAt(i / 16).toTuple() as Vec3, centre), axis)));
+        spans.push([Math.min(...along), Math.max(...along)]);
+    }
+    let reach = 0;
+    for (const [a, b] of spans.sort((p, q) => p[0] - q[0])) {
+        if (a > reach + 1e-4) {
+            break;
+        }
+        reach = Math.max(reach, b);
+    }
+    return reach;
+}
+
+/** The faces of a body that lie on one cylinder (axis through `centre` along unit `axis`, `radius`). */
+function cylinderFaces(shape: Shape3D, centre: Vec3, axis: Vec3, radius: number): Face[] {
+    const oc = getOC();
+    return shape.faces.filter((face) => {
+        if (face.geomType !== 'CYLINDRE') {
+            return false;
+        }
+        const [r, gc] = localGC();
+        try {
+            const cylinder = r(r(new oc.BRepAdaptor_Surface(face.wrapped, true)).Cylinder());
+            const ax = r(cylinder.Axis());
+            const loc = r(ax.Location());
+            const dir = r(ax.Direction());
+            const rel = sub3([loc.X(), loc.Y(), loc.Z()], centre);
+            const off = Math.hypot(...sub3(rel, scale3(axis, dot3(rel, axis))));
+            return Math.abs(cylinder.Radius() - radius) <= 1e-5 && Math.hypot(...cross3([dir.X(), dir.Y(), dir.Z()], axis)) <= 1e-7 && off <= 1e-5;
+        } finally {
+            gc();
+        }
+    });
 }
 
 /** Where a thread step runs on the body it is cut into: for the chamfers and fillets that come after it. */
@@ -471,13 +515,19 @@ interface Openings {
     radius: number;
     /** Where the line along the axis at `angle` crosses the outline of the open patches, in order: open between pairs. */
     crossings(angle: number): number[];
+    /**
+     * Where the circle at `s` crosses the outline, in order, as angles of the half that answers for `angle` (open
+     * between pairs), and `angle` as an angle of that half.
+     */
+    around(s: number, angle: number): { angles: number[]; at: number };
 }
 
 function openings(shape: Shape3D, frame: Frame, radius: number, low: number, high: number): Openings | null {
     const oc = getOC();
     const BINS = 400;
     const SPAN = (200 * Math.PI) / 180;
-    const halves: { from: number; segments: number[]; bins: number[][] }[] = [];
+    const halves: { from: number; segments: number[]; bins: number[][]; rows: number[][] }[] = [];
+    const row = (y: number): number => Math.floor(((y - low) / Math.max(high - low, 1e-9)) * BINS);
     // Half A from -100 to 100 degrees answers for -90 to 90, half B from 80 to 280 for the rest.
     for (const degrees of [-100, 80]) {
         const from = (degrees * Math.PI) / 180;
@@ -494,9 +544,15 @@ function openings(shape: Shape3D, frame: Frame, radius: number, low: number, hig
         } finally {
             gc();
         }
-        // Each boundary edge as a polyline in (angle, s), filed by angle.
+        // Each boundary edge as a polyline in (angle, s), filed by angle and by s.
         const segments: number[] = [];
         const bins: number[][] = Array.from({ length: BINS }, () => []);
+        const rows: number[][] = Array.from({ length: BINS }, () => []);
+        const file = (into: number[][], b0: number, b1: number, at: number): void => {
+            for (let k = Math.max(0, Math.min(b0, b1)); k <= Math.min(BINS - 1, Math.max(b0, b1)); k++) {
+                into[k].push(at);
+            }
+        };
         for (const face of cut?.faces ?? []) {
             for (const edge of face.edges) {
                 const count = Math.max(8, Math.ceil(edge.length / 0.05));
@@ -511,35 +567,33 @@ function openings(shape: Shape3D, frame: Frame, radius: number, low: number, hig
                     if (last) {
                         const at = segments.length;
                         segments.push(last[0], last[1], q[0], q[1]);
-                        const [b0, b1] = [last[0], q[0]].map((x) => Math.floor(((x - from) / SPAN) * BINS));
-                        for (let k = Math.max(0, Math.min(b0, b1)); k <= Math.min(BINS - 1, Math.max(b0, b1)); k++) {
-                            bins[k].push(at);
-                        }
+                        file(bins, Math.floor(((last[0] - from) / SPAN) * BINS), Math.floor(((q[0] - from) / SPAN) * BINS), at);
+                        file(rows, row(last[1]), row(q[1]), at);
                     }
                     last = q;
                 }
             }
         }
         cut?.delete();
-        halves.push({ from, segments, bins });
+        halves.push({ from, segments, bins, rows });
     }
     if (halves.every((h) => h.segments.length === 0)) {
         return null;
     }
+    /** The half that answers for an angle, and the angle as one of that half. */
+    const halfOf = (angle: number): { half: (typeof halves)[number]; at: number } => {
+        const a = Math.atan2(Math.sin(angle), Math.cos(angle));
+        return Math.abs(a) <= Math.PI / 2 ? { half: halves[0], at: a } : { half: halves[1], at: a < 0 ? a + 2 * Math.PI : a };
+    };
     return {
         radius,
         crossings(angle) {
-            let a = Math.atan2(Math.sin(angle), Math.cos(angle));
-            const half = Math.abs(a) <= Math.PI / 2 ? halves[0] : halves[1];
-            if (half === halves[1] && a < 0) {
-                a += 2 * Math.PI;
-            }
+            const { half, at } = halfOf(angle);
             // Nudged off the polyline's corners.
-            const x = a + 1.234e-9;
-            const bin = half.bins[Math.min(BINS - 1, Math.max(0, Math.floor(((x - half.from) / SPAN) * BINS)))];
+            const x = at + 1.234e-9;
             const g = half.segments;
             const out: number[] = [];
-            for (const i of bin) {
+            for (const i of half.bins[Math.min(BINS - 1, Math.max(0, Math.floor(((x - half.from) / SPAN) * BINS)))]) {
                 const [x0, y0, x1, y1] = [g[i], g[i + 1], g[i + 2], g[i + 3]];
                 if ((x0 > x) !== (x1 > x)) {
                     out.push(y0 + ((x - x0) * (y1 - y0)) / (x1 - x0));
@@ -547,13 +601,30 @@ function openings(shape: Shape3D, frame: Frame, radius: number, low: number, hig
             }
             return out.sort((p, q) => p - q);
         },
+        around(s, angle) {
+            const { half, at } = halfOf(angle);
+            if (s < low || s > high) {
+                return { angles: [], at };
+            }
+            const y = s + 2.345e-9;
+            const g = half.segments;
+            const out: number[] = [];
+            for (const i of half.rows[Math.min(BINS - 1, Math.max(0, row(y)))]) {
+                const [x0, y0, x1, y1] = [g[i], g[i + 1], g[i + 2], g[i + 3]];
+                if ((y0 > y) !== (y1 > y)) {
+                    out.push(x0 + ((y - y0) * (x1 - x0)) / (y1 - y0));
+                }
+            }
+            return { angles: out.sort((p, q) => p - q), at };
+        },
     };
 }
 
 /**
- * The material a thread stands on, seen at two radii: `near` right where the ridge joins it, `far` a little deeper.
+ * The material a thread stands on, seen at two radii: `near` right behind the ridge's root, `far` a little deeper.
  * Between the two, the edge of the material (where the hole comes out through a face) is carried on in a straight
- * line to each radius of the ridge's profile, as the face itself would run on across the hole.
+ * line, along the axis and around it, to each radius of the ridge's profile, as the face itself would run on across
+ * the hole.
  */
 interface Wall {
     near: Openings;
@@ -561,8 +632,29 @@ interface Wall {
 }
 
 function wallOf(shape: Shape3D, frame: Frame, near: number, far: number, low: number, high: number): Wall | null {
-    const inner = openings(shape, frame, near, low, high);
-    return inner && { near: inner, far: openings(shape, frame, far, low, high) };
+    const [inner, outer] = [openings(shape, frame, near, low, high), openings(shape, frame, far, low, high)];
+    if (!inner && !outer) {
+        return null;
+    }
+    return { near: inner ?? { radius: near, crossings: () => [], around: (_, angle) => ({ angles: [], at: angle }) }, far: outer };
+}
+
+/** Walls a preview has looked at: while a value is typed it shows the same thread on the same body again and again. */
+const seen = new Map<string, Wall | null>();
+
+/** wallOf, kept for the next preview of the same body and place (`place`: the thread's origin, axis and angle). */
+function wallSeen(shape: Shape3D, frame: Frame, place: string, near: number, far: number, low: number, high: number): Wall | null {
+    const box = shape.boundingBox;
+    const bounds = box.bounds.flat().map((v) => v.toFixed(6)).join(',');
+    box.delete();
+    const key = [shape.hashCode, shape.faces.length, measureVolume(shape).toFixed(6), bounds, place, near, far, low, high].join('|');
+    if (!seen.has(key)) {
+        seen.set(key, wallOf(shape, frame, near, far, low, high));
+        while (seen.size > 32) {
+            seen.delete(seen.keys().next().value as string);
+        }
+    }
+    return seen.get(key) ?? null;
 }
 
 /**
@@ -578,28 +670,70 @@ function ridgePieces(spec: RidgeSpec, wall: Wall | null, startTurn: number): Rid
     const lead = spec.lead ?? spec.pitch;
     const turns = spec.height / lead;
     const sign = spec.leftHanded ? -1 : 1;
-    // The profile at its crest, middle and base: radius and half its axial width.
+    // The profile at its crest, middle and base: radius and half its axial width, with 0.03 mm to spare so that the
+    // ridge's root, buried in the wall, never reaches past the wall's edge either.
     const samples: P2[] = [0, 0.5, 1].map((k) => [spec.rCrest + k * (spec.rBase - spec.rCrest),
-        (spec.wCrest + k * (spec.wBase - spec.wCrest)) / 2 + 0.005]);
+        (spec.wCrest + k * (spec.wBase - spec.wCrest)) / 2 + 0.03]);
     const [r0, r1] = [wall.near.radius, wall.far?.radius ?? wall.near.radius];
+    const overlaps = (s: number, half: number, a: number, b: number): boolean => s - half < Math.max(a, b) && s + half > Math.min(a, b);
     const held = (t: number): boolean => {
         const angle = sign * 2 * Math.PI * t + ((spec.turn ?? 0) + startTurn) * (Math.PI / 180);
         const s = spec.y0 + lead * t;
         const c0 = wall.near.crossings(angle);
-        if (c0.length === 0) {
-            return true;
-        }
-        // Without a matching outline further in, the edge is taken as it is at the ridge's root.
-        const c1 = wall.far?.crossings(angle);
-        const paired = !!c1 && c1.length === c0.length;
-        // The profile's axial extent at each radius against each open stretch carried on to that radius.
-        for (const [r, half] of samples) {
-            const k = paired ? (r - r0) / (r1 - r0) : 0;
-            for (let i = 0; i + 1 < c0.length; i += 2) {
-                const a = c0[i] + (paired ? k * (c1![i] - c0[i]) : 0);
-                const b = c0[i + 1] + (paired ? k * (c1![i + 1] - c0[i + 1]) : 0);
-                if (s - half < Math.max(a, b) && s + half > Math.min(a, b)) {
+        const c1 = wall.far?.crossings(angle) ?? [];
+        // The wall stands behind the whole profile right at the ridge's root and a little deeper too, so a ridge never
+        // stands on a sliver of wall where the hole grazes a face.
+        const base = samples[2][1];
+        for (const c of [c0, c1]) {
+            for (let i = 0; i + 1 < c.length; i += 2) {
+                if (overlaps(s, base, c[i], c[i + 1])) {
                     return false;
+                }
+            }
+        }
+        // Where the edge of the wall crosses the axis's direction at both depths, it is carried on along the axis to
+        // each radius of the profile.
+        if (c0.length && c1.length === c0.length) {
+            for (const [r, half] of samples) {
+                const k = (r - r0) / (r1 - r0);
+                for (let i = 0; i + 1 < c0.length; i += 2) {
+                    if (overlaps(s, half, c0[i] + k * (c1[i] - c0[i]), c0[i + 1] + k * (c1[i + 1] - c0[i + 1]))) {
+                        return false;
+                    }
+                }
+            }
+        }
+        // Where it runs along the axis (the edge of a breakout along the hole), the face is taken across the section as
+        // the straight line through where it meets the two depths, next to the profile's own angle: the part of the
+        // profile inside the hole stays on the part's side of that line.
+        if (wall.far) {
+            for (const [r, half] of samples.slice(0, 2)) {
+                for (const ds of [-half, 0, half]) {
+                    const a0 = wall.near.around(s + ds, angle);
+                    const a1 = wall.far.around(s + ds, angle);
+                    if (a0.angles.length === 0 || a1.angles.length !== a0.angles.length) {
+                        continue;
+                    }
+                    // The edge nearest the profile's angle, and which way from it the hole is open.
+                    let i = 0;
+                    for (let j = 1; j < a0.angles.length; j++) {
+                        if (Math.abs(a0.angles[j] - a0.at) < Math.abs(a0.angles[i] - a0.at)) {
+                            i = j;
+                        }
+                    }
+                    const open = i % 2 === 0 ? 1 : -1;
+                    const point = (radius: number, a: number): P2 => [radius * Math.cos(a), radius * Math.sin(a)];
+                    const [n, f] = [point(r0, a0.angles[i]), point(r1, a1.angles[i])];
+                    const side = (q: P2): number => (f[0] - n[0]) * (q[1] - n[1]) - (f[1] - n[1]) * (q[0] - n[0]);
+                    if (Math.hypot(f[0] - n[0], f[1] - n[1]) < 1e-9) {
+                        continue;
+                    }
+                    const solid = side(point(r0, a0.angles[i] - open * 0.01));
+                    const here = side(point(r, a0.at));
+                    // On the open side, or within 0.03 mm of the line.
+                    if (here * solid < 0 || Math.abs(here) / Math.hypot(f[0] - n[0], f[1] - n[1]) < 0.03) {
+                        return false;
+                    }
                 }
             }
         }
@@ -635,7 +769,10 @@ function ridgePieces(spec: RidgeSpec, wall: Wall | null, startTurn: number): Rid
     if (from !== null) {
         pieces.push([from, turns]);
     }
-    return pieces.filter(([a, b]) => b - a >= 1 / 72).map(([a, b]) => ({
+    // Where a piece ends at the wall's edge, it stops 0.03 mm short of it around the axis too.
+    const spare = 0.03 / (2 * Math.PI * spec.rBase);
+    return pieces.map(([a, b]): [number, number] => [a > 0 ? a + spare : a, b < turns ? b - spare : b])
+        .filter(([a, b]) => b - a >= 1 / 72).map(([a, b]) => ({
         ...spec, y0: spec.y0 + lead * a, height: lead * (b - a), turn: (spec.turn ?? 0) + startTurn + sign * 360 * a,
     }));
 }
@@ -648,6 +785,8 @@ export interface ThreadResult {
     axes: ThreadAxis[];
     /** For a preview: the ridges to show; the body is then left as it was. */
     ghosts: ThreadGhost[];
+    /** What the form should say about the step (a thread cut to the length of its hole). */
+    notes: string[];
 }
 
 /** The edges a thread step is picked on: its first edge and the others, without the same edge twice. */
@@ -677,19 +816,22 @@ export function threadFeature(shape: Shape3D, f: ThreadStep, print: PrintSetting
     });
     let body = shape;
     const ghosts: ThreadGhost[] = [];
+    const notes: string[] = [];
     edges.forEach((edge, i) => {
         try {
             const one = threadOne(body, f, print, edge);
             body = one.shape;
             ghosts.push(...one.ghosts);
+            notes.push(...one.notes.map((n) => (picks.length > 1 ? `Edge<${i + 1}>: ${n}` : n)));
         } catch (e) {
             throw named(i, e);
         }
     });
-    return { shape: body, axes: edges.map((edge) => axisOf(f, print, edge)), ghosts };
+    return { shape: body, axes: edges.map((edge) => axisOf(f, print, edge)), ghosts, notes };
 }
 
-function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: ThreadEdge | null): { shape: Shape3D; ghosts: ThreadGhost[] } {
+function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: ThreadEdge | null):
+    { shape: Shape3D; ghosts: ThreadGhost[]; notes: string[] } {
     const { pitch } = f;
     const starts = f.starts ?? 1;
     if (!(Number.isInteger(starts) && starts >= 1 && starts <= 8)) {
@@ -753,19 +895,26 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
     const frame = frameOf(origin, axis, f.startAngle ?? 0);
     const at = (s: Shape3D, turn = 0): Shape3D => frame.place(s, turn);
     const turnOf = (i: number): number => (360 * i) / starts;
+    // Asked longer than the hole or shaft: it stops at the end, and the form says so.
+    const notes = edge && offset + asked > reach + 1e-6
+        ? [`cut to the length of the ${edge.hole ? 'hole' : 'shaft'}: ${fmtMm(reach)} (${fmtMm(offset + asked)} asked)`] : [];
 
     if (f.preview) {
-        // A quick look while the form is open: the ridges over the thread's length, on the body as it is.
+        // A quick look while the form is open, without the slow booleans: the ridges the build keeps (only where the
+        // wall or the shaft's core stands behind them), within the thread's length, on the body as it is.
         const rMaj = f.kind === 'external' ? diameter / 2 : (diameter + print.holeTolerance) / 2;
+        const core = rMaj - 0.6134 * pitch - WALL_DEPTH;
         const spec = f.kind === 'external' ? externalSpec(pitch, rMaj, rMaj - 0.6134 * pitch, low, high, hand)
             : internalSpec(pitch, rMaj, low, high, hand);
         if (!spec) {
             throw new Error('thread is too short for its pitch');
         }
-        return {
-            shape,
-            ghosts: Array.from({ length: starts }, (_, i) => ({ spec: { ...spec, turn: turnOf(i) }, origin, axis, angle: f.startAngle ?? 0 })),
-        };
+        const place = [...origin, ...axis, f.startAngle ?? 0].join(',');
+        const wall = !edge ? null : f.kind === 'external'
+            ? wallSeen(shape, frame, place, core, core - Math.min(0.3, core / 2), low, high)
+            : wallSeen(shape, frame, place, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, low, high);
+        const pieces = Array.from({ length: starts }, (_, i) => ridgePieces(spec, wall, turnOf(i))).flat();
+        return { shape, notes, ghosts: pieces.map((piece) => ({ spec: piece, origin, axis, angle: f.startAngle ?? 0 })) };
     }
     // Every boolean below runs on the piece of the part within a cylinder about the thread, which is then sewn back to
     // the rest: on a big part the kernel otherwise compares each turn of the ridge with every large face of the part.
@@ -774,7 +923,9 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
     if (zone) {
         shape = zone.local;
     }
-    const done = (made: Shape3D): { shape: Shape3D; ghosts: ThreadGhost[] } => ({ shape: zone ? rejoin(zone, made) : made, ghosts: [] });
+    const done = (made: Shape3D): { shape: Shape3D; ghosts: ThreadGhost[]; notes: string[] } => ({
+        shape: zone ? rejoin(zone, made) : made, ghosts: [], notes,
+    });
 
     /**
      * The ridge and its copies for the other starts, evenly around the axis, each kept to the `wall` it stands on, and
@@ -891,7 +1042,7 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
         }
         // Extrude thread: the ridges are added on the shaft, which is first turned down to the root where it is thicker;
         // only where the shaft's core stands behind them (not across a flat or a cross hole).
-        const core = rRoot - THREAD_OVERLAP / 2;
+        const core = rRoot - WALL_DEPTH;
         const wall = wallOf(shape, frame, core, core - Math.min(0.3, core / 2), low, high);
         const added = ridgesToAdd((from, to) => externalSpec(pitch, rMaj, rRoot, from, to, hand), rMaj + pitch, wall);
         if (picked > rRoot + 1e-4) {
@@ -916,7 +1067,7 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
     // Extrude thread: the hole is opened to the major diameter where it is narrower, and the ridges are added on its
     // wall, only where the wall stands (not where the hole comes out through a slanted or curved face, or meets
     // another hole).
-    const wall = picked === null ? null : wallOf(shape, frame, rMaj + THREAD_OVERLAP / 2, rMaj + THREAD_OVERLAP / 2 + 0.3, low, high);
+    const wall = picked === null ? null : wallOf(shape, frame, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, low, high);
     const added = ridgesToAdd((from, to) => internalSpec(pitch, rMaj, from, to, hand), rMaj + pitch, wall);
     shape = shape.cut(at(cylinderY(rMaj, low, high)));
     return done(applied(added, true));

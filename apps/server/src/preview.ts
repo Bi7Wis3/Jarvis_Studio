@@ -24,6 +24,8 @@ export interface PreviewResult {
     parts: Part[];
     keys: Record<string, string>;
     errors: Record<string, string>;
+    /** What the build says about a part's steps, by part (a thread cut to the length of its hole). */
+    notes?: Record<string, string[]>;
     /** A tool call that failed (validation, a missing part): nothing is previewed. */
     error?: string;
 }
@@ -96,9 +98,13 @@ export async function runPreview(
     });
     const keys: Record<string, string> = {};
     const errors: Record<string, string> = {};
+    const notes: Record<string, string[]> = {};
     // One at a time: the kernel runs one job at a time anyway, and identical instances then share one build.
     for (const part of changed) {
-        const { key, error } = await meshes.preview(quickThreads(part, before.get(part.id)), next);
+        const { key, error, notes: said } = await meshes.preview(quickThreads(part, before.get(part.id)), next);
+        if (said?.length) {
+            notes[part.id] = said;
+        }
         if (key) {
             keys[part.id] = key;
         }
@@ -106,5 +112,5 @@ export async function runPreview(
             errors[part.id] = error;
         }
     }
-    return { parts: changed, keys, errors };
+    return { parts: changed, keys, errors, ...(Object.keys(notes).length ? { notes } : {}) };
 }

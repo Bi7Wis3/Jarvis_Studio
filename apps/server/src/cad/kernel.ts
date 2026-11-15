@@ -33,6 +33,8 @@ export interface MeshData {
     segEdge: Uint32Array;
     /** Reference steps whose references taken from the model were found again, as found (by step id). */
     followed?: Record<string, Feature>;
+    /** What a tool form should say about the steps (a thread cut to the length of its hole). */
+    notes?: string[];
 }
 
 /** A part whose history failed; `partial` is the solid up to the failing step, when there is one. */

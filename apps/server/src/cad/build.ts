@@ -889,6 +889,8 @@ interface BuildState {
     threads: Map<string, ThreadAxis>;
     /** Threads a preview shows without building them (see ThreadGhost). */
     ghosts: ThreadGhost[];
+    /** What the open tool form should say about the steps (see PartialBuild). */
+    notes: string[];
     context?: CombineContext;
     /** Parts being built, outermost first, to catch combine cycles. */
     stack: string[];
@@ -1408,6 +1410,7 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
             const made = threadFeature(needBody(shape), f, state.print);
             made.axes.forEach((axis, i) => state.threads.set(threadKey(f.id, i), axis));
             state.ghosts.push(...made.ghosts);
+            state.notes.push(...made.notes.map((n) => `${f.name ?? f.id}: ${n}`));
             return made.shape;
         }
         case 'mirror':
@@ -1434,6 +1437,8 @@ export interface PartialBuild {
     error: string | null;
     /** Reference steps whose references taken from the model were found again, as found (by step id). */
     followed?: Record<string, Feature>;
+    /** What a tool form should say about the steps, named (a thread cut to the length of its hole). */
+    notes?: string[];
 }
 
 // The body after each step, kept so that a build which shares its first steps with an earlier one (editing a later
@@ -1442,6 +1447,7 @@ interface Prefix {
     shape: Shape3D | null;
     threads: [string, ThreadAxis][];
     ghosts: ThreadGhost[];
+    notes: string[];
     /** The reference steps followed so far (by index), as found. */
     followed: [number, Feature][];
 }
@@ -1461,12 +1467,12 @@ function prefixKeys(part: PartSpec, print: PrintSettings, history: boolean, cont
 }
 
 function remember(key: string, shape: Shape3D | null, threads: Map<string, ThreadAxis>, ghosts: ThreadGhost[],
-    followed: Map<number, Feature>): void {
+    followed: Map<number, Feature>, notes: string[]): void {
     if (prefixes.has(key)) {
         return;
     }
     // A copy of the handle: steps may dispose of the body they are given.
-    prefixes.set(key, { shape: shape ? shape.clone() : null, threads: [...threads], ghosts: [...ghosts], followed: [...followed] });
+    prefixes.set(key, { shape: shape ? shape.clone() : null, threads: [...threads], ghosts: [...ghosts], followed: [...followed], notes: [...notes] });
     while (prefixes.size > PREFIX_LIMIT) {
         const oldest = prefixes.keys().next().value as string;
         prefixes.get(oldest)?.shape?.delete();
@@ -1484,10 +1490,11 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
     const features = [...(part.features ?? [])];
     const followed = new Map<number, Feature>();
     const found = (): Record<string, Feature> => Object.fromEntries([...followed.values()].map((f) => [f.id, f]));
+    const said = (): { notes?: string[] } => (state.notes.length ? { notes: [...state.notes] } : {});
     // Reference steps build nothing, so they do not count as a history for the default edge softening.
     const history = features.some((f) => !f.suppressed && !['sketch', 'plane', 'axis', 'point'].includes(f.op));
     const state: BuildState = {
-        print, features, index: 0, sketches: new Map(), threads: new Map(), ghosts: [], context,
+        print, features, index: 0, sketches: new Map(), threads: new Map(), ghosts: [], notes: [], context,
         stack: stack ?? (context ? [context.self] : []),
     };
     // Start from the longest run of first steps that was built before.
@@ -1501,6 +1508,7 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
             shape = hit.shape ? hit.shape.clone() : null;
             state.threads = new Map(hit.threads);
             state.ghosts = [...hit.ghosts];
+            state.notes = [...hit.notes];
             for (const [i, step] of hit.followed) {
                 features[i] = step;
                 followed.set(i, step);
@@ -1554,11 +1562,11 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
             const next = applyFeature(shape, features[index], state);
             shape = next && normalizeSolid(next, 'the result');
         } catch (e) {
-            return { shape: withGhosts(shape, state.ghosts), error: `${label}: ${errorMessage(e)}`, followed: found() };
+            return { shape: withGhosts(shape, state.ghosts), error: `${label}: ${errorMessage(e)}`, followed: found(), ...said() };
         }
-        remember(keys[index], shape, state.threads, state.ghosts, followed);
+        remember(keys[index], shape, state.threads, state.ghosts, followed, state.notes);
     }
-    return { shape: withGhosts(shape, state.ghosts), error: null, followed: found() };
+    return { shape: withGhosts(shape, state.ghosts), error: null, followed: found(), ...said() };
 }
 
 /** Solids of preview builds and the threads shown on them without being built, meshed by meshSolid. */
@@ -1669,7 +1677,7 @@ function meshWithOpenCascade(shape: Shape3D): MeshData {
 }
 
 function mergeMeshes(meshes: MeshData[]): MeshData {
-    const total = (key: Exclude<keyof MeshData, 'followed'>): number => meshes.reduce((n, m) => n + m[key].length, 0);
+    const total = (key: Exclude<keyof MeshData, 'followed' | 'notes'>): number => meshes.reduce((n, m) => n + m[key].length, 0);
     const out: MeshData = {
         positions: new Float32Array(total('positions')),
         normals: new Float32Array(total('normals')),

@@ -127,8 +127,9 @@ Thread
   second direction; not yet the optional start location (vertex, edge, plane or face).
 - [~] End condition: blind (depth), revolutions; not yet up to selection or maintain thread length.
 - [~] Size table, override diameter and pitch, cut thread or extrude thread (ridges only where the wall or core stands
-  behind them), right/left hand, multiple starts, trim with start/end face; the preview while the form is open shows
-  the ridges as a ghost and the real cut is made on OK. Not yet mirror profile, rotation angle, preview options.
+  behind them), right/left hand, multiple starts, trim with start/end face; the thread runs as far as any wall of
+  the hole (or the shaft) does, and a thread asked longer stops there and the form says so; the preview while the form is open shows the ridges the build keeps as a
+  ghost and the real cut is made on OK. Not yet mirror profile, rotation angle, preview options.
 - [ ] Cosmetic thread: standard, type, size, minor/major diameter, end condition (blind, through, up to next).
 
 Mirror (feature)

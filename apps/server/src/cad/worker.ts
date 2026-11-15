@@ -38,6 +38,7 @@ interface Built {
     shape: Shape3D | null;
     error: string | null;
     followed?: Record<string, Feature>;
+    notes?: string[];
 }
 
 // Recently built solids, so a STEP export after meshing does not rebuild everything.
@@ -110,8 +111,12 @@ async function handle(request: WorkerRequest): Promise<void> {
     try {
         if (request.type === 'mesh') {
             const built = build(request.part, request.print, request.context);
-            // Where its reference steps found the model, for the view to draw them there.
-            const followed = built.followed && Object.keys(built.followed).length ? { followed: built.followed } : {};
+            // Where its reference steps found the model (for the view to draw them there), and what the build says about
+            // its steps (for an open tool form).
+            const followed = {
+                ...(built.followed && Object.keys(built.followed).length ? { followed: built.followed } : {}),
+                ...(built.notes?.length ? { notes: built.notes } : {}),
+            };
             if (built.error) {
                 const partial = built.shape ? { ...meshSolid(built.shape), ...followed } : undefined;
                 const response: WorkerResponse = { id: request.id, ok: false, error: built.error, partial };

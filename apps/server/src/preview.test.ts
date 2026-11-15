@@ -98,6 +98,21 @@ describe('runPreview', () => {
         await expect(runPreview(store.get(), 'parts_add', meshes)).rejects.toBeInstanceOf(PreviewRejected);
     });
 
+    it('previews a thread at once and says when it is cut to the length of its hole', { timeout: SLOW }, async () => {
+        const started = Date.now();
+        const result = await runPreview(store.get(), [{ name: 'features_add', args: {
+            partId: 'block', features: [
+                { op: 'hole', name: 'Hole1', spec: { kind: 'plain', diameter: 5 }, position: [0, 5, 0], direction: [0, -1, 0] },
+                { op: 'thread', name: 'Thread1', kind: 'internal', at: [2.6, 5, 0], pitch: 0.8, length: 30 },
+            ],
+        } }], meshes);
+        expect(result.errors).toEqual({});
+        expect(result.notes?.block?.join(' ')).toMatch(/Thread1: cut to the length of the hole: 10 mm \(30 mm asked\)/);
+        expect(Date.now() - started).toBeLessThan(60_000);
+        // The previewed part is the step as saved: the quick look is only how it is built.
+        expect(result.parts[0].features?.find((f) => f.op === 'thread')).not.toHaveProperty('preview');
+    });
+
     it('reports a call that fails validation as an error, without throwing', async () => {
         const invalid = await runPreview(store.get(), [{ name: 'features_add', args: { partId: 'block', features: [{ op: 'fillet' }] } }], meshes);
         expect(invalid.error).toMatch(/features/);
