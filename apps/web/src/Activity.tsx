@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ActivityEntry } from '@jarvis/core';
+import { cadChip, cadChipText, useCadDisplay } from './kernelActivity';
+import './kernelActivity.css';
 import { draftPrompt, useStudio } from './state';
 
 const STATE_ICONS = { running: '◌', done: '✓', stopped: '■', failed: '✕' } as const;
@@ -53,18 +55,29 @@ export function Activity() {
     const building = keys.filter((k) => k === null).length;
     const failed = Object.keys(meshes.errors).length;
     const jarvis = !connected ? 'offline' : status === 'working' && detail ? detail.replace(/_/g, ' ') : status;
+    // While the kernel works: the part, step and i/n it is on, and the jobs waiting (kernelActivity.ts).
+    const cad = useCadDisplay();
+    const chip = connected ? cadChip(cad) : null;
+    const busy = chip?.doing ?? chip?.waiting ?? null;
+    // An idle assistant gives up its place in the chip to the kernel's work, which needs the room.
+    const quiet = !!busy && connected && status === 'idle';
 
     return (
         <aside className={`activity ${open ? '' : 'closed'}`} aria-label="Activity">
             <button type="button" className="activity-status" onClick={() => setOpen(!open)} title={open ? 'Hide commands' : 'Show commands'}>
                 <span className={`pulse ${status !== 'idle' ? 'busy' : ''}`} />
-                <span>Jarvis <b>{jarvis}</b></span>
-                <span className="sep">·</span>
-                <span title={failed ? Object.values(meshes.errors).join('\n') : undefined}>
-                    CAD <b className={failed ? 'warn' : ''}>
-                        {building ? `building ${building}` : failed ? `${failed} failed` : `${keys.length} ok`}
+                {!quiet && (
+                    <>
+                        <span>Jarvis <b>{jarvis}</b></span>
+                        <span className="sep">·</span>
+                    </>
+                )}
+                <span className="activity-cad" title={cadChipText(cad) ?? (failed ? Object.values(meshes.errors).join('\n') : undefined)}>
+                    CAD <b className={busy ? 'busy' : failed ? 'warn' : ''}>
+                        {busy ?? (building ? `building ${building}` : failed ? `${failed} failed` : `${keys.length} ok`)}
                     </b>
                 </span>
+                {chip?.doing && chip.waiting && <span className="activity-queued">· {chip.waiting}</span>}
                 {speaking && (
                     <>
                         <span className="sep">·</span>

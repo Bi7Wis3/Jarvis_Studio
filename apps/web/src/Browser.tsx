@@ -11,6 +11,7 @@ import { valueText } from './numberText';
 import { componentMenu, type PartListActions } from './contextMenus';
 import { appActions, duplicatePart, editPattern, insertInstance, menuContext, removePattern, usePartRequest } from './viewMenu';
 import './browser.css';
+import { usePartRebuilding } from './kernelActivity';
 
 const PANEL_INSET = 274;
 
@@ -313,6 +314,8 @@ function ComponentRow(props: {
     const hidden = useStudio((s) => s.history?.view.hidden?.includes(part.id) ?? false);
     const focused = useStudio((s) => s.history?.view.focus === part.id);
     const error = useStudio((s) => s.meshes.errors[part.id]);
+    // Its shown mesh is being rebuilt: the old one stays on screen until the new one lands (kernelActivity.ts).
+    const rebuilding = usePartRebuilding(part.id);
 
     if (confirming) {
         const others = deleteIds.length - 1;
@@ -377,6 +380,7 @@ function ComponentRow(props: {
             {part.instanceOf && <span className="br-tag" title="Another placement of the same design">instance</span>}
             {part.repeat && <span className="br-count" title="Patterned">×{part.repeat.count}</span>}
             {error && <span className="br-warn" title={`Built only up to the failing step: ${error}`}>⚠</span>}
+            {rebuilding && <span className="cad-busy" title="Being rebuilt" aria-label="Being rebuilt" />}
             <span className={`br-actions ${hidden ? 'has-off' : ''}`}>
                 <button
                     type="button"

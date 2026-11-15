@@ -32,6 +32,7 @@ import {
 export { threadEdge } from './thread.js';
 import { toleranceFor, type MeshQuality } from './meshQuality.js';
 import { toolTap, type StepWatch } from './changeTap.js';
+import { progressTap } from './progressTap.js';
 import {
     extrudeRange, extrudeSketch, extrudeTool, isPlainExtrude, loftSketches, pathWire, revolveSketch, sweepProfile, throughRange,
     type SketchFrame,
@@ -1549,6 +1550,7 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
     for (let index = 0; index < features.length; index++) {
         const feature = features[index];
         state.index = index;
+        progressTap.on?.(index, feature, start, features.length, state.stack.length);
         const label = `feature "${feature.name ?? feature.id}" (${feature.op})`;
         // Sketch steps resolve even when suppressed: suppressing a sketch hides it, not the features using it.
         if (feature.op === 'sketch') {

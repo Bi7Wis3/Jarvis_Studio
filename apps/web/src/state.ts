@@ -6,6 +6,7 @@ import { captureViewport } from './capture';
 import { withFollowed } from './followedRefs';
 import { togglePick, type PickedEntity } from './picking';
 import { CAPTURED, captureCall, type Preview } from './preview';
+import { setKernelActivity } from './kernelActivity';
 import { undefinedSketchRefusal } from './sketchUseDefined';
 
 export { captureToolCalls } from './preview';
@@ -226,6 +227,9 @@ function handle(message: ServerMessage): void {
         case 'error':
             useStudio.setState({ error: message.message });
             window.setTimeout(() => useStudio.setState({ error: null }), 8000);
+            break;
+        case 'cad':
+            setKernelActivity(message);
             break;
     }
 }

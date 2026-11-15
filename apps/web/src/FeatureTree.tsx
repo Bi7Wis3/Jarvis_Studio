@@ -41,6 +41,7 @@ import { treeClipboardKey } from './sketchPasteSketch';
 import { useHiddenSteps } from './stepVisibility';
 import { bodiesLabel, bodyRows, pickBody, type BodyRow } from './bodyView';
 import { useKernelMesh } from './meshes';
+import { useBusyStep } from './kernelActivity';
 
 /** Stands for "no expand state saved yet" for a part. */
 const UNSAVED = '\u0000';
@@ -160,6 +161,8 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
     const rollback = useStudio((s) => s.history?.view.rollback ?? null);
     const error = useStudio((s) => s.meshes.errors[part.id]);
     const editing = useStudio((s) => s.editing);
+    // The step the kernel is rebuilding for the part's shown result (kernelActivity.ts).
+    const busyStep = useBusyStep(part.id);
     // Steps hidden in the view: one by one, and absorbed sketches not shown (stepVisibility.ts).
     const hiddenSteps = useHiddenSteps();
     const features = useMemo(() => part.features ?? [], [part.features]);
@@ -1319,6 +1322,7 @@ export function PartHistory(props: { part: Part; parts: Part[]; onMinimise: () =
                         {node.role && feature && <span className="ft-role">{node.role}</span>}
                         {shared && <span className="ft-badge" title={`Shared by ${node.users} steps`}>shared ×{node.users}</span>}
                         {failed && <span className="ft-err" aria-label="Build error">⚠</span>}
+                        {busyStep !== null && busyStep === node.stepId && <span className="cad-busy" title="Being rebuilt" aria-label="Being rebuilt" />}
                         {hideable && (
                             <button
                                 type="button"

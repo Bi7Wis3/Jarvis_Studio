@@ -1,5 +1,7 @@
 // Shared project model and wire protocol. Units are millimetres, Y is up.
 
+import type { CadActivity } from './cadActivity';
+
 export type Vec3 = [number, number, number];
 
 export type Shape =
@@ -1111,7 +1113,9 @@ export type ServerMessage =
     | { type: 'capture'; id: string }
     | { type: 'projects'; projects: ProjectEntry[]; current: string }
     | { type: 'download'; url: string; filename: string }
-    | { type: 'error'; message: string };
+    | { type: 'error'; message: string }
+    /** What the CAD kernel is doing (cadActivity.ts). */
+    | ({ type: 'cad' } & CadActivity);
 
 export type ClientMessage =
     | { type: 'prompt'; text: string; images?: ImageAttachment[] }

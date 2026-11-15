@@ -14,6 +14,7 @@ import { ChangeWatch, type ChangeRange } from './change.js';
 import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projection';
 import { freecadMacro, type FreecadExport } from '../export/freecadMacro.js';
 import type { BodyRecord } from './bodies.js';
+import { startProgress, type WorkerProgress } from './progress.js';
 
 export type WorkerRequest =
     | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext; quality?: MeshQuality }
@@ -27,6 +28,8 @@ export type WorkerRequest =
 export type WorkerResponse =
     | { type: 'ready' }
     | { type: 'fatal'; error: string }
+    /** How far the job is (progress.ts). */
+    | { type: 'progress'; progress: WorkerProgress }
     | { id: number; ok: true; mesh: MeshData; change: MeshData | null; changeMs: number }
     | { id: number; ok: true; mesh: MeshData }
     | { id: number; ok: true; step: Uint8Array }
@@ -39,6 +42,7 @@ const port = parentPort;
 if (!port) {
     throw new Error('cad/worker.ts must run in a worker thread');
 }
+const progress = startProgress(port);
 
 interface Built {
     shape: Shape3D | null;
@@ -95,6 +99,7 @@ async function step(project: Project): Promise<Uint8Array> {
     const print = project.print ?? DEFAULT_PRINT;
     const configs: { shape: Shape3D; name: string; color: string }[] = [];
     for (const part of project.parts) {
+        progress.part(part.id, part.name);
         // Instances build their source's design; combine steps need the other parts.
         const { shape } = build(effectivePart(part, project.parts), print, combineContext(part, project.parts));
         if (!shape) {
@@ -121,11 +126,13 @@ async function step(project: Project): Promise<Uint8Array> {
 }
 
 async function handle(request: WorkerRequest): Promise<void> {
+    progress.begin(request.id);
     try {
         if (request.type === 'mesh' || request.type === 'change') {
             // A preview also gets the mesh of what the steps of its range do.
             const watch = request.type === 'change' ? new ChangeWatch(request.range) : undefined;
             const built = build(request.part, request.print, request.context, watch);
+            progress.meshing();
             // Where its reference steps found the model, for the view to draw them there.
             const extra = {
                 ...(built.followed && Object.keys(built.followed).length ? { followed: built.followed } : {}),

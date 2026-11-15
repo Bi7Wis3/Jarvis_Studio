@@ -22,7 +22,8 @@
     "./splines": "./src/splines.ts",
     "./visibility": "./src/visibility.ts",
     "./settings": "./src/settings.ts",
-    "./folders": "./src/folders.ts"
+    "./folders": "./src/folders.ts",
+    "./cadActivity": "./src/cadActivity.ts"
   },
   "dependencies": {
     "three": "^0.187.0"

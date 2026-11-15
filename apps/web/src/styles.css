@@ -159,7 +159,7 @@ h1 {
     --level: 0;
     position: absolute;
     right: 28px;
-    bottom: 66px;
+    bottom: 84px;
     width: 128px;
     height: 128px;
     transform: scale(calc(1 + var(--level) * 0.06));

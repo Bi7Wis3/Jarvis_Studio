@@ -1,0 +1,262 @@
+/* The CAD kernel's work (kernelActivity.ts). On the Jarvis logo (Orb.tsx): the outer ring fills step by step, the
+   tick ring chases while a part builds, a sweep scans while it meshes, slow dots orbit for jobs waiting, a flash when
+   a result lands and a red pulse when a build fails. The inner arcs and the core stay the assistant's. Also the
+   activity chip's text and the trees' busy marks. */
+
+.orb {
+    --cad: #35e0ff;
+    --cad-bright: #dffbff;
+    --cad-fail: #ff5d5d;
+}
+
+.orb mask circle {
+    fill: none;
+    stroke: #fff;
+}
+
+/* Outer ring: one segment per step of the build */
+
+.orb .cad-ring circle {
+    fill: none;
+    stroke-width: 4;
+}
+
+.orb .cad-track {
+    stroke: rgba(53, 224, 255, 0.16);
+    opacity: 0;
+    transition: opacity 0.4s ease;
+}
+
+.orb:not(.cad-idle) .cad-track {
+    opacity: 1;
+}
+
+.orb .cad-fill {
+    stroke: var(--cad);
+    filter: drop-shadow(0 0 3px var(--cad));
+    transition: stroke-dasharray 0.35s ease;
+}
+
+.orb .cad-now {
+    stroke: var(--cad-bright);
+    filter: drop-shadow(0 0 5px var(--cad));
+    animation: cad-blink 1.1s ease-in-out infinite;
+}
+
+/* Tick ring: lit ticks chase round it while a part builds */
+
+.orb .ticks-lit {
+    stroke: var(--cad-bright);
+    stroke-width: 6;
+    stroke-dasharray: 1.5 6;
+    opacity: 0;
+    filter: drop-shadow(0 0 4px var(--cad));
+    animation: spin 40s linear infinite;
+    transition: opacity 0.4s ease;
+}
+
+.orb .chase-window {
+    animation: spin 1.3s linear infinite;
+    animation-play-state: paused;
+}
+
+.orb.cad-building .ticks-lit {
+    opacity: 1;
+}
+
+.orb.cad-building .chase-window {
+    animation-play-state: running;
+}
+
+.orb.cad-building .ticks {
+    opacity: 0.45;
+}
+
+/* Meshing: a sweep scans round inside the rings, and the full ring shimmers */
+
+.orb .sweep {
+    position: absolute;
+    inset: 7%;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0deg 250deg, rgba(53, 224, 255, 0.05) 280deg,
+        rgba(53, 224, 255, 0.32) 352deg, rgba(223, 251, 255, 0.85) 359deg, transparent 360deg);
+    -webkit-mask: radial-gradient(closest-side, transparent 30%, #000 33%, #000 97%, transparent 100%);
+    mask: radial-gradient(closest-side, transparent 30%, #000 33%, #000 97%, transparent 100%);
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    animation: spin 1.6s linear infinite;
+    animation-play-state: paused;
+}
+
+.orb.cad-meshing .sweep {
+    opacity: 1;
+    animation-play-state: running;
+}
+
+.orb.cad-meshing .cad-fill {
+    animation: cad-shimmer 1.6s ease-in-out infinite;
+}
+
+/* Waiting: the ring breathes slowly in the assistant's purple, one dot orbits per job waiting */
+
+.orb.cad-waiting .cad-track {
+    stroke: rgba(180, 107, 255, 0.45);
+    animation: cad-breathe 2.8s ease-in-out infinite;
+}
+
+.orb .pips {
+    transform-origin: 100px 100px;
+    animation: spin 16s linear infinite;
+}
+
+.orb .pips circle {
+    fill: var(--accent);
+    stroke: none;
+    opacity: 0.85;
+    filter: drop-shadow(0 0 3px var(--accent));
+}
+
+/* A result landed: a short bright flash of the outer rings */
+
+.orb.cad-landed .halo {
+    animation: cad-flash-halo 0.9s ease-out;
+}
+
+.orb.cad-landed .cad-track {
+    stroke: var(--cad-bright);
+    animation: cad-flash-ring 0.9s ease-out forwards;
+}
+
+/* A build failed: the outer rings pulse red */
+
+.orb.cad-failed .halo,
+.orb.cad-failed .cad-track {
+    stroke: var(--cad-fail);
+    animation: cad-fail 0.8s ease-in-out 3;
+}
+
+/* The caption names the kernel's work in its colour while the assistant is idle */
+.orb.idle:not(.cad-idle):not(.cad-failed) .caption {
+    color: var(--cad);
+}
+
+.orb.cad-failed .caption {
+    color: #ff8a8a;
+}
+
+/* The line under the logo: part, step, i/n, seconds so far */
+
+.orb .cad-line {
+    position: absolute;
+    bottom: -21px;
+    right: 0;
+    max-width: min(360px, calc(100vw - 48px));
+    overflow: hidden;
+    color: var(--muted);
+    font: 10.5px ui-monospace, 'JetBrains Mono', Menlo, monospace;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.orb.cad-failed .cad-line {
+    color: #ff8a8a;
+}
+
+/* Activity chip and trees */
+
+.activity-status .activity-cad {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.activity-status b.busy {
+    color: var(--accent-2);
+}
+
+/* The count of jobs waiting stays in view when the job's text is cut short */
+.activity-status .activity-queued {
+    flex: none;
+    color: var(--text);
+}
+
+.cad-busy {
+    flex: none;
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    margin: 0 3px;
+    border: 1.5px solid rgba(53, 224, 255, 0.25);
+    border-top-color: var(--accent-2);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+}
+
+@keyframes cad-blink {
+    50% {
+        opacity: 0.35;
+    }
+}
+
+@keyframes cad-shimmer {
+    50% {
+        opacity: 0.55;
+    }
+}
+
+@keyframes cad-breathe {
+    50% {
+        opacity: 0.35;
+    }
+}
+
+@keyframes cad-flash-halo {
+    0% {
+        stroke: var(--cad-bright);
+        stroke-width: 3;
+        opacity: 1;
+        filter: drop-shadow(0 0 16px var(--cad));
+    }
+}
+
+@keyframes cad-flash-ring {
+    0% {
+        opacity: 1;
+        stroke-width: 7;
+        filter: drop-shadow(0 0 10px var(--cad));
+    }
+
+    100% {
+        opacity: 0;
+    }
+}
+
+@keyframes cad-fail {
+    50% {
+        opacity: 1;
+        stroke-width: 4;
+        filter: drop-shadow(0 0 10px var(--cad-fail));
+    }
+}
+
+@media (max-width: 760px) {
+    .orb .cad-line {
+        display: none;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .orb .sweep,
+    .orb .pips,
+    .orb .chase-window,
+    .cad-busy {
+        animation: none;
+    }
+
+    .orb .cad-fill,
+    .orb .cad-track,
+    .orb .ticks-lit,
+    .orb .sweep {
+        transition: none;
+    }
+}

@@ -12,6 +12,7 @@ import { listBlockFiles, readBlockFile, saveBlockFile } from './blockFiles.js';
 import { fontGlyphs, listFonts } from './fonts.js';
 import { FONT_STYLES, type FontStyle } from '@jarvis/core/text';
 import { CadKernel } from './cad/kernel.js';
+import { CadActivityFeed } from './cadActivity.js';
 import { modelSketchRequest } from './modelSketch.js';
 import { createHostTools } from './hostTools.js';
 import { MeshService } from './meshes.js';
@@ -38,6 +39,8 @@ const settings = new SettingsStore();
 // Real geometry: OpenCascade in a worker thread builds every part; browsers fetch the meshes by key.
 const kernel = CadKernel.start();
 const meshes = new MeshService(kernel, (status) => broadcast({ type: 'meshes', ...status }));
+// What the kernel is doing, for the busy display: the job and step running, jobs waiting, parts being rebuilt.
+const cad = new CadActivityFeed(kernel, meshes, () => store.get(), (activity) => broadcast({ type: 'cad', ...activity }));
 const voice = new Voice();
 const ears = new Ears();
 // Set before the slow start-up, so a restart in the middle of it still stops the voice and speech processes.
@@ -203,6 +206,7 @@ meshes.update(store.get());
 store.subscribe((project) => {
     broadcast({ type: 'state', project });
     meshes.update(project);
+    cad.refresh();
     broadcastCatalog();
 });
 
@@ -216,6 +220,7 @@ app.get('/ws', { websocket: true }, (socket) => {
     socket.send(JSON.stringify(catalog()));
     socket.send(JSON.stringify({ type: 'activity', entries: activity } satisfies ServerMessage));
     socket.send(JSON.stringify({ type: 'meshes', ...meshes.current() } satisfies ServerMessage));
+    socket.send(JSON.stringify({ type: 'cad', ...cad.current() } satisfies ServerMessage));
     socket.on('message', (raw: Buffer) => {
         let message: ClientMessage;
         try {

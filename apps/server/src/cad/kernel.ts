@@ -12,6 +12,7 @@ import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projecti
 import type { BodyInfo } from '@jarvis/core/visibility';
 import type { FreecadExport } from '../export/freecadMacro.js';
 import type { ChangeRange } from './change.js';
+import { jobLabel, KernelTracker, type KernelActivity, type KernelJobLabel } from './activity.js';
 
 export { meshKey } from './key.js';
 export { combineContext, type CombineContext, type CombinePart } from './context.js';
@@ -85,6 +86,7 @@ interface Job {
     request: JobRequest;
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
+    label: KernelJobLabel;
 }
 
 interface CacheEntry {
@@ -108,6 +110,11 @@ export class CadKernel {
     private readonly queue: Job[] = [];
     private current: { id: number; job: Job; timer: NodeJS.Timeout } | null = null;
     private nextId = 1;
+    /** What the kernel is doing, for the busy display (activity.ts). */
+    private readonly tracker = new KernelTracker(() => ({
+        current: this.current && { id: this.current.id, label: this.current.job.label },
+        queue: this.queue.map((job) => job.label),
+    }));
 
     private constructor(options: CadKernelOptions) {
         this.timeoutMs = options.timeoutMs ?? (Number(process.env.JARVIS_CAD_TIMEOUT_MS) || 900_000);
@@ -135,7 +142,7 @@ export class CadKernel {
             return hit.promise;
         }
         const entry: CacheEntry = {
-            promise: this.run({ type: 'mesh', part: { shape: part.shape, features: part.features }, print, context, quality }) as Promise<MeshData>,
+            promise: this.run({ type: 'mesh', part: { shape: part.shape, features: part.features }, print, context, quality }, part) as Promise<MeshData>,
         };
         entry.promise.catch((error: unknown) => {
             if (error instanceof CadBuildError) {
@@ -157,7 +164,7 @@ export class CadKernel {
      */
     meshWithChange(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, range: ChangeRange, context?: CombineContext,
         quality: MeshQuality = 'normal'): Promise<MeshWithChange> {
-        return this.run({ type: 'change', part: { shape: part.shape, features: part.features }, print, context, quality, range }) as Promise<MeshWithChange>;
+        return this.run({ type: 'change', part: { shape: part.shape, features: part.features }, print, context, quality, range }, part) as Promise<MeshWithChange>;
     }
 
     /** STEP (AP214) of the assembled project, Z-up like the STL export, parts named and coloured. */
@@ -183,7 +190,7 @@ export class CadKernel {
             this.projections.set(key, hit);
             return hit;
         }
-        const promise = this.run({ type: 'project', part: { shape: part.shape, features: part.features }, print, context, frame, query }) as Promise<ModelSketch>;
+        const promise = this.run({ type: 'project', part: { shape: part.shape, features: part.features }, print, context, frame, query }, part) as Promise<ModelSketch>;
         promise.catch(() => this.projections.delete(key));
         this.projections.set(key, promise);
         while (this.projections.size > 200) {
@@ -194,7 +201,7 @@ export class CadKernel {
 
     /** Volume, area, centre of mass and inertia (unit density) of a part's solid. Not cached. */
     properties(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, context?: CombineContext): Promise<PropsResult> {
-        return this.run({ type: 'props', part: { shape: part.shape, features: part.features }, print, context }) as Promise<PropsResult>;
+        return this.run({ type: 'props', part: { shape: part.shape, features: part.features }, print, context }, part) as Promise<PropsResult>;
     }
 
     async close(): Promise<void> {
@@ -213,16 +220,28 @@ export class CadKernel {
         await worker?.terminate();
     }
 
-    private run(request: JobRequest): Promise<unknown> {
+    /** What the kernel is doing now: the job running and how far it is, and the jobs waiting (see activity.ts). */
+    activity(): KernelActivity {
+        return this.tracker.activity();
+    }
+
+    /** Calls `listener` whenever the activity changes; returns the unsubscribe. */
+    onActivity(listener: (activity: KernelActivity) => void): () => void {
+        return this.tracker.subscribe(listener);
+    }
+
+    /** `part` is what the caller asked about (a whole Part when it had one), to name the job. */
+    private run(request: JobRequest, part?: object): Promise<unknown> {
         if (this.closed) {
             return Promise.reject(new Error('CAD kernel closed'));
         }
         return new Promise((resolve, reject) => {
-            this.queue.push({ request, resolve, reject });
+            this.queue.push({ request, resolve, reject, label: jobLabel(request, part) });
             if (!this.worker) {
                 this.spawn();
             }
             this.pump();
+            this.tracker.changed();
         });
     }
 
@@ -231,6 +250,7 @@ export class CadKernel {
         const typescript = import.meta.url.endsWith('.ts');
         const worker = new Worker(new URL(typescript ? './worker.ts' : './worker.js', import.meta.url), {
             execArgv: typescript ? ['--import', 'tsx'] : [],
+            workerData: { progress: this.tracker.mailbox.buffer },
         });
         this.worker = worker;
         this.ready = false;
@@ -244,6 +264,10 @@ export class CadKernel {
             return;
         }
         if ('type' in message) {
+            if (message.type === 'progress') {
+                this.tracker.progress(message.progress);
+                return;
+            }
             if (message.type === 'ready') {
                 this.ready = true;
                 this.pump();
@@ -266,6 +290,7 @@ export class CadKernel {
         } else {
             current.job.reject(new CadBuildError(message.error, message.partial));
         }
+        this.tracker.finished(current.id, message.ok);
         this.pump();
     }
 
@@ -294,6 +319,7 @@ export class CadKernel {
         for (const job of this.queue.splice(0)) {
             job.reject(error);
         }
+        this.tracker.changed();
     }
 
     private stopWorker(): void {
@@ -324,5 +350,6 @@ export class CadKernel {
         }, timeout);
         this.current = { id, job, timer };
         this.worker.postMessage({ ...job.request, id } as WorkerRequest);
+        this.tracker.changed();
     }
 }
