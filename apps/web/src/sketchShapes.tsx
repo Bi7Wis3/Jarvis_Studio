@@ -12,6 +12,7 @@ import { midMarkers } from './sketchDimDraw';
 import { blockLook, ownedCurves, ownedPoints } from './sketchItems';
 import { entityPoints, type Entity, type NewEntity, type Pt } from './sketchMath';
 import { isEditTool, useSketcher } from './sketcher';
+import { isModelReference } from './sketchModel';
 import { LineBatch, PointBatch, type BatchLine, type BatchPoint } from './sketchBatch';
 
 export const FREE = '#5aa9ff';
@@ -23,6 +24,8 @@ export const CONFLICT = '#ff5d6c';
 /** Over defined: geometry a redundant relation refers to (SolidWorks shows it yellow). */
 export const OVER = '#f0e14a';
 const HELPER = '#8a96a8';
+/** A model edge or vertex kept for a relation or dimension (sketchModelSelect.ts): drawn quietly. */
+const REFERENCE = '#7d8796';
 const ORIGIN_DOT = '#ffd166';
 
 const at3 = ([u, v]: Pt): [number, number, number] => [u, v, 0];
@@ -86,6 +89,9 @@ export const SketchShapes = memo(function SketchShapes() {
             const on = picked.has(e.id) || hovered === e.id || lit.has(e.id);
             const color = lit.has(e.id) ? PICKED : selected.has(e.id) ? SELECTED : on ? PICKED : conflictRefs.has(e.id) ? CONFLICT
                 : overRefs.has(e.id) ? OVER : blocksLook.colour.get(e.id) ?? (e.construction ? CONSTRUCTION : isDefined(e.id) ? FIXED : FREE);
+            if (color === CONSTRUCTION && isModelReference(e.id)) {
+                return entityLine(e, REFERENCE, 1.2, true);
+            }
             return entityLine(e, color, selected.has(e.id) || on ? 3.8 : e.construction ? 1.8 : 2.8, !!e.construction);
         });
         lines.push(...helpers.map((e) => entityLine(e, HELPER, 1, true)));
@@ -100,7 +106,7 @@ export const SketchShapes = memo(function SketchShapes() {
         const points: BatchPoint[] = [{ at: [0, 0, 0], color: ORIGIN_DOT, size: originPicked ? 10.5 : 7, square: true }];
         for (const p of g.points.filter((q) => !owned.points.has(q.id) && !brought.handles.has(q.id) && !blocksLook.hidden.has(q.id))) {
             const state = lit.has(p.id) ? 'picked' : selected.has(p.id) ? 'selected' : picked.has(p.id) || hovered === p.id ? 'picked' : p.fixed ? 'fixed' : '';
-            points.push(dot([p.u, p.v], state, isDefined(p.id)));
+            points.push(!state && isModelReference(p.id) ? { at: at3([p.u, p.v]), color: REFERENCE, size: 4.5, square: true } : dot([p.u, p.v], state, isDefined(p.id)));
         }
         // Line midpoints picked or hovered by the dimension tool.
         points.push(...midMarkers(g, [...picked, ...(hovered ? [hovered] : [])]).map((m) => dot(m, 'picked', false)));

@@ -37,7 +37,7 @@ import { snapCursor, type QuickSnap, type Snap, type SnapKind } from './snapping
 import { otherSketches } from './sketchOthers';
 import { hiddenStepsNow } from './stepVisibility';
 import { assemblySketches } from './sketchAssemblySnaps';
-import { bringModelRef, loadedModel, mergeSnapGeometry, modelRefAt, modelRefEntity, modelSnapGeometry, modelTarget, useSketchModel, type ModelRef } from './sketchModel';
+import { bringModelRef, isModelReference, loadedModel, mergeSnapGeometry, modelRefAt, modelRefEntity, modelSnapGeometry, modelTarget, useSketchModel, withoutLooseReferences, type ModelRef } from './sketchModel';
 import {
     DEFAULT_DRAW_OPTIONS, LINE_ARC_IDLE, finishDrawn, lineArcMove, placeVariant, type DrawOptions, type LineArc,
 } from './sketchDrawVariants';
@@ -1268,10 +1268,11 @@ function selectAt(raw: Pt, tolerance: number, shift: boolean): void {
         return;
     }
     set({ selection: item ? (additive ? toggle(s.selection, item) : [item]) : additive ? s.selection : [] });
-    if (item?.type === 'curve' && !additive) {
+    // A model edge or vertex is only selected (for a relation, a dimension or Convert): it has no form of its own.
+    if (item?.type === 'curve' && !additive && !isModelReference(item.id)) {
         openCurveForm(s.geometry, item.id);
     }
-    if (item?.type === 'point' && !additive) {
+    if (item?.type === 'point' && !additive && !isModelReference(item.id)) {
         openEntityForm(s.geometry, item);
     }
 
@@ -2225,10 +2226,6 @@ function modelRefUnder(s: SketcherState, raw: Pt, tolerance: number): ModelRef |
     return own && ref?.kind !== 'point' ? null : ref;
 }
 
-/**
- * A dimension or relation tool clicked a model edge or vertex: it comes into the sketch as a locked construction
- * entity at its projected place (once; the same edge again reuses it), so the click then picks that.
- */
 /** What the current tool takes from the model where it takes a sketch entity: a straight line, any curve, or nothing. */
 function modelEdgeUse(s: SketcherState): 'line' | 'curve' | null {
     if ((s.tool === 'mirror' && s.picks.length) || (s.tool === 'm:pick' && useSketchMore.getState().picker)) {
@@ -2240,17 +2237,29 @@ function modelEdgeUse(s: SketcherState): 'line' | 'curve' | null {
 const fitsUse = (ref: ModelRef, use: 'line' | 'curve' | null): boolean =>
     !use || (ref.kind === 'curve' && (use === 'curve' || ref.curve.kind === 'line'));
 
-function bringModelUnder(raw: Pt, tolerance: number, use: 'line' | 'curve' | null = null): void {
+/**
+ * A click on a model edge or vertex (or an entity of another sketch): it comes into the sketch as a locked
+ * construction entity at its projected place (once; the same edge again reuses it), so the click then picks that.
+ * For selecting it and for relations and dimensions it is a model reference: no undo step, and it goes again when
+ * nothing uses it (sketchModelSelect.ts); mirror lines, offset bases and pattern directions (`use`) stay. Returns
+ * what to pick, or null.
+ */
+export function bringModelUnder(raw: Pt, tolerance: number, use: 'line' | 'curve' | null = null): Pick | null {
     const s = get();
     const ref = modelRefUnder(s, raw, tolerance);
     if (!ref || !fitsUse(ref, use)) {
-        return;
+        return null;
     }
-    const r = bringModelRef(s.geometry, ref);
+    const r = bringModelRef(s.geometry, ref, { reference: !use });
     if (r.g !== s.geometry) {
-        commit(r.g);
+        if (use) {
+            commit(r.g);
+        } else {
+            set({ geometry: r.g });
+        }
     }
     useSketchModel.setState({ hover: null });
+    return r.pick;
 }
 
 // ---- Constraints --------------------------------------------------------------------------------------
@@ -3256,6 +3265,8 @@ export function setBeforeOutput(hook: (() => void) | null): void {
 export function currentSketch(): Sketch {
     beforeOutput?.();
     const s = get();
+    // Model edges that were only selected leave no trace.
+    const g = withoutLooseReferences(s.geometry);
     // Every closed area on its own, so each extrude or cut can use just the ones picked for it.
     const regions = openSketchRegions(s.geometry);
     // Open chains (a sweep path, a guide) are kept too; `profiles` stays the closed areas only.
@@ -3268,8 +3279,8 @@ export function currentSketch(): Sketch {
         ...(open.length ? { open } : {}),
         // Label positions travel with their dimensions.
         geometry: {
-            ...s.geometry,
-            constraints: s.geometry.constraints.map((c) => (isDimension(c) && s.labels[c.id] ? { ...c, at: s.labels[c.id] } : c)),
+            ...g,
+            constraints: g.constraints.map((c) => (isDimension(c) && s.labels[c.id] ? { ...c, at: s.labels[c.id] } : c)),
         },
         // A derived sketch's link, and the 2D to 3D view a sketch is.
         ...sketchOutputExtras(),

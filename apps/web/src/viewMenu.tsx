@@ -14,8 +14,10 @@ import { ContextMenu, showError, tool, type MenuEntry } from './menus';
 import { copyWholeSketch, pasteWholeSketch } from './sketchPasteSketch';
 import type { P3 } from './picking';
 import {
-    choosePlane, chooseFace, closeSketch, deleteSelected, endChain, fitSketch, pickSketch, startSketch, useSketcher,
+    bringModelUnder, choosePlane, chooseFace, closeSketch, deleteSelected, endChain, fitSketch, pickSketch, startSketch, useSketcher,
 } from './sketcher';
+import { useSketchModel } from './sketchModel';
+import { forgetPendingPick, modelMenu } from './sketchModelSelect';
 import { pickAt, type Pick } from './sketchGeometry';
 import { sketchPointAt } from './SketchDrawing';
 import { planeFrame } from './sketchMath';
@@ -250,13 +252,15 @@ const sketchActions: SketchMenuActions = {
 
 /** The open sketch's menu at a screen point: what is there is selected first, as a right-click does in SolidWorks. */
 function sketchItems(x: number, y: number): MenuEntry[] {
-    const s = useSketcher.getState();
+    let s = useSketcher.getState();
     let selection = s.selection.filter((item): item is Pick => item.type !== 'constraint');
     const drawing = s.draft.length > 0;
     if (s.stage === 'draw' && !drawing) {
         const hit = sketchPointAt(x, y);
         const pick = hit ? pickAt(s.geometry, hit.p, hit.tolerance) : null;
-        const own = pick && pick.id !== ORIGIN && pick.id !== AXIS_U && pick.id !== AXIS_V ? pick : null;
+        // A model edge or vertex seen on the sketch plane is selected as a click selects it (sketchModelSelect.ts).
+        const own = pick && pick.id !== ORIGIN && pick.id !== AXIS_U && pick.id !== AXIS_V ? pick : hit && !pick ? bringModelUnder(hit.p, hit.tolerance) : null;
+        s = useSketcher.getState();
         // On empty space the selection stays: its menu then still applies to it (so does a piece picked with Alt).
         if (own && !selection.some((p) => p.id === own.id) && !onPickedPiece(hit!.p, hit!.tolerance)) {
             selection = [own];
@@ -266,6 +270,7 @@ function sketchItems(x: number, y: number): MenuEntry[] {
     }
     return sketchSpaceMenu({
         stage: s.stage, tool: s.tool, geometry: s.geometry, draft: s.draft.length, selection, lastUsed: lastUsedTools(),
+        model: drawing ? null : modelMenu(selection, useSketchModel.getState().pendingPick),
     }, sketchActions);
 }
 
@@ -332,6 +337,8 @@ export function RightClickGate() {
         const down = (event: PointerEvent) => {
             if (event.button === 2) {
                 press = { x: event.clientX, y: event.clientY, released: false, menu: false, scheduled: false, best: null, rank: -1 };
+                // The part's face or edge under this press, if any, is noted again by the part (Scene.tsx).
+                forgetPendingPick();
             }
         };
         const up = (event: PointerEvent) => {

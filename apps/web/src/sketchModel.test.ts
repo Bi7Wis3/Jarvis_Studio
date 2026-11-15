@@ -137,17 +137,22 @@ describe('projection maths', () => {
         expect(pieces[0].poles[3]).toEqual(pieces[1].poles[0]);
     });
 
-    it('keeps a style-spline B-spline whole and turns a rational quadratic into a conic', () => {
+    it('keeps a style-spline B-spline whole, turns a rational quarter circle into an arc and any other into a conic', () => {
         const poles: [number, number][] = [[0, 0], [1, 2], [3, 3], [4, 0], [6, -1]];
         expect(splineCurves({ poles, weights: null, knots: [0, 0, 0, 0, 0.5, 1, 1, 1, 1], degree: 3 }))
             .toEqual([{ kind: 'bspline', poles, degree: 3 }]);
-        // A quarter circle: weights 1, cos 45, 1.
+        // A quarter circle: weights 1, cos 45, 1. It is the arc it is (curveKinds.ts).
         const w = Math.SQRT1_2;
-        const [conic] = splineCurves({ poles: [[1, 0], [1, 1], [0, 1]], weights: [1, w, 1], knots: [0, 0, 0, 1, 1, 1], degree: 2 })!;
+        expect(splineCurves({ poles: [[1, 0], [1, 1], [0, 1]], weights: [1, w, 1], knots: [0, 0, 0, 1, 1, 1], degree: 2 }))
+            .toEqual([{ kind: 'arc', center: [0, 0], start: [1, 0], end: [0, 1] }]);
+        const [conic] = splineCurves({ poles: [[1, 0], [1, 1], [0, 1]], weights: [1, 2, 1], knots: [0, 0, 0, 1, 1, 1], degree: 2 })!;
         expect(conic.kind).toBe('conic');
         if (conic.kind === 'conic') {
+            expect(conic.rho).toBeCloseTo(2 / 3, 12);
             const mid = conicAt(conic.start, conic.apex, conic.end, conic.rho, 0.5);
-            expect(Math.hypot(...mid)).toBeCloseTo(1, 12);
+            // Weights 1, 2, 1: the middle is ((1, 0) + 4 (1, 1) + (0, 1)) / 6.
+            expect(mid[0]).toBeCloseTo(5 / 6, 12);
+            expect(mid[1]).toBeCloseTo(5 / 6, 12);
         }
     });
 

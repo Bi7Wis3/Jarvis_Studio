@@ -26,7 +26,7 @@ const FAMILIES: (ToolFamily & { tools: string[] })[] = [
     { id: 'sk-spline-tools', label: 'Spline tools', tools: ['sk-fit-spline', 'sk-simplify-spline', 'sk-add-tangency', 'sk-add-curvature', 'sk-show-combs',
         'sk-show-inflections', 'sk-show-min-radius', 'sk-show-handles', 'sk-show-polygon', 'sk-convert-spline'] },
     { id: 'sk-block', label: 'Blocks', tools: ['sk-block-make', 'sk-block-insert', 'sk-block-edit', 'sk-block-rebuild', 'sk-block-addremove', 'sk-block-explode', 'sk-block-save'] },
-    { id: 'sk-convert', label: 'Convert entities', tools: ['sk-convert', 'sk-intersection', 'sk-silhouette', 'sk-pierce'] },
+    { id: 'sk-convert', label: 'Convert entities', tools: ['sk-convert', 'sk-intersection', 'sk-silhouette', 'sk-pierce', 'sk-copy-model'] },
     { id: 'sk-dim', label: 'Smart dimension', tools: ['sk-dimension', 'sk-dim-horizontal', 'sk-dim-vertical', 'sk-dim-ordinate', 'sk-dim-ordinate-v', 'sk-dim-path', 'sk-dim-ordinate-auto', 'sk-dim-running'] },
     { id: 'primitive', label: 'Primitives', tools: ['prim-box', 'prim-cylinder', 'prim-sphere', 'prim-cone', 'prim-torus', 'prim-tube', 'prim-wedge', 'prim-capsule'] },
 ];

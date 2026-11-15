@@ -839,6 +839,61 @@ describe('STEP export', () => {
     }, SLOW);
 });
 
+describe('blends OpenCascade cannot make itself', () => {
+    // A loft from a hexagon on the top plane through a circle to a slot on front planes, and a 5 mm hole drilled from
+    // the slot's end along its wall. The hole leaves the lofted side at down to about 12°, and the edge between two
+    // loft faces ends on the rim just where the faces meet most shallowly: OpenCascade cannot blend the rim at any size.
+    const loftedHole: Feature[] = [
+        { id: 's1', op: 'sketch', sketch: { plane: 'top', profiles: [{ kind: 'path', start: [0, -34.641016], segments: [
+            { kind: 'line', to: [30, -17.320508] }, { kind: 'line', to: [30, 17.320508] }, { kind: 'line', to: [0, 34.641016] },
+            { kind: 'line', to: [-30, 17.320508] }, { kind: 'line', to: [-30, -17.320508] }, { kind: 'line', to: [0, -34.641016] }] }] } },
+        { id: 'p1', op: 'plane', definition: { kind: 'offset', base: 'front', distance: -60 } },
+        { id: 's2', op: 'sketch', sketch: { plane: { planeRef: 'p1' }, profiles: [{ kind: 'circle', center: [0, 50], radius: 13.601471 }] } },
+        { id: 'p2', op: 'plane', definition: { kind: 'offset', base: { planeRef: 'p1' }, distance: -100 } },
+        { id: 's3', op: 'sketch', sketch: { plane: { planeRef: 'p2' }, profiles: [{ kind: 'path', start: [-10.745731, 82.689468], segments: [
+            { kind: 'line', to: [-10.745731, 20.349972] }, { kind: 'arc', to: [10.697081, 20.349972], through: [-0.024325, 9.628566] },
+            { kind: 'line', to: [10.697081, 82.689468] }, { kind: 'arc', to: [-10.745731, 82.689468], through: [-0.024325, 93.410874] }] }] } },
+        { id: 'loft', op: 'loft', sections: [{ sketchRef: 's1' }, { sketchRef: 's2' }, { sketchRef: 's3' }], ruled: false, mode: 'add' },
+        { id: 's4', op: 'sketch', sketch: { plane: 'front', offset: -160, profiles: [{ kind: 'circle', center: [0.176808, 87.72219], radius: 2.5 }] } },
+        { id: 'hole', op: 'extrude', sketchRef: 's4', direction: 'normal', mode: 'cut', end: 'upToNext' },
+    ];
+    // Two of the rim's three edges, picked in the view; tangent propagation takes the third.
+    const rim: Vec3[] = [[-2.303704628938097, 87.62845139266044, -123.06596392782969], [2.2952299477679254, 89.03252772500524, -129.14315994117138]];
+
+    it('fillets the rim of a hole leaving a lofted surface at a shallow angle, and says where a chamfer cannot go', async () => {
+        const plain = await mesh({ kind: 'empty' }, loftedHole);
+        for (const radius of [0.1, 0.5]) {
+            const filleted = await mesh({ kind: 'empty' }, [...loftedHole, { id: 'f', op: 'fillet', radius, at: rim, tangent: true }]);
+            expect(openEdges(filleted)).toBe(0);
+            // A rolling ball of 0.5 mm takes off about 14.4 mm³, most of it at the knife-edge end of the opening, where
+            // the faces meet at about 12° (0.1 mm takes 0.5 mm³, below what the mesh's volume resolves here).
+            const removed = volume(plain) - volume(filleted);
+            expect(removed).toBeGreaterThan(radius === 0.5 ? 10 : 0);
+            expect(removed).toBeLessThan(radius === 0.5 ? 19 : 1);
+        }
+        // Where the loft face edge meets the rim, the rim bends: a chamfer would need a mitre on the inside of that bend.
+        await expect(mesh({ kind: 'empty' }, [...loftedHole, { id: 'c', name: 'Chamfer1', op: 'chamfer', size: 0.5, at: rim, tangent: true }]))
+            .rejects.toThrow(/^feature "Chamfer1" \(chamfer\): chamfer of 0\.5 mm cannot be made on the selected edges: the chamfer would fold over itself at \(-0\.009, 85\.229, -112\.854\)/);
+    }, SLOW);
+
+    it('chamfers a top edge that ends on an earlier smaller round, running the chamfer out into it', async () => {
+        // Block x -20..20, y -10..10, z -15..15; the vertical edge at x = 20, z = 15 rounded by 1 mm first.
+        const round: Feature = { id: 'r', name: 'Fillet2', op: 'fillet', radius: 1, at: [[20, 0, 15]] };
+        const block = sharpBox([40, 20, 30]);
+        const rounded = await mesh(block, [round]);
+        const chamfered = await mesh(block, [round, { id: 'c', name: 'Chamfer1', op: 'chamfer', size: 3, at: [[0, 10, 15]], tangent: true }]);
+        expect(openEdges(chamfered)).toBe(0);
+        // Both top edges beside the round (39 and 29 mm long) lose a 3 mm chamfer of 4.5 mm² cross-section; the two
+        // chamfers meet in a mitre over the round, which they run out into.
+        expect(volume(rounded) - volume(chamfered)).toBeCloseTo(305.4, 0);
+        expectBounds(chamfered, [-20, -10, -15], [20, 10, 15]);
+        // A round there runs out the same way.
+        const filleted = await mesh(block, [round, { id: 'f', op: 'fillet', radius: 3, at: [[0, 10, 15]], tangent: true }]);
+        expect(openEdges(filleted)).toBe(0);
+        expect(volume(rounded) - volume(filleted)).toBeGreaterThan(0.9 * 68 * (9 - 9 * Math.PI / 4));
+    }, SLOW);
+});
+
 describe('timeouts', () => {
     it('restarts the worker when a job takes too long', async () => {
         const fast = CadKernel.start({ timeoutMs: 1 });

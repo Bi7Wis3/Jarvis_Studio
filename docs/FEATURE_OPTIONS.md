@@ -90,9 +90,16 @@ Fillet
 - [ ] Profile: circular, elliptic, conic rho, conic radius, curvature continuous.
 - [ ] Setback vertices and distances, partial edge start/end condition, round corners, keep features, overflow
   type (default, keep edge, keep surface), select through faces, omit attach edges. Drag handle for the radius.
+- [~] Blends the kernel's builder gives up on (constant radius): a closed loop of edges, such as the rim of a hole
+  leaving a curved or lofted surface at a shallow angle with a face edge ending on the rim, is rolled section by
+  section (loopBlend.ts); straight edges between flat faces that end on an earlier, smaller fillet or chamfer run
+  out into it (runoutBlend.ts). A failure names the place and the cause, and calls the size too large only when a
+  tenth of it works. Not yet: open chains on curved faces, variable radius.
 
 Chamfer
 - [x] Equal distance on an edge group.
+- [~] As for fillets: closed loops chamfered section by section, straight edges between flat faces run out into an
+  earlier smaller blend. Not yet: a mitre where a loop bends towards one face (refused with the place).
 - [ ] Selected edges, faces, features and loops; tangent propagation; previews.
 - [ ] Types: angle-distance, distance-distance (symmetric or asymmetric), vertex (three distances or equal),
   offset face (multi-distance), face-face (symmetric, asymmetric, chord width, hold line); flip direction.
@@ -240,9 +247,14 @@ Reference geometry
   Make Block and Mirror/Offset from a shaded contour, derived sketch positioned by dimensions, Rapid sketch onto
   planes, the direction of Convert to extrusion by a click in the view.
 - [x] The model in a sketch: the part's edges and corners (and other sketches' entities) can be picked in the
-  Dimension, relation and Select tools and are snapped to; Convert entities, Intersection curve, Silhouette
-  entities, Pierce point; offset, mirror and pattern direction from model edges. All by value: what is taken from
-  the model is locked where it was and does not follow later changes to it.
+  Dimension, relation and Select tools and are snapped to; a click only selects one (the sketch keeps it, drawn
+  quietly, only when a relation or dimension uses it); right-click or the Modify toolbar: Convert entities (locked)
+  and Copy as sketch entities (plain, free to edit), for several edges or a face's loops at once; Intersection
+  curve, Silhouette entities, Pierce point; offset, mirror and pattern direction from model edges. Every edge comes
+  in as the simplest exact entity: a spline edge (a loft makes every edge one) that is straight or round within
+  0.000001 mm is a line, circle or arc, or the exact ellipse of a circle seen at a tilt; consecutive pieces of one
+  line or circle join. All by value: what is taken from the model is locked where it was and does not follow later
+  changes to it.
 - [x] Dimensions and relations: driven dimensions; arc length, three-point angle, line midpoint, doubled distance,
   arc conditions; horizontal, vertical and ordinate dimensions; path length (driving or driven); angular running
   dimensions; ordinate rows (Break alignment, drag the zero, along an edge); Add relations form;

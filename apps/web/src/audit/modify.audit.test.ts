@@ -79,7 +79,7 @@ describe('the Modify group', () => {
             'sk-modify-sketch', 'sk-check-feature', 'sk-make-path', 'sk-select-chain', 'sk-reverse-tangent', 'sk-align-grid', 'sk-fit-spline', 'sk-simplify-spline',
             'sk-add-tangency', 'sk-add-curvature', 'sk-show-combs', 'sk-show-inflections', 'sk-show-min-radius', 'sk-show-handles', 'sk-show-polygon',
             'sk-convert-spline', 'sk-block-make', 'sk-block-insert', 'sk-block-edit', 'sk-block-rebuild', 'sk-block-addremove',
-            'sk-block-explode', 'sk-block-save', 'sk-convert', 'sk-intersection', 'sk-silhouette', 'sk-pierce', 'sk-close-to-model',
+            'sk-block-explode', 'sk-block-save', 'sk-convert', 'sk-copy-model', 'sk-intersection', 'sk-silhouette', 'sk-pierce', 'sk-close-to-model',
         ]);
     });
 });

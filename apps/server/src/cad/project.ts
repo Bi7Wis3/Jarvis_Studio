@@ -5,7 +5,7 @@
 import { getOC, iterTopo, localGC, makePolygon, Edge, Face, Vertex, type Shape3D } from 'replicad';
 import type { Vec3 } from '@jarvis/core';
 import {
-    heightAbove, projectConic, projectLine, projectPoint, projectSpline, splineCurves, tidy,
+    heightAbove, joinCurves, KIND_TOLERANCE, projectConic, projectLine, projectPoint, projectSpline, spaceCircle, splineCurves, tidy,
     type ModelCurve, type ModelQuery, type ModelSketch, type P2, type PlaneFrame3, type Skipped, type TaggedCurve,
 } from '@jarvis/core/projection';
 import { resolveEdges, resolveFaces } from './refs.js';
@@ -65,7 +65,22 @@ function bsplineOf(oc: OC, adaptor: InstanceType<OC['BRepAdaptor_Curve']>, first
     }
 }
 
-/** An edge projected onto the plane as exact sketch curves; [] when it is seen end-on; a reason when it has none. */
+/**
+ * Deviation within which a spline edge counts as a line, circle or arc: the app's 1e-6 mm, or the edge's own
+ * tolerance where the kernel made it less exactly than that (an intersection curve is approximated to its tolerance),
+ * up to KIND_TOLERANCE_MAX.
+ */
+export const KIND_TOLERANCE_MAX = 1e-5;
+
+export function kindTolerance(edge: Edge): number {
+    return Math.min(KIND_TOLERANCE_MAX, Math.max(KIND_TOLERANCE, getOC().BRep_Tool.Tolerance(edge.wrapped)));
+}
+
+/**
+ * An edge projected onto the plane as the simplest exact sketch curves: a spline edge that is straight or round (a
+ * loft makes every edge a spline) as a line, circle or arc, or as the exact ellipse of a circle seen at a tilt
+ * (@jarvis/core/curveKinds); [] when it is seen end-on; a reason when it has none.
+ */
 export function edgeCurves(edge: Edge, f: PlaneFrame3): ModelCurve[] | { why: string } {
     const oc = getOC();
     const [r, gc] = localGC();
@@ -93,7 +108,13 @@ export function edgeCurves(edge: Edge, f: PlaneFrame3): ModelCurve[] | { why: st
             return { why: `an ${KIND_NAME[type]} has no exact sketch curve` };
         }
         const s = bsplineOf(oc, a, t0, t1);
-        const curves = splineCurves(projectSpline(f, s.poles, s.weights, s.knots, s.degree));
+        const tolerance = kindTolerance(edge);
+        const round = spaceCircle(s.poles, s.weights, s.knots, s.degree, tolerance);
+        if (round) {
+            const conic = projectConic(f, round.centre, round.X, round.Y, 0, round.sweep, round.full);
+            return conic ? [conic] : [];
+        }
+        const curves = splineCurves(projectSpline(f, s.poles, s.weights, s.knots, s.degree), tolerance);
         return curves ?? { why: `a rational ${KIND_NAME[type] ?? 'curve'} of degree ${s.degree} has no exact sketch curve` };
     } catch (e) {
         return { why: `could not be read (${e instanceof Error ? e.message : String(e)})` };
@@ -111,6 +132,15 @@ function pushEdge(out: ModelSketch, edge: Edge, index: number, f: PlaneFrame3, t
         return;
     }
     out.curves.push(...curves.map((c) => ({ ...c, ...tag, edge: index }) as TaggedCurve));
+}
+
+/**
+ * Joins the curves of each loop (or section) that continue one another into one line, arc or circle: a circle the
+ * kernel split into arcs, a straight side split where the faces beside it change.
+ */
+function joinLoops(out: ModelSketch, from: number, tolerance: number): void {
+    const joined = joinCurves(out.curves.slice(from), tolerance, (c) => `${c.face ?? ''} ${c.loop ?? ''}`);
+    out.curves.splice(from, out.curves.length - from, ...joined);
 }
 
 /** The projected vertices of a shape, each once. */
@@ -149,17 +179,22 @@ export function convertPicks(shape: Shape3D, f: PlaneFrame3, edges: Vec3[], face
     for (const edge of resolveEdges(shape, edges)) {
         pushEdge(out, edge, indexOf(edge), f, {});
     }
+    // Picked edges stay one entity each; a face's loops join where their edges continue one another.
+    const from = out.curves.length;
+    let tolerance = KIND_TOLERANCE;
     resolveFaces(shape, faces).forEach((face, k) => {
         const loops = [face.clone().outerWire(), ...face.clone().innerWires()];
         out.loops!.push(loops.length);
         loops.forEach((wire, j) => {
             for (const edge of wire.edges) {
                 if (!hidden.some((h) => h.isSame(edge))) {
+                    tolerance = Math.max(tolerance, kindTolerance(edge));
                     pushEdge(out, edge, indexOf(edge), f, { face: k, loop: j }, j === 0 ? `the outer loop of face ${k + 1}` : `inner loop ${j} of face ${k + 1}`);
                 }
             }
         });
     });
+    joinLoops(out, from, tolerance);
     return out;
 }
 
@@ -182,6 +217,7 @@ export function sectionCurves(shape: Shape3D, f: PlaneFrame3, faces: { at: Vec3;
     const oc = getOC();
     const [r, gc] = localGC();
     const out: ModelSketch = { curves: [], points: [], skipped: [] };
+    let tolerance = KIND_TOLERANCE;
     try {
         const targets = faces.length ? resolveFaces(shape, faces) : [shape];
         const plane = r(planeOf(oc, f));
@@ -195,6 +231,7 @@ export function sectionCurves(shape: Shape3D, f: PlaneFrame3, faces: { at: Vec3;
             }
             edgesOf(section.Shape()).forEach((edge, i) => {
                 const curves = edgeCurves(edge, f);
+                tolerance = Math.max(tolerance, kindTolerance(edge));
                 if ('why' in curves) {
                     out.skipped.push({ what: `section curve ${i + 1}${faces.length ? ` of face ${k + 1}` : ''}`, why: curves.why });
                 } else {
@@ -202,6 +239,7 @@ export function sectionCurves(shape: Shape3D, f: PlaneFrame3, faces: { at: Vec3;
                 }
             });
         });
+        joinLoops(out, 0, tolerance);
         return out;
     } finally {
         gc();
@@ -328,11 +366,13 @@ export function silhouetteCurves(shape: Shape3D, f: PlaneFrame3, external: boole
         const unify = r(new oc.ShapeUpgrade_UnifySameDomain(joined as never, true, true, false));
         unify.Build();
         const result = Array.from(iterTopo(unify.Shape(), 'face'), (x) => new Face(x));
+        let tolerance = KIND_TOLERANCE;
         result.forEach((face, k) => {
             const loops = external ? [face.clone().outerWire()] : [face.clone().outerWire(), ...face.clone().innerWires()];
             loops.forEach((wire, j) => {
                 wire.edges.forEach((edge, i) => {
                     const curves = edgeCurves(edge, f);
+                    tolerance = Math.max(tolerance, kindTolerance(edge));
                     if ('why' in curves) {
                         out.skipped.push({ what: `outline piece ${i + 1}${j ? ` of inner loop ${j}` : ''}`, why: curves.why });
                     } else {
@@ -341,6 +381,7 @@ export function silhouetteCurves(shape: Shape3D, f: PlaneFrame3, external: boole
                 });
             });
         });
+        joinLoops(out, 0, tolerance);
         return out;
     } catch (e) {
         out.skipped.push({ what: 'the silhouette', why: `${stage} failed (${errorMessage(e)})` });

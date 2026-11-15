@@ -19,7 +19,7 @@ import {
 import type { MeshData } from './kernel.js';
 import { runScript } from './script.js';
 import { pickTolerance, planeOfFace, resolveEdges, resolveFaces } from './refs.js';
-import { chamferEdges, draftFaces, filletEdges, shellFaces, type ChamferSpec } from './applied.js';
+import { BlendError, chamferEdges, draftFaces, filletEdges, shellFaces, type ChamferSpec } from './applied.js';
 import { resolveAxis, resolvePlane } from '@jarvis/core/reference';
 import { derivedSketch } from '@jarvis/core/derived';
 import { relativePlacement, type CombineContext } from './context.js';
@@ -1384,7 +1384,7 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
             try {
                 return applyToBody(body, f, state.print);
             } catch (e) {
-                if (!(e instanceof Error) || !/failed on|not done|could not/i.test(e.message)) {
+                if (!(e instanceof Error) || !/failed on|not done|could not|cannot be made/i.test(e.message)) {
                     throw e;
                 }
                 const earlier = before(state).filter((s) => !s.suppressed);
@@ -1400,9 +1400,10 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
                         + `hole or shaft wall beside it for the kernel to ${f.op}, at any size. Cut the thread afterwards: `
                         + `drag ${threads[0].name ?? threads[0].id} below ${self} in the feature tree. The thread then starts behind it`);
                 }
-                // An edge that ends on an earlier fillet or chamfer only works up to about that one's size.
+                // An edge that ends on an earlier fillet or chamfer only works up to about that one's size (a straight edge
+                // between flat faces is run out into it instead): only then is the order the cause.
                 const blends = earlier.filter((s) => s.op === 'fillet' || s.op === 'chamfer');
-                if (blends.length) {
+                if (blends.length && e instanceof BlendError && e.tooLarge) {
                     const names = blends.map((s) => s.name ?? s.id).join(', ');
                     throw new Error(`${label} could not be built. If its edges end on ${names}: the kernel only blends into an `
                         + `earlier ${f.op === 'fillet' ? 'fillet' : 'fillet or chamfer'} up to a limited size (roughly two to three times `

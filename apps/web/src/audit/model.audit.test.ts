@@ -9,8 +9,9 @@ import type { SketchGeometry } from '@jarvis/core';
 import type { ModelCurve, ModelSketch } from '@jarvis/core/projection';
 import { curveRadius, loadSolver, measure } from '../solver';
 import { addCircle, EMPTY_GEOMETRY } from '../sketchGeometry';
-import { applyDimension, commitGeometry, setDimText, setTool, useSketcher } from '../sketcher';
-import { addModelCurves, edgesKey, isModelLock, modelTarget, useSketchModel } from '../sketchModel';
+import { applyDimension, commitGeometry, setDimText, setTool, sketchClick, useSketcher } from '../sketcher';
+import { addModelCurves, edgesKey, isModelLock, isModelReference, modelTarget, useSketchModel } from '../sketchModel';
+import { selectedReferences } from '../sketchModelSelect';
 import { modelPlaneClick, setModelPicking } from '../sketchModelPick';
 import { at, click, clicks, curvesOf, geo, groupTools, near, noDangling, press, relations, solvesCleanly, state, undoRedoRestores } from './harness';
 
@@ -54,13 +55,13 @@ beforeEach(() => onPart());
 describe('the model tools on the toolbar', () => {
     it('are in the Modify group', () => {
         const ids = groupTools('modify').map((t) => t.id);
-        for (const id of ['sk-convert', 'sk-intersection', 'sk-silhouette', 'sk-pierce']) {
+        for (const id of ['sk-convert', 'sk-copy-model', 'sk-intersection', 'sk-silhouette', 'sk-pierce']) {
             expect(ids).toContain(id);
         }
     });
 
     it('OK with nothing picked says what to pick, and changes nothing', async () => {
-        for (const id of ['sk-convert', 'sk-intersection', 'sk-silhouette', 'sk-pierce']) {
+        for (const id of ['sk-convert', 'sk-copy-model', 'sk-intersection', 'sk-silhouette', 'sk-pierce']) {
             const form = press(id);
             const before = geo();
             const r = await form.apply();
@@ -146,6 +147,54 @@ describe('converted curves of every kind', () => {
 });
 
 import * as useGeometry from '../sketchGeometry';
+
+describe('model edges picked while sketching', () => {
+    const settle = () => new Promise<void>((done) => queueMicrotask(done));
+    const refs = () => [...geo().curves.map((c) => c.id), ...geo().points.map((p) => p.id)].filter(isModelReference);
+
+    it('a click with the Select tool selects a model edge as the line it is; deselected, the sketch is as it was', async () => {
+        const before = geo();
+        click(mid(corners[0], corners[1]), TOL);
+        await settle();
+        expect(selectedReferences()).toHaveLength(1);
+        expect(curvesOf('line', true)).toHaveLength(1);
+        expect(state().undo).toHaveLength(0);
+        click(rot([20, -30]), TOL);
+        await settle();
+        expect(refs()).toEqual([]);
+        expect(geo().curves).toEqual(before.curves);
+        expect(geo().points).toEqual(before.points);
+    });
+
+    it('Convert entities on the selected edges and the hole: locked where they are, one undo step', async () => {
+        click(mid(corners[0], corners[1]), TOL);
+        // Shift adds to the selection.
+        sketchClick(mid(corners[1], corners[2]), TOL, true);
+        sketchClick([rot([20, 10])[0] + 5, rot([20, 10])[1]], TOL, true);
+        expect(selectedReferences()).toHaveLength(3);
+        const undo = state().undo.length;
+        press('sk-convert');
+        await settle();
+        expect(refs()).toEqual([]);
+        expect(curvesOf('line')).toHaveLength(2);
+        expect(curvesOf('circle')).toHaveLength(1);
+        expect(geo().constraints.every(isModelLock)).toBe(true);
+        expect(solvesCleanly()).toBe(0);
+        noDangling();
+        expect(state().undo).toHaveLength(undo + 1);
+    });
+
+    it('Copy as sketch entities: the same entities with nothing holding them, so a dimension can drive them', async () => {
+        click(mid(corners[0], corners[1]), TOL);
+        press('sk-copy-model');
+        await settle();
+        expect(refs()).toEqual([]);
+        const [line] = curvesOf('line');
+        expect(line.kind === 'line' && [at(line.a), at(line.b)]).toEqual([corners[0], corners[1]]);
+        expect(geo().constraints).toEqual([]);
+        expect(solvesCleanly()).toBeGreaterThan(0);
+    });
+});
 
 describe('dimensions and relations to model edges', () => {
     it('dimensions a sketch circle\'s centre to a tilted model edge: 6.2501, the edge stays put', () => {

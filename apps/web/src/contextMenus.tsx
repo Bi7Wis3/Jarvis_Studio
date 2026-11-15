@@ -19,6 +19,7 @@ import { hasCopiedSketch, type PasteTarget } from './sketchPasteSketch';
 import { drawCommandEntries } from './sketchDrawCommands';
 import { splineMenuEntries } from './sketchSplineForms';
 import { pieceMenuEntries, trimMenuEntry } from './sketchPiecesMenu';
+import type { ModelMenu } from './sketchModelSelect';
 
 // ---- What was clicked -------------------------------------------------------------------------------------------
 
@@ -461,6 +462,8 @@ export interface SketchMenuState {
     selection: Pick[];
     /** Last-used variant per toolbar family (the toolbar's flyout memory). */
     lastUsed: Record<string, string>;
+    /** Model edges and vertices selected, or the part's face or edge under the pointer: Convert, Copy (sketchModelSelect.ts). */
+    model?: ModelMenu | null;
 }
 
 export interface SketchMenuActions {
@@ -562,22 +565,26 @@ export function sketchSpaceMenu(s: SketchMenuState, a: SketchMenuActions): MenuE
         // A curve of a text, equation curve or block instance: the item's own entries first.
         const item = itemEntries(g, picks, a);
         const splines = item ? [] : splineMenuEntries(g, picks, (id) => a.openTool(id));
+        // Only model edges and vertices selected: they are converted, related and dimensioned, not edited.
+        const model = s.model;
+        const edits = !model?.only;
         return tidy([
-            { header: item?.header ?? header },
+            { header: model?.only ? model.header : item?.header ?? header },
+            ...(model ? [...model.entries, SEP] : []),
             ...(item ? [...item.entries, SEP] : []),
-            ...(splines.length ? [...splines, SEP] : []),
-            { label: 'Delete', icon: 'delete', hint: 'Del', danger: true, onSelect: () => a.deleteSelected() },
-            curves.length
+            ...(splines.length && edits ? [...splines, SEP] : []),
+            edits && { label: 'Delete', icon: 'delete', hint: 'Del', danger: true, onSelect: () => a.deleteSelected() },
+            !edits ? null : curves.length
                 ? { ...toolLook('sk-construction'), label: 'Construction geometry', hint: 'X', checked: construction, onSelect: () => a.openTool('sk-construction') }
                 : { ...toolLook('sk-construction'), label: 'Construction geometry', disabled: true, onSelect: () => undefined,
                     title: 'Only lines, arcs and circles can be construction geometry.' },
             SEP,
             // Select chain, paths, reverse endpoint tangent, infinite length (sketchDrawCommands.ts).
-            ...drawCommandEntries(g, picks, a),
-            curves.length ? trimMenuEntry(a) : null,
+            ...(edits ? drawCommandEntries(g, picks, a) : []),
+            edits && curves.length ? trimMenuEntry(a) : null,
             SEP,
-            ...relations.map((r) => ({ label: r.label, icon: `c-${r.id}`, title: r.hint, onSelect: () => a.openTool(`sk-c-${r.id}`) })),
-            { label: locked ? 'Unlock' : 'Lock', icon: 'c-fix', title: locked ? 'Free it to move again' : 'Keep it where it is', onSelect: () => a.openTool('sk-c-fix') },
+            ...(edits ? relations : []).map((r) => ({ label: r.label, icon: `c-${r.id}`, title: r.hint, onSelect: () => a.openTool(`sk-c-${r.id}`) })),
+            edits && { label: locked ? 'Unlock' : 'Lock', icon: 'c-fix', title: locked ? 'Free it to move again' : 'Keep it where it is', onSelect: () => a.openTool('sk-c-fix') },
             { ...toolLook('sk-dimension'), hint: 'D', onSelect: () => a.openTool('sk-dimension') },
             SEP,
             releaseTool,
@@ -585,6 +592,8 @@ export function sketchSpaceMenu(s: SketchMenuState, a: SketchMenuActions): MenuE
         ]);
     }
     return tidy([
+        // The part's face or edge under the pointer.
+        ...(s.model ? [{ header: s.model.header }, ...s.model.entries, SEP] : []),
         releaseTool,
         ...(isDrawTool(s.tool) ? [quickSnapMenu()] : []),
         ...drawToolIds(s.lastUsed).map((id) => ({ ...toolLook(id), onSelect: () => a.openTool(id) })),

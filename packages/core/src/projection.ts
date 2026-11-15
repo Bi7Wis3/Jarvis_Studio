@@ -3,6 +3,9 @@
 // turns the result into sketch entities and snaps to it). Coordinates in mm, directions as unit vectors.
 
 import type { Vec3 } from './index';
+import { asCircular, KIND_TOLERANCE, oneSimpleCurve, simplestPieces } from './curveKinds';
+
+export { joinCurves, KIND_TOLERANCE, oneSimpleCurve, simplestPieces, type BezierPiece } from './curveKinds';
 
 export type P2 = [number, number];
 
@@ -252,34 +255,87 @@ function evenClamped(s: Spline2): boolean {
 }
 
 /**
- * Exact sketch curves for a projected B-spline: one style spline when its knots are those the sketch uses, else
- * one Bezier per piece (lines for straight pieces, conics for rational quadratics). Null: a rational piece of
- * degree three or more, which no sketch curve holds.
+ * Exact sketch curves for a projected B-spline, the simplest that hold it within `tolerance` (curveKinds.ts): one
+ * line, circle or arc when the whole curve is one; else one style spline when its knots are those the sketch uses;
+ * else its pieces, runs of them that make one line or arc joined, the others as Beziers (conics for rational
+ * quadratics). [] when it is seen end-on. Null: a rational piece of degree three or more, which no sketch curve holds.
  */
-export function splineCurves(s: Spline2): ModelCurve[] | null {
+export function splineCurves(s: Spline2, tolerance = KIND_TOLERANCE): ModelCurve[] | null {
     const rational = !!s.weights && s.weights.some((w) => Math.abs(w - s.weights![0]) > 1e-12 * Math.abs(s.weights![0]));
     const plain: Spline2 = rational ? s : { ...s, weights: null };
+    const pieces = bezierPieces(plain);
+    const at = pieces[0]?.poles[0];
+    if (!at || pieces.every((p) => p.poles.every((q) => Math.hypot(q[0] - at[0], q[1] - at[1]) <= tolerance))) {
+        // Seen end-on: a point, nothing to draw.
+        return [];
+    }
+    const whole = oneSimpleCurve(pieces, tolerance);
+    if (whole) {
+        return [whole];
+    }
     if (!rational && (s.degree === 3 || s.degree === 5 || s.degree === 7) && s.poles.length > s.degree && evenClamped(plain)) {
         return [{ kind: 'bspline', poles: s.poles.map(tidyP), degree: s.degree }];
     }
-    const out: ModelCurve[] = [];
-    for (const piece of bezierPieces(plain)) {
-        const w = piece.weights;
-        const flat = w.every((x) => Math.abs(x - w[0]) <= 1e-12 * Math.abs(w[0]));
-        if (piece.poles.length === 2) {
-            out.push({ kind: 'line', a: tidyP(piece.poles[0]), b: tidyP(piece.poles[1]) });
-        } else if (flat) {
-            out.push({ kind: 'bezier', poles: piece.poles.map(tidyP) });
-        } else if (piece.poles.length === 3 && w.every((x) => x > 0)) {
-            // Weights (w0, w1, w2) give the same curve as (1, w1 / sqrt(w0 w2), 1); Rho = w / (1 + w).
-            const k = w[1] / Math.sqrt(w[0] * w[2]);
-            const [start, apex, end] = piece.poles.map(tidyP);
-            out.push({ kind: 'conic', start, apex, end, rho: k / (1 + k) });
-        } else {
-            return null;
-        }
+    return simplestPieces(pieces, tolerance, true);
+}
+
+/** A circle or circular arc in space as projectConic takes it: C + X cos t + Y sin t for t from 0 to `sweep`. */
+export interface SpaceCircle {
+    centre: Vec3;
+    X: Vec3;
+    Y: Vec3;
+    sweep: number;
+    full: boolean;
+}
+
+const cross3 = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit3 = (a: Vec3): Vec3 => {
+    const l = Math.hypot(...a);
+    return [a[0] / l, a[1] / l, a[2] / l];
+};
+
+/**
+ * A part-frame B-spline that is a circle or circular arc within `tolerance` (every pole within it of one plane, and
+ * round in that plane as curveKinds proves it), or null. Seen at a tilt it then projects as the exact ellipse.
+ */
+export function spaceCircle(poles: Vec3[], weights: number[] | null, knots: number[], degree: number, tolerance = KIND_TOLERANCE): SpaceCircle | null {
+    if (poles.length < 3) {
+        return null;
     }
-    return out;
+    const mid: Vec3 = [0, 1, 2].map((i) => poles.reduce((sum, q) => sum + q[i], 0) / poles.length) as Vec3;
+    const far = poles.reduce((best, q) => (Math.hypot(...sub3(q, mid)) > Math.hypot(...sub3(best, mid)) ? q : best), poles[0]);
+    const side = poles.reduce((best, q) => (Math.hypot(...cross3(sub3(far, mid), sub3(q, mid))) > Math.hypot(...cross3(sub3(far, mid), sub3(best, mid))) ? q : best), poles[0]);
+    const normal = cross3(sub3(far, mid), sub3(side, mid));
+    if (!(Math.hypot(...normal) > 1e-12 * Math.max(1, Math.hypot(...sub3(far, mid)) ** 2))) {
+        return null;
+    }
+    const n = unit3(normal);
+    // Every pole on the plane: the curve, inside their hull, is too.
+    if (poles.some((q) => Math.abs(dot3(sub3(q, mid), n)) > tolerance)) {
+        return null;
+    }
+    const e1 = unit3(sub3(far, mid));
+    const e2 = cross3(n, e1);
+    const flat = (q: Vec3): P2 => [dot3(sub3(q, mid), e1), dot3(sub3(q, mid), e2)];
+    const round = asCircular(bezierPieces({ poles: poles.map(flat), weights, knots, degree }), tolerance);
+    if (!round || (round.kind !== 'circle' && round.kind !== 'arc')) {
+        return null;
+    }
+    const at = (p: P2): Vec3 => [0, 1, 2].map((i) => mid[i] + e1[i] * p[0] + e2[i] * p[1]) as Vec3;
+    const centre = at(round.center);
+    if (round.kind === 'circle') {
+        return { centre, X: [0, 1, 2].map((i) => e1[i] * round.radius) as Vec3, Y: [0, 1, 2].map((i) => e2[i] * round.radius) as Vec3, sweep: TAU, full: true };
+    }
+    // Counter-clockwise about n from start to end.
+    const X = sub3(at(round.start), centre);
+    const Y = cross3(n, X);
+    const s0: P2 = [round.start[0] - round.center[0], round.start[1] - round.center[1]];
+    const s1: P2 = [round.end[0] - round.center[0], round.end[1] - round.center[1]];
+    let sweep = Math.atan2(cross2(s0, s1), dot2(s0, s1));
+    if (sweep <= 0) {
+        sweep += TAU;
+    }
+    return { centre, X, Y, sweep, full: false };
 }
 
 /** Projects a part-frame B-spline onto the plane (a parallel projection keeps knots and weights). */

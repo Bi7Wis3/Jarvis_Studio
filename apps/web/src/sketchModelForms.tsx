@@ -1,6 +1,8 @@
-// Sketch tools that take geometry from the model, as PropertyManager forms: Convert entities, Intersection curve,
-// Silhouette entities and Pierce point. Picks are collected in sketchModelPick.ts; the kernel answers in
-// sketchModel.ts. What is added is locked where it is and marked as from the model (references are by value).
+// Sketch tools that take geometry from the model, as PropertyManager forms: Convert entities, Copy as sketch
+// entities, Intersection curve, Silhouette entities and Pierce point. Picks are collected in sketchModelPick.ts; the
+// kernel answers in sketchModel.ts. What is added is locked where it is and marked as from the model (references are
+// by value), except by Copy as sketch entities, which adds plain entities. With model edges selected in the sketch,
+// Convert and Copy act at once (sketchModelSelect.ts).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Feature } from '@jarvis/core';
@@ -8,9 +10,10 @@ import type { ModelCurve, ModelQuery, ModelSketch } from '@jarvis/core/projectio
 import type { PopupApi, Result, ToolDef, Values } from './toolDefs';
 import { commitGeometry, setTool, useSketcher } from './sketcher';
 import {
-    addModelCurves, BY_VALUE_NOTE, chainOf, curveEntity, fetchModelSketch, modelTarget, otherSketchCurves, pickKey, useSketchModel,
+    addModelCurves, BY_VALUE_NOTE, chainOf, COPY_NOTE, curveEntity, fetchModelSketch, modelTarget, otherSketchCurves, pickKey, useSketchModel,
     type ModelPick, type SourcedCurve,
 } from './sketchModel';
+import { convertNow, selectedReferences } from './sketchModelSelect';
 import { setModelPicking } from './sketchModelPick';
 import { useStudio } from './state';
 import { hiddenStepsNow } from './stepVisibility';
@@ -111,8 +114,8 @@ const queryPoints = (picks: ModelPick[]) => ({
     faces: picks.filter((p) => p.kind === 'face').map((p) => ({ at: p.at, ...(p.normal ? { normal: p.normal } : {}) })),
 });
 
-/** The picks of the form, and the loops of each picked face to convert. */
-function ConvertPanel({ api }: { api: PopupApi }) {
+/** The picks of the form, and the loops of each picked face to convert (or copy, as plain entities). */
+function ConvertPanel({ api, copy = false }: { api: PopupApi; copy?: boolean }) {
     useModelSession('convert');
     const picks = useSketchModel((s) => s.picks);
     const sketchPicks = useSketchModel((s) => s.sketchPicks);
@@ -205,7 +208,7 @@ function ConvertPanel({ api }: { api: PopupApi }) {
             {loading && <p className="tb-note">Reading the model…</p>}
             {error && <p className="tb-note error">{error}</p>}
             <SkippedList model={model} />
-            <p className="tb-note">{BY_VALUE_NOTE}</p>
+            <p className="tb-note">{copy ? COPY_NOTE : BY_VALUE_NOTE}</p>
         </>
     );
 }
@@ -316,15 +319,15 @@ function PiercePanel() {
     );
 }
 
-/** OK: adds what the form shows, locked in place. */
-function addPending(construction: boolean): Result {
+/** OK: adds what the form shows, locked in place (or free: Copy as sketch entities). */
+function addPending(construction: boolean, lock = true): Result {
     if (pending.error) {
         return { text: pending.error, isError: true };
     }
     if (!pending.curves.length) {
         return { text: 'Nothing to add: pick model edges, faces or curves of other sketches first.', isError: true };
     }
-    const r = addModelCurves(useSketcher.getState().geometry, pending.curves, { lock: true, construction });
+    const r = addModelCurves(useSketcher.getState().geometry, pending.curves, { lock, construction });
     if (!commitGeometry(r.g)) {
         return { text: useSketcher.getState().message ?? 'Could not add them to the sketch.', isError: true };
     }
@@ -386,8 +389,27 @@ export const modelSketchTools: ToolDef[] = [
             { key: 'inner', label: 'Select all inner loops', kind: 'check', section: 'Options' },
         ],
         defaults: () => ({ chain: false, construction: false, inner: true }),
+        // Model edges selected in the sketch are converted at once.
+        instant: () => convertNow('convert'),
+        popupIf: () => !selectedReferences().length,
         top: (api) => <ConvertPanel api={api} />,
         apply: async (v: Values) => addPending(!!v.construction),
+    }),
+    panelTool({
+        id: 'sk-copy-model',
+        label: 'Copy as sketch entities',
+        icon: 'copy-model',
+        hint: 'copy model edges, face loops or curves of other sketches in as plain sketch entities, free to edit',
+        fields: () => [
+            { key: 'chain', label: 'Select chain', kind: 'check', section: 'Options' },
+            { key: 'construction', label: 'For construction', kind: 'check', section: 'Options' },
+            { key: 'inner', label: 'Select all inner loops', kind: 'check', section: 'Options' },
+        ],
+        defaults: () => ({ chain: false, construction: false, inner: true }),
+        instant: () => convertNow('copy'),
+        popupIf: () => !selectedReferences().length,
+        top: (api) => <ConvertPanel api={api} copy />,
+        apply: async (v: Values) => addPending(!!v.construction, false),
     }),
     panelTool({
         id: 'sk-intersection',

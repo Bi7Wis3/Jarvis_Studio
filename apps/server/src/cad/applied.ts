@@ -7,6 +7,11 @@
 //   always circular: ChFi3d_Rational / QuasiAngular / Polynomial only change how the circle is approximated, so
 //   conic (rho) and curvature-continuous profiles, setbacks and overflow control are not available.
 // - Chamfer: equal distance, two distances, distance + angle (both measured from a reference face of the edge).
+// - When OpenCascade's blend builder fails, constant fillets and chamfers are made another way where that applies:
+//   along closed loops by rolling the blend section by section (loopBlend.ts: a hole leaving a curved surface at a
+//   shallow angle), and on straight edges between flat faces as a cut that runs out into an earlier blend
+//   (runoutBlend.ts). A failure says where and why when it can tell, and calls the size too large only when OpenCascade
+//   does make the blend at a tenth of it.
 // - Shell: inward or outward walls with faces removed (MakeThickSolid); a closed hollow body is made by cutting the
 //   offset body away (as build.ts does; MakeThickSolid with an empty face list is version dependent). One
 //   thickness for all walls: per-face thickness would need BRepOffset_MakeOffset directly (not wrapped).
@@ -15,6 +20,18 @@
 
 import { cast, getOC, measureVolume, Plane, type ChamferRadius, type Edge, type Face, type Shape3D } from 'replicad';
 import type { Vec3 } from '@jarvis/core';
+import { blendLoop, closedLoops, LoopBlendError, type LoopBlend } from './loopBlend.js';
+import { runoutBlend, type RunoutBlend } from './runoutBlend.js';
+
+/**
+ * A fillet or chamfer that could not be made. `tooLarge`: OpenCascade does make it at a tenth of the size, so the size
+ * is what stops it (build.ts may then suggest blending in another order).
+ */
+export class BlendError extends Error {
+    constructor(message: string, readonly tooLarge: boolean) {
+        super(message);
+    }
+}
 
 export type FilletSpec =
     | { radius: number }
@@ -117,17 +134,115 @@ export function filletEdges(shape: Shape3D, edges: Edge[], spec: FilletSpec): Sh
         label = `fillet of ${spec.radius} mm`;
         radiusFor = () => spec.radius;
     }
-    let result: Shape3D;
+    const kernel = (scale: number): Shape3D => {
+        const result = solidOf(shape.fillet((edge) => {
+            if (!picked(edge)) {
+                return null;
+            }
+            const radius = radiusFor(edge);
+            return typeof radius === 'number' ? radius * scale : [radius[0] * scale, radius[1] * scale];
+        }), 'fillet');
+        if (!isValid(result)) {
+            throw new Error('the result is not a valid solid');
+        }
+        return result;
+    };
+    return blendWithFallbacks(shape, edges, label, kernel, 'radius' in spec ? { kind: 'fillet', radius: spec.radius } : null,
+        'radius' in spec ? { kind: 'fillet', radius: spec.radius } : null);
+}
+
+/** The angles between the faces along the edges (degrees, inside the material), for a failure message. */
+function faceAngles(shape: Shape3D, edges: Edge[]): [number, number] | null {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const edge of edges) {
+        const faces = shape.faces.filter((f) => f.edges.some((e) => e.isSame(edge)));
+        if (faces.length !== 2) {
+            continue;
+        }
+        for (const k of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+            try {
+                const p = vecOf(edge.pointAt(k));
+                const [a, b] = faces.map((f) => vecOf(f.normalAt(p)));
+                const c = dot(a, b) / ((Math.hypot(...a) * Math.hypot(...b)) || 1);
+                const angle = 180 - Math.acos(Math.max(-1, Math.min(1, c))) * 180 / Math.PI;
+                lo = Math.min(lo, angle);
+                hi = Math.max(hi, angle);
+            } catch {
+                // a degenerate point: skip it
+            }
+        }
+    }
+    return lo <= hi ? [lo, hi] : null;
+}
+
+const round1 = (x: number): number => Math.round(x * 10) / 10;
+
+/**
+ * OpenCascade's blend, else (constant size only) the loop blend and the run-out blend, else an error that says why.
+ * `kernel(scale)` makes OpenCascade's blend at `scale` times the size.
+ */
+function blendWithFallbacks(shape: Shape3D, edges: Edge[], label: string, kernel: (scale: number) => Shape3D,
+    loop: LoopBlend | null, runout: RunoutBlend | null): Shape3D {
+    let first: unknown;
     try {
-        result = solidOf(shape.fillet((edge) => (picked(edge) ? radiusFor(edge) : null)), 'fillet');
+        return kernel(1);
     } catch (e) {
-        throw new Error(`${label} failed on the selected edges (${ocMessage(e)}): the radius is probably too large for `
-            + 'the faces next to them; try a smaller radius or fewer edges');
+        first = e;
     }
-    if (!isValid(result)) {
-        throw new Error(`${label} is too large for the selected edges (the faces next to them are too small)`);
+    let reason: string | null = null;
+    if (loop) {
+        const loops = closedLoops(shape, edges);
+        if (loops) {
+            try {
+                let out = shape;
+                for (const l of loops) {
+                    out = blendLoop(out, sameEdges(out, l), loop);
+                }
+                return out;
+            } catch (e) {
+                reason = e instanceof LoopBlendError ? e.message : `the blend along the loop failed (${ocMessage(e)})`;
+            }
+        }
     }
-    return result;
+    if (runout) {
+        const out = runoutBlend(shape, edges, runout);
+        if (out) {
+            return out;
+        }
+    }
+    if (reason) {
+        throw new BlendError(`${label} cannot be made on the selected edges: ${reason}`, false);
+    }
+    // Is it the size? Only if OpenCascade does make a much smaller one.
+    let smallerWorks = false;
+    try {
+        kernel(0.1);
+        smallerWorks = true;
+    } catch {
+        smallerWorks = false;
+    }
+    if (smallerWorks) {
+        throw new BlendError(`${label} failed on the selected edges (${ocMessage(first)}): it is too large for the faces `
+            + 'next to them; try a smaller size or fewer edges', true);
+    }
+    const angles = faceAngles(shape, edges);
+    throw new BlendError(`${label} failed on the selected edges (${ocMessage(first)}), and OpenCascade cannot make it here `
+        + `at a tenth of the size either, so the size is not the cause${angles ? `: along these edges the faces meet at `
+        + `${round1(angles[0])}° to ${round1(angles[1])}°` : ''}. Blends where faces meet nearly tangentially or at a knife `
+        + 'edge, or where another face edge ends on the selected edges there, are the usual trouble; try picking fewer edges', false);
+}
+
+/** The edges of `shape` at the same places as `edges` (after an earlier loop's blend rebuilt the body). */
+function sameEdges(shape: Shape3D, edges: Edge[]): Edge[] {
+    return edges.map((edge) => {
+        const found = shape.edges.find((e) => e.isSame(edge))
+            ?? shape.edges.find((e) => [0, 0.5, 1].every((k) => dist(vecOf(e.pointAt(k)), vecOf(edge.pointAt(k))) < 1e-6));
+        if (!found) {
+            throw new LoopBlendError('a selected edge was changed by the blend of another loop');
+        }
+        return found;
+    });
 }
 
 export function filletFaces(shape: Shape3D, faces: Face[], radius: number): Shape3D {
@@ -166,44 +281,50 @@ export function chamferEdges(shape: Shape3D, edges: Edge[], spec: ChamferSpec): 
     needEdges(edges, 'chamfer');
     const picked = selects(edges);
     let label: string;
-    let config: (edge: Edge) => ChamferRadius;
+    let config: (edge: Edge, scale: number) => ChamferRadius;
+    let loop: LoopBlend;
+    let runout: RunoutBlend;
+    const referenceOf = (edge: Edge): Face => chamferReferenceFace(shape, edge, 'side' in spec ? spec.side : undefined);
     if ('angle' in spec) {
         if (!(spec.distance > 0 && spec.angle > 0 && spec.angle < 90)) {
             throw new Error('chamfer needs a positive distance and an angle between 0 and 90 degrees');
         }
         label = `chamfer of ${spec.distance} mm at ${spec.angle}°`;
-        config = (edge) => {
-            const face = chamferReferenceFace(shape, edge, spec.side);
-            return { distance: spec.distance, angle: spec.angle, selectedFace: (f) => f.inList([face]) };
+        config = (edge, k) => {
+            const face = referenceOf(edge);
+            return { distance: spec.distance * k, angle: spec.angle, selectedFace: (f) => f.inList([face]) };
         };
+        loop = { kind: 'chamfer', distance: spec.distance, angle: spec.angle, reference: referenceOf(edges[0]) };
+        runout = { kind: 'chamfer', distance: spec.distance, angle: spec.angle, reference: referenceOf };
     } else if ('distances' in spec) {
         const [d1, d2] = spec.distances;
         if (!(d1 > 0 && d2 > 0)) {
             throw new Error('chamfer distances must be positive');
         }
         label = `chamfer of ${d1} x ${d2} mm`;
-        config = (edge) => {
-            const face = chamferReferenceFace(shape, edge, spec.side);
-            return { distances: [d1, d2], selectedFace: (f) => f.inList([face]) };
+        config = (edge, k) => {
+            const face = referenceOf(edge);
+            return { distances: [d1 * k, d2 * k], selectedFace: (f) => f.inList([face]) };
         };
+        loop = { kind: 'chamfer', distances: [d1, d2], reference: referenceOf(edges[0]) };
+        runout = { kind: 'chamfer', distances: [d1, d2], reference: referenceOf };
     } else {
         if (!(spec.distance > 0)) {
             throw new Error('chamfer distance must be positive');
         }
         label = `chamfer of ${spec.distance} mm`;
-        config = () => spec.distance;
+        config = (_, k) => spec.distance * k;
+        loop = { kind: 'chamfer', distances: [spec.distance, spec.distance] };
+        runout = { kind: 'chamfer', distances: [spec.distance, spec.distance] };
     }
-    let result: Shape3D;
-    try {
-        result = solidOf(shape.chamfer((edge) => (picked(edge) ? config(edge) : null)), 'chamfer');
-    } catch (e) {
-        throw new Error(`${label} failed on the selected edges (${ocMessage(e)}): the distances are probably too large `
-            + 'for the faces next to them; try smaller ones');
-    }
-    if (!isValid(result)) {
-        throw new Error(`${label} is too large for the selected edges (the faces next to them are too small)`);
-    }
-    return result;
+    const kernel = (scale: number): Shape3D => {
+        const result = solidOf(shape.chamfer((edge) => (picked(edge) ? config(edge, scale) : null)), 'chamfer');
+        if (!isValid(result)) {
+            throw new Error('the result is not a valid solid');
+        }
+        return result;
+    };
+    return blendWithFallbacks(shape, edges, label, kernel, loop, runout);
 }
 
 export function chamferFaces(shape: Shape3D, faces: Face[], spec: ChamferSpec): Shape3D {

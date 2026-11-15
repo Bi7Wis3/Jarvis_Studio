@@ -13,6 +13,17 @@ export const MODEL_SKETCH_ICONS: Record<string, ReactNode> = {
             <path d="M4 19h16" strokeDasharray="2.5 2" />
         </>
     ),
+    'copy-model': (
+        <>
+            <path d="M4 9l5-4h11l-5 4z" opacity="0.6" />
+            <path d="M4 9v4M15 9v4M20 5v4" opacity="0.6" />
+            <path d="M12 13v3" />
+            <path d="M10 15l2 2 2-2" />
+            <path d="M5 19h14" />
+            <circle cx="4" cy="19" r="1.3" />
+            <circle cx="20" cy="19" r="1.3" />
+        </>
+    ),
     'intersection-curve': (
         <>
             <ellipse cx="12" cy="6" rx="5" ry="2" opacity="0.6" />

@@ -12,7 +12,7 @@ import {
     projectConic, projectPoint, tidy, type ModelCurve, type ModelQuery, type ModelSketch, type P2,
     type PlaneFrame3, type TaggedCurve,
 } from '@jarvis/core/projection';
-import { curveAt, pickAt, profilesToGeometry } from './sketchGeometry';
+import { constraintRefs, curveAt, pickAt, profilesToGeometry } from './sketchGeometry';
 import { withoutRepeatedLocks } from './sketchLock';
 import { planeFrame, type NewEntity, type Pt } from './sketchMath';
 import { closedSpline, curvePointIds, parabolaFrame, parabolaSegment, splineShapeOf, styleDegree } from './sketchCurves';
@@ -32,6 +32,15 @@ export const sketchLockSource = (c: Pick<SketchConstraint, 'id'>): string | null
 export const MODEL_LOCK_NAME = 'From the model, as it was';
 /** The one line every form that copies from the model shows. */
 export const BY_VALUE_NOTE = 'Copied from the model as it is now: it is locked in place and does not follow later changes to the model.';
+/** What Copy as sketch entities says instead. */
+export const COPY_NOTE = 'Copied as plain sketch entities: nothing holds them, so they can be dragged, dimensioned and edited like any other.';
+
+/**
+ * A model edge or vertex picked while sketching (selected, or picked by a relation or dimension tool) comes into the
+ * sketch as a reference: locked construction with ids `pr<n>` (points) and `cr<n>` (curves). One that no relation,
+ * dimension or curve uses is taken out again once it is no longer selected or picked (sketchModelSelect.ts).
+ */
+export const isModelReference = (id: string): boolean => /^[pc]r\d+$/.test(id);
 
 // ---- Turning model curves into sketch geometry -------------------------------------------------------------
 
@@ -629,7 +638,7 @@ function modelLocked(g: SketchGeometry): Set<string> {
  * Brings a model vertex or edge into the sketch as a locked construction point, line, circle or arc at its exact
  * place (marked as from the model), or finds the one brought in before. Returns the geometry and what to pick.
  */
-export function bringModelRef(g: SketchGeometry, ref: ModelRef): { g: SketchGeometry; pick: { type: 'point' | 'curve'; id: string } } {
+export function bringModelRef(g: SketchGeometry, ref: ModelRef, o: { reference?: boolean } = {}): { g: SketchGeometry; pick: { type: 'point' | 'curve'; id: string } } {
     const locked = modelLocked(g);
     const P = (id: string) => g.points.find((x) => x.id === id);
     if (ref.kind === 'point') {
@@ -646,7 +655,7 @@ export function bringModelRef(g: SketchGeometry, ref: ModelRef): { g: SketchGeom
             used.add(`${prefix}${n}${suffix}`);
             return `${prefix}${n}${suffix}`;
         };
-        const id = fresh('pm');
+        const id = fresh(o.reference ? 'pr' : 'pm');
         return {
             g: {
                 ...g, points: [...g.points, { id, u: ref.p[0], v: ref.p[1] }],
@@ -674,8 +683,93 @@ export function bringModelRef(g: SketchGeometry, ref: ModelRef): { g: SketchGeom
     if (same) {
         return { g, pick: { type: 'curve', id: same.id } };
     }
-    const r = addModelCurves(g, [c], { construction: true, lock: true, ...(ref.from ? { lockFrom: ref.from } : {}) });
+    const r = addModelCurves(g, [c], {
+        construction: true, lock: true, ...(ref.from ? { lockFrom: ref.from } : {}), ...(o.reference ? { id: (kind, n) => `${kind}r${n}` } : {}),
+    });
     return { g: r.g, pick: { type: 'curve', id: r.ids[0] } };
+}
+
+/**
+ * The sketch without the model references (isModelReference) that nothing uses: no relation or dimension other than
+ * their own locks, no curve of the sketch, and nothing in `keep` (what is selected or picked).
+ */
+export function withoutLooseReferences(g: SketchGeometry, keep: ReadonlySet<string> = new Set()): SketchGeometry {
+    if (!g.curves.some((c) => isModelReference(c.id)) && !g.points.some((p) => isModelReference(p.id))) {
+        return g;
+    }
+    const locks = new Set(g.constraints.filter((c) => (c.kind === 'fix' || c.kind === 'fixRadius') && (isModelLock(c) || sketchLockSource(c))).map((c) => c.id));
+    const used = new Set<string>(keep);
+    for (const c of g.constraints) {
+        if (!locks.has(c.id)) {
+            constraintRefs(c).forEach((id) => used.add(id));
+        }
+    }
+    for (const c of g.curves) {
+        if (!isModelReference(c.id)) {
+            curvePointIds(c).forEach((id) => used.add(id));
+        }
+    }
+    const drop = new Set(g.curves.filter((c) => isModelReference(c.id) && !used.has(c.id) && !curvePointIds(c).some((id) => used.has(id))).map((c) => c.id));
+    const onKept = new Set(g.curves.filter((c) => !drop.has(c.id)).flatMap((c) => curvePointIds(c)));
+    g.points.filter((p) => isModelReference(p.id) && !used.has(p.id) && !onKept.has(p.id)).forEach((p) => drop.add(p.id));
+    if (!drop.size) {
+        return g;
+    }
+    return {
+        ...g,
+        points: g.points.filter((p) => !drop.has(p.id)),
+        curves: g.curves.filter((c) => !drop.has(c.id)),
+        constraints: g.constraints.filter((c) => !constraintRefs(c).some((id) => drop.has(id))),
+    };
+}
+
+/** A sketch curve copied in from the model back as the model curve it was made from (addModelCurves' inverse). */
+export function modelCurveOf(g: SketchGeometry, c: SketchCurve): ModelCurve | null {
+    const P = (id: string): P2 | null => {
+        const q = g.points.find((x) => x.id === id);
+        return q ? [q.u, q.v] : null;
+    };
+    switch (c.kind) {
+        case 'line': {
+            const [a, b] = [P(c.a), P(c.b)];
+            return a && b ? { kind: 'line', a, b } : null;
+        }
+        case 'circle': {
+            const centre = P(c.center);
+            return centre ? { kind: 'circle', center: centre, radius: c.radius } : null;
+        }
+        case 'arc': {
+            const [centre, start, end] = [P(c.center), P(c.start), P(c.end)];
+            return centre && start && end ? { kind: 'arc', center: centre, start, end } : null;
+        }
+        case 'ellipse':
+        case 'ellipseArc': {
+            const [centre, major, minor] = [P(c.center), P(c.major), P(c.minor)];
+            if (!centre || !major || !minor) {
+                return null;
+            }
+            const b = Math.hypot(minor[0] - centre[0], minor[1] - centre[1]);
+            if (c.kind === 'ellipse') {
+                return { kind: 'ellipse', center: centre, major, minor: b };
+            }
+            const [start, end] = [P(c.start), P(c.end)];
+            return start && end ? { kind: 'ellipseArc', center: centre, major, minor: b, start, end } : null;
+        }
+        case 'styleSpline': {
+            const poles = c.points.map(P);
+            if (poles.some((p) => !p) || c.knots || c.weights?.some((w) => w !== 1)) {
+                return null;
+            }
+            const degree = styleDegree(c);
+            return degree === poles.length - 1 ? { kind: 'bezier', poles: poles as P2[] } : { kind: 'bspline', poles: poles as P2[], degree: degree as 3 | 5 | 7 };
+        }
+        case 'conic': {
+            const [start, apex, end] = [P(c.start), P(c.apex), P(c.end)];
+            return start && apex && end ? { kind: 'conic', start, apex, end, rho: c.rho } : null;
+        }
+        default:
+            return null;
+    }
 }
 
 /** What is under the cursor of the model, as a preview entity to light up (dimension and relation tools). */
