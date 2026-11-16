@@ -26,6 +26,7 @@ import { Ears } from './stt.js';
 import { callTool, createTools } from './tools.js';
 import { Voice } from './tts.js';
 import { registerImportRoutes } from './import/routes.js';
+import { registerFileRoutes, rememberImportFolder } from './fileRoutes.js';
 
 const PORT = Number(process.env.PORT ?? 4720);
 const MAX_CACHED_CLIPS = 100;
@@ -487,7 +488,8 @@ app.get('/api/health', async () => ({
 
 registerMcpHttp(app, tools);
 registerSettingsRoutes(app, settings);
-registerImportRoutes(app, store, kernel);
+registerImportRoutes(app, store, kernel, { importedPath: (path) => rememberImportFolder(settings, path) });
+registerFileRoutes(app, settings);
 
 await app.listen({ host: '127.0.0.1', port: PORT });
 console.log(`[server] Jarvis Studio listening on http://127.0.0.1:${PORT} (voice: ${voice.name ?? 'browser'})`);

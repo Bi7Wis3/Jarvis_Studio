@@ -367,6 +367,13 @@ Reference geometry
   is not read. Rolling-ball blends and intersection curves are rebuilt as B-splines within 5e-6 mm (a warning names
   them); only the first configuration is read. 52 of the owner's 54 files read as valid solids, matching their STL
   exports to 0.0002 to 0.003 mm on average.
+- [~] File browser (the studio's own, in the Import form; as SolidWorks' Open dialog): Places (Home, Desktop,
+  Documents, Downloads, pinned folders, the last 10 folders imported from, kept in the settings), breadcrumb path, a
+  virtual list (folders first, natural order), filter by name, Quick filter buttons per type in any combination, Show
+  all files, hidden entries, the selected file's preview picture (SolidWorks files), size and date; arrows, Enter,
+  Backspace and double click. Opens at the last folder used. The server reads the picked file by its path (no
+  upload), home folder only. The system dialog stays as a link; files can still be dropped on the form. Not yet: the
+  save mode for File > Save As (name field, replace question), recent documents (only folders), Description.
 
 ## Evaluate
 

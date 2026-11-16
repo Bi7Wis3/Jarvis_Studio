@@ -21,8 +21,13 @@ export function isOle(bytes: Uint8Array): boolean {
     return bytes.length >= 512 && OLE_MAGIC.every((b, i) => bytes[i] === b);
 }
 
-export function readContainer(bytes: Uint8Array): SwContainer {
-    return isOle(bytes) ? readOle(bytes) : readZip2015(bytes);
+/** Which streams to read: the others are skipped (not unpacked). */
+export type StreamFilter = (name: string) => boolean;
+
+const every: StreamFilter = () => true;
+
+export function readContainer(bytes: Uint8Array, want: StreamFilter = every): SwContainer {
+    return isOle(bytes) ? readOle(bytes, want) : readZip2015(bytes, want);
 }
 
 const u16 = (b: Uint8Array, at: number): number => b[at] | (b[at + 1] << 8);
@@ -54,7 +59,7 @@ function headerFits(bytes: Uint8Array, at: number): boolean {
  * The 2015+ archive. The record signature differs per file; it is the 4 bytes most often found in front of
  * a fitting local header. Records are then walked by that 10-byte pattern, each skipped by its stored size.
  */
-export function readZip2015(bytes: Uint8Array): SwContainer {
+export function readZip2015(bytes: Uint8Array, want: StreamFilter = every): SwContainer {
     const votes = new Map<number, number>();
     for (let at = indexOf(bytes, LOCAL_TAIL, 4); at >= 0; at = indexOf(bytes, LOCAL_TAIL, at + 1)) {
         if (headerFits(bytes, at)) {
@@ -83,6 +88,10 @@ export function readZip2015(bytes: Uint8Array): SwContainer {
         const name = Buffer.from(swapNibbles(bytes.subarray(h + 26, h + 26 + nlen))).toString('latin1');
         const start = h + 26 + nlen + xlen;
         const packed = bytes.subarray(start, start + csize);
+        if (!want(name)) {
+            at = indexOf(bytes, pattern, start + csize);
+            continue;
+        }
         try {
             const data = usize === 0 && csize <= 2 ? new Uint8Array(0) : new Uint8Array(inflateRawSync(packed));
             if (data.length !== usize || crc32(data) !== crc) {
@@ -103,7 +112,7 @@ export function readZip2015(bytes: Uint8Array): SwContainer {
 const FREE = 0xffffffff;
 const END_OF_CHAIN = 0xfffffffe;
 
-export function readOle(bytes: Uint8Array): SwContainer {
+export function readOle(bytes: Uint8Array, want: StreamFilter = every): SwContainer {
     const sectorShift = u16(bytes, 0x1e);
     const miniShift = u16(bytes, 0x20);
     const sectorSize = 1 << sectorShift;
@@ -195,7 +204,7 @@ export function readOle(bytes: Uint8Array): SwContainer {
         visit(e.left, path);
         visit(e.right, path);
         const full = path ? `${path}/${e.name}` : e.name;
-        if (e.type === 2) {
+        if (e.type === 2 && want(full)) {
             streams.set(full, e.size < miniCutoff ? readMini(e.start, e.size) : readChain(e.start, e.size));
         } else if (e.type === 1) {
             visit(e.child, full);

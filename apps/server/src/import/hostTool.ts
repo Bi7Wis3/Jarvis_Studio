@@ -1,15 +1,14 @@
 // import_file: Jarvis brings a CAD file from this machine into the project, as File > Import does.
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import type { CadKernel } from '../cad/kernel.js';
 import type { ProjectStore } from '../store.js';
 import type { HostTool } from '../tools.js';
+import { readImportFile } from './fromPath.js';
 import { importIntoProject } from './project.js';
 import { IMPORTERS } from './registry.js';
-import { MAX_IMPORT_BYTES } from './routes.js';
 import { importOptionsSchema } from './schema.js';
 
 export function importFileTool(store: ProjectStore, host: { kernel: CadKernel }): HostTool {
@@ -32,15 +31,7 @@ export function importFileTool(store: ProjectStore, host: { kernel: CadKernel })
             if (!isAbsolute(full)) {
                 throw new Error('Give the absolute path of the file');
             }
-            if (!existsSync(full) || !statSync(full).isFile()) {
-                throw new Error(`There is no file at ${full}`);
-            }
-            if (statSync(full).size > MAX_IMPORT_BYTES) {
-                throw new Error(`${basename(full)} is larger than ${MAX_IMPORT_BYTES / 1024 / 1024} MB`);
-            }
-            const report = await importIntoProject(store, host.kernel, {
-                filename: basename(full), bytes: new Uint8Array(readFileSync(full)), options, target, replace,
-            });
+            const report = await importIntoProject(store, host.kernel, { ...await readImportFile(full), options, target, replace });
             return { text: `${report.text}\nParts: ${report.parts.join(', ')}; steps: ${report.steps.join(', ')}.` };
         },
     };

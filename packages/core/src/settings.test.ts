@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-    applyPatch, DEFAULT_SETTINGS, defaultSettings, LIGHTING_PRESETS, maskKey, MAX_LIGHTS, normaliseSettings, plainData, resetCategory,
-    validModel,
+    applyPatch, DEFAULT_SETTINGS, defaultSettings, LIGHTING_PRESETS, maskKey, MAX_LIGHTS, MAX_RECENT_FOLDERS, normaliseSettings, plainData,
+    resetCategory, validModel,
 } from './settings';
 
 describe('normaliseSettings', () => {
@@ -33,6 +33,16 @@ describe('normaliseSettings', () => {
     it('keeps only plain text and check-box defaults with sensible keys', () => {
         const s = normaliseSettings({ defaults: { fillet: { r: '3', tangent: false, bad: { x: 1 }, n: 4 }, 'no way!': { r: '1' }, empty: {} } });
         expect(s.defaults).toEqual({ fillet: { r: '3', tangent: false } });
+    });
+
+    it("keeps the file browser's folders as absolute paths, each once, the recent ones up to their limit", () => {
+        const recent = Array.from({ length: 15 }, (_, i) => `/home/me/f${i}`);
+        const s = normaliseSettings({ files: { lastFolder: 'relative', recentFolders: ['/home/me/a', '/home/me/a', 'b', 7, ...recent], favourites: ['/x', '/x\0y'] } });
+        expect(s.files.lastFolder).toBe('');
+        expect(s.files.recentFolders).toHaveLength(MAX_RECENT_FOLDERS);
+        expect(s.files.recentFolders.slice(0, 2)).toEqual(['/home/me/a', '/home/me/f0']);
+        expect(s.files.favourites).toEqual(['/x']);
+        expect(normaliseSettings({}).files).toEqual({ lastFolder: '', recentFolders: [], favourites: [] });
     });
 
     it('keeps the presets as valid settings', () => {

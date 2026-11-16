@@ -124,6 +124,19 @@ export interface UnitSettings {
 
 export type ToolDefaultValue = string | boolean;
 
+/** The app's own file browser (File > Import): the folder it opens at, the folders last imported from, pinned folders. */
+export interface FileSettings {
+    /** Absolute path of the folder the browser was last in, or '' for the home folder. */
+    lastFolder: string;
+    /** The folders files were last imported from, newest first. */
+    recentFolders: string[];
+    /** Folders pinned under Places, in the order they were pinned. */
+    favourites: string[];
+}
+
+export const MAX_RECENT_FOLDERS = 10;
+export const MAX_FAVOURITE_FOLDERS = 40;
+
 export interface StudioSettings {
     general: GeneralSettings;
     /** The web's sketch settings (sketch options, toggles, snaps, splines), as the web's own modules define them. */
@@ -136,6 +149,7 @@ export interface StudioSettings {
     ai: AiSettings;
     /** The toolbar settings, as the toolbar's own module defines them. */
     toolbars: Record<string, unknown>;
+    files: FileSettings;
 }
 
 /** The settings as the server sends them to the web. */
@@ -144,8 +158,8 @@ export interface StudioSettingsView extends Omit<StudioSettings, 'ai'> {
 }
 
 /** The Options page's categories; Reset to defaults works on one of them. */
-export type SettingsCategory = 'general' | 'sketch' | 'defaults' | 'units' | 'display' | 'lighting' | 'ai' | 'toolbars';
-export const SETTINGS_CATEGORIES: SettingsCategory[] = ['general', 'sketch', 'defaults', 'units', 'display', 'lighting', 'ai', 'toolbars'];
+export type SettingsCategory = 'general' | 'sketch' | 'defaults' | 'units' | 'display' | 'lighting' | 'ai' | 'toolbars' | 'files';
+export const SETTINGS_CATEGORIES: SettingsCategory[] = ['general', 'sketch', 'defaults', 'units', 'display', 'lighting', 'ai', 'toolbars', 'files'];
 
 // ---- Lighting presets ----------------------------------------------------------------------------------------
 
@@ -232,6 +246,7 @@ export const DEFAULT_SETTINGS: StudioSettings = {
     lighting: clone(STUDIO),
     ai: { auth: 'local', fast: { model: 'sonnet', effort: 'medium' }, best: { model: 'opus', effort: 'high' } },
     toolbars: {},
+    files: { lastFolder: '', recentFolders: [], favourites: [] },
 };
 
 export function defaultSettings(): StudioSettings {
@@ -369,6 +384,33 @@ function toolDefaults(v: unknown): StudioSettings['defaults'] {
     return out;
 }
 
+/** An absolute path ('/' or a drive letter first), without NUL characters, of a sensible length. */
+const absolutePath = (v: unknown): v is string =>
+    typeof v === 'string' && v.length <= 4096 && /^(\/|[A-Za-z]:[\\/])/.test(v) && !v.includes('\0');
+
+/** Absolute paths, each once, at most `max`. */
+function pathList(v: unknown, max: number): string[] {
+    const out: string[] = [];
+    for (const item of Array.isArray(v) ? v : []) {
+        if (absolutePath(item) && !out.includes(item)) {
+            out.push(item);
+        }
+        if (out.length >= max) {
+            break;
+        }
+    }
+    return out;
+}
+
+function fileSettings(v: unknown): FileSettings {
+    const r = obj(v);
+    return {
+        lastFolder: absolutePath(r.lastFolder) ? r.lastFolder : '',
+        recentFolders: pathList(r.recentFolders, MAX_RECENT_FOLDERS),
+        favourites: pathList(r.favourites, MAX_FAVOURITE_FOLDERS),
+    };
+}
+
 /** A complete, valid set of settings from anything: missing or broken values take their defaults. */
 export function normaliseSettings(raw: unknown, base: StudioSettings = DEFAULT_SETTINGS): StudioSettings {
     const r = obj(raw);
@@ -419,6 +461,7 @@ export function normaliseSettings(raw: unknown, base: StudioSettings = DEFAULT_S
             best: modelChoice(ai.best, d.ai.best),
         },
         toolbars: plainData(r.toolbars),
+        files: r.files === undefined ? clone(d.files) : fileSettings(r.files),
     };
 }
 
