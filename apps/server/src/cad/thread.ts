@@ -730,7 +730,7 @@ function wallOf(shape: Shape3D, frame: Frame, near: number, far: number, low: nu
 /** Walls a preview has looked at: while a value is typed it shows the same thread on the same body again and again. */
 const seen = new Map<string, Wall | null>();
 /** Surfaces hidden threads are drawn on, as `seen`: a hidden thread is drawn again on every rebuild. */
-const surfaces = new Map<string, Wall | null>();
+const surfaces = new Map<string, ((angle: number, s: number) => boolean) | null>();
 
 /** The body as a key: the same body (the same step before the thread) gives the same key. */
 function bodyKey(shape: Shape3D): string {
@@ -800,17 +800,96 @@ function inMaterial(wall: Wall): (p: Vec3) => boolean {
     };
 }
 
+/**
+ * Where a hole's or shaft's own surface is: the part's faces on the cylinder of `radius` about the thread's axis, their
+ * outlines unrolled into (angle about the axis, distance along it) in the thread's frame. A point is on the surface when
+ * the line along the axis at its angle crosses those outlines an odd number of times below it. Read from the faces'
+ * own edges, so no boolean is needed (cutting a cylinder against a large part took most of a minute). Null when the
+ * part has no such face.
+ */
+function surfaceOutline(shape: Shape3D, frame: Frame, radius: number, axis: Vec3, origin: Vec3): ((angle: number, s: number) => boolean) | null {
+    const oc = getOC() as unknown as {
+        BRepAdaptor_Surface: new (face: unknown, restriction: boolean) => {
+            GetType(): unknown; Cylinder(): { Radius(): number; Axis(): { Location(): { X(): number; Y(): number; Z(): number }; Direction(): { X(): number; Y(): number; Z(): number } } }; delete(): void;
+        };
+        GeomAbs_SurfaceType: { GeomAbs_Cylinder: unknown };
+    };
+    const length = Math.hypot(...axis);
+    const d: Vec3 = [axis[0] / length, axis[1] / length, axis[2] / length];
+    const segments: number[] = [];
+    for (const face of shape.faces) {
+        const adaptor = new oc.BRepAdaptor_Surface(face.wrapped, true);
+        let onAxis = false;
+        try {
+            if (adaptor.GetType() === oc.GeomAbs_SurfaceType.GeomAbs_Cylinder) {
+                const cylinder = adaptor.Cylinder();
+                const ax = cylinder.Axis();
+                const [l, n] = [ax.Location(), ax.Direction()];
+                const dir: Vec3 = [n.X(), n.Y(), n.Z()];
+                const off: Vec3 = [l.X() - origin[0], l.Y() - origin[1], l.Z() - origin[2]];
+                const along = off[0] * d[0] + off[1] * d[1] + off[2] * d[2];
+                const across = Math.hypot(off[0] - along * d[0], off[1] - along * d[1], off[2] - along * d[2]);
+                onAxis = Math.abs(cylinder.Radius() - radius) <= 1e-5 * Math.max(1, radius)
+                    && Math.abs(dir[0] * d[0] + dir[1] * d[1] + dir[2] * d[2]) > 1 - 1e-9 && across <= 1e-5 * Math.max(1, radius);
+            }
+        } finally {
+            adaptor.delete();
+        }
+        if (!onAxis) {
+            continue;
+        }
+        for (const edge of face.edges) {
+            const count = Math.max(8, Math.ceil(edge.length / 0.02));
+            let last: [number, number] | null = null;
+            for (let i = 0; i <= count; i++) {
+                const p = frame.toLocal(edge.pointAt(i / count).toTuple() as Vec3);
+                let a = Math.atan2(-p[2], p[0]);
+                if (last) {
+                    a += 2 * Math.PI * Math.round((last[0] - a) / (2 * Math.PI));
+                    segments.push(last[0], last[1], a, p[1]);
+                }
+                last = [a, p[1]];
+            }
+        }
+    }
+    if (!segments.length) {
+        return null;
+    }
+    /** How many times the outlines cross the line along the axis at `angle`, below `s`. */
+    const below = (angle: number, s: number): number => {
+        let count = 0;
+        for (let i = 0; i < segments.length; i += 4) {
+            const [a0, s0, a1, s1] = [segments[i], segments[i + 1], segments[i + 2], segments[i + 3]];
+            if (Math.abs(a1 - a0) < 1e-12) {
+                continue; // a seam, along the axis
+            }
+            for (const turn of [-1, 0, 1]) {
+                const x = angle + turn * 2 * Math.PI;
+                if ((a0 > x) !== (a1 > x) && s0 + ((x - a0) * (s1 - s0)) / (a1 - a0) < s) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    };
+    // The angle is taken into one turn (the outlines lie within a turn and a half of it); a point on an outline itself,
+    // such as the hole's mouth, counts as on the surface.
+    return (angle, s) => {
+        const a = Math.atan2(Math.sin(angle), Math.cos(angle));
+        return below(a, s - 1e-9) % 2 === 1 || below(a, s + 1e-9) % 2 === 1;
+    };
+}
+
 /** Lift of a hidden thread's helix off the surface it is drawn on (into the hole, out from a shaft), so it shows. */
 const SPIRAL_LIFT = 0.02;
 
 /**
  * A hidden thread's helix for each start (`turns`, degrees), on the ridge's own turn (lead, hand, start angle), at
- * `radius`, from `low` to `high` along the axis, placed by `frame`. With `surface` (the material behind the hole's or
- * shaft's surface, seen a little way in and carried on to `on`, the surface's own radius) it stops where that surface
- * does: at a breakout, or another hole.
+ * `radius`, from `low` to `high` along the axis, placed by `frame`. With `onSurface` (where the hole's or shaft's own
+ * surface is, see surfaceOutline) it stops where that surface does: at a breakout, or another hole.
  */
-function spiralLines(frame: Frame, spec: RidgeSpec, turns: number[], radius: number, surface: Wall | null, on: number,
-    low: number, high: number): Vec3[][] {
+function spiralLines(frame: Frame, spec: RidgeSpec, turns: number[], radius: number,
+    onSurface: ((angle: number, s: number) => boolean) | null, low: number, high: number): Vec3[][] {
     const lead = spec.lead ?? spec.pitch;
     const sign = spec.leftHanded ? -1 : 1;
     // A tenth of a radian a step, and no more than 0.25 mm along a wide helix.
@@ -818,22 +897,7 @@ function spiralLines(frame: Frame, spec: RidgeSpec, turns: number[], radius: num
     const lines: Vec3[][] = [];
     for (const start of turns) {
         const angleAt = (s: number): number => sign * 2 * Math.PI * ((s - spec.y0) / lead) + ((spec.turn ?? 0) + start) * (Math.PI / 180);
-        const there = (s: number): boolean => {
-            if (!surface) {
-                return true;
-            }
-            const c0 = surface.near.crossings(angleAt(s));
-            const c1 = surface.far?.crossings(angleAt(s)) ?? [];
-            const k = (on - surface.near.radius) / ((surface.far?.radius ?? on) - surface.near.radius);
-            const c = c1.length === c0.length && Number.isFinite(k) ? c0.map((v, i) => v + k * (c1[i] - v)) : c0;
-            // An opening that runs to an end of the thread takes that end too.
-            for (let i = 0; i + 1 < c.length; i += 2) {
-                if (s >= c[i] && s <= c[i + 1]) {
-                    return false;
-                }
-            }
-            return true;
-        };
+        const there = (s: number): boolean => !onSurface || onSurface(angleAt(s), s);
         const point = (s: number): Vec3 => {
             const a = angleAt(s);
             return frame.toWorld([radius * Math.cos(a), s, -radius * Math.sin(a)]);
@@ -1140,6 +1204,23 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
             throw new Error('thread is too short for its pitch');
         }
         const place = [...origin, ...axis, f.startAngle ?? 0].join(',');
+        if (f.cosmetic) {
+            // Hidden: only the marks are drawn, one helix per start on the hole's or shaft's own surface where that surface
+            // is (from a point: at the thread's major (hole) or minor (shaft) diameter). The ridges and the walls behind
+            // them are never shown, so they are not worked out: that cost as much as the thread itself.
+            const external = f.kind === 'external';
+            const ghosts: ThreadGhost[] = Array.from({ length: starts }, (_, i) => ({
+                spec: { ...spec, turn: (spec.turn ?? 0) + turnOf(i) }, origin, axis, angle: f.startAngle ?? 0,
+            }));
+            const onSurface = picked === null ? null
+                : keep(surfaces, [bodyKey(shape), place, picked, f.kind].join('|'), () => surfaceOutline(shape, frame, picked!, axis, origin));
+            const radius = picked === null ? (external ? rMaj - 0.6134 * pitch : rMaj) : picked - (external ? -1 : 1) * SPIRAL_LIFT;
+            const spiral = spiralLines(frame, spec, Array.from({ length: starts }, (_, i) => turnOf(i)), radius, onSurface, low, high);
+            ghosts.forEach((ghost, i) => {
+                ghost.spiral = i === 0 ? spiral : [];
+            });
+            return { shape, notes, ghosts };
+        }
         const wall = !edge ? null : f.kind === 'external'
             ? wallSeen(shape, frame, place, core, core - Math.min(0.3, core / 2), low, high, 2 * lead + 1)
             : wallSeen(shape, frame, place, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, low, high, 2 * lead + 1);
@@ -1155,20 +1236,6 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
         const pieces = Array.from({ length: starts }, (_, i) => ridgePieces(shown, cut ? null : wall, turnOf(i))).flat();
         const ghosts: ThreadGhost[] = pieces.map((piece) => ({ spec: piece, origin, axis, angle: f.startAngle ?? 0,
             ...(material ? { keep: inMaterial(material) } : {}) }));
-        if (f.cosmetic && ghosts.length) {
-            // Hidden: one helix per start drawn on the hole's or shaft's own surface, where that surface is; from a
-            // point, at the thread's major (hole) or minor (shaft) diameter.
-            const inward = external ? -1 : 1;
-            const surface = picked === null ? null
-                : keep(surfaces, [bodyKey(shape), place, picked, low, high, f.kind].join('|'),
-                    () => wallOf(shape, frame, picked! + inward * 0.05, picked! + inward * 0.15, low, high));
-            const radius = picked === null ? (external ? rMaj - 0.6134 * pitch : rMaj) : picked - inward * SPIRAL_LIFT;
-            const spiral = spiralLines(frame, spec, Array.from({ length: starts }, (_, i) => turnOf(i)), radius, surface, picked ?? radius,
-                low, high);
-            ghosts.forEach((ghost, i) => {
-                ghost.spiral = i === 0 ? spiral : [];
-            });
-        }
         return { shape, notes, ghosts };
     }
     // Every boolean below runs on the piece of the part within a cylinder about the thread, which is then sewn back to
