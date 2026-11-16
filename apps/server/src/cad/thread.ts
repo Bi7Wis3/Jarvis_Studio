@@ -251,6 +251,12 @@ function internalSpec(pitch: number, rMajor: number, yLow: number, yHigh: number
     return { pitch, rBase, rCrest, wBase, wCrest, y0, height, ...hand };
 }
 
+/** A ridge with its crest moved to radius `crest`, its flanks carried on to there (lower and wider, or taller and sharper). */
+function crestAt(spec: RidgeSpec | null, crest: number): RidgeSpec | null {
+    return !spec || Math.abs(crest - spec.rCrest) < 1e-9 ? spec
+        : { ...spec, rCrest: crest, wCrest: spec.wCrest - 2 * (Math.abs(crest - spec.rBase) - Math.abs(spec.rCrest - spec.rBase)) * TAN30 };
+}
+
 /** External thread ridge for a major radius, inside the zone [yLow, yHigh]; null if the zone is too short. */
 export function externalRidge(pitch: number, rMajor: number, rRoot: number, yLow: number, yHigh: number,
     hand: Pick<RidgeSpec, 'lead' | 'leftHanded'> = {}): Ridge | null {
@@ -373,11 +379,42 @@ export interface ThreadGhost {
      * the surface of the hole or shaft, as polylines in the part's space, broken where that surface is not.
      */
     spiral?: Vec3[][];
+    /**
+     * A cut thread's ridge as the build cuts it, only where the part's material is: whether a point of the ridge, in
+     * the thread's own frame (Y along the axis), is kept.
+     */
+    keep?: (p: Vec3) => boolean;
 }
 
 /** The ghost's ridge, meshed analytically and placed on its axis. */
 export function ghostMesh(ghost: ThreadGhost, angularTolerance = ANGULAR_TOLERANCE): MeshData {
-    const mesh = ridgeMesh(ghost.spec, angularTolerance);
+    // Cut where the part ends: finer, so the ridge's end follows the part's face closely.
+    const mesh = ridgeMesh(ghost.spec, ghost.keep ? Math.min(angularTolerance, 0.05) : angularTolerance);
+    if (ghost.keep) {
+        const p = mesh.positions;
+        const kept = Array.from({ length: p.length / 3 }, (_, i) => ghost.keep!([p[3 * i], p[3 * i + 1], p[3 * i + 2]]));
+        const triangles = Array.from({ length: mesh.indices.length / 3 }, (_, t) => t)
+            .filter((t) => kept[mesh.indices[3 * t]] && kept[mesh.indices[3 * t + 1]] && kept[mesh.indices[3 * t + 2]]);
+        // Only the points the kept triangles use.
+        const used = new Map<number, number>();
+        const indices = triangles.flatMap((t) => [0, 1, 2].map((c) => {
+            const v = mesh.indices[3 * t + c];
+            if (!used.has(v)) {
+                used.set(v, used.size);
+            }
+            return used.get(v)!;
+        }));
+        const pick = (values: Float32Array): Float32Array => Float32Array.from([...used.keys()].flatMap((v) => Array.from(values.subarray(3 * v, 3 * v + 3))));
+        mesh.positions = pick(mesh.positions);
+        mesh.normals = pick(mesh.normals);
+        mesh.triFace = Uint32Array.from(triangles.map((t) => mesh.triFace[t]));
+        mesh.indices = Uint32Array.from(indices);
+        const e = mesh.edges;
+        const segments = Array.from({ length: e.length / 6 }, (_, k) => k)
+            .filter((k) => ghost.keep!([e[6 * k], e[6 * k + 1], e[6 * k + 2]]) && ghost.keep!([e[6 * k + 3], e[6 * k + 4], e[6 * k + 5]]));
+        mesh.edges = Float32Array.from(segments.flatMap((k) => Array.from(e.subarray(6 * k, 6 * k + 6))));
+        mesh.segEdge = Uint32Array.from(segments.map((k) => mesh.segEdge[k]));
+    }
     const frame = frameOf(ghost.origin, ghost.axis, ghost.angle);
     const map = (values: Float32Array, direction: boolean): void => {
         for (let i = 0; i < values.length; i += 3) {
@@ -716,6 +753,51 @@ function keep<T>(cache: Map<string, T>, key: string, make: () => T): T {
 /** wallOf, kept for the next preview of the same body and place (`place`: the thread's origin, axis and angle). */
 function wallSeen(shape: Shape3D, frame: Frame, place: string, near: number, far: number, low: number, high: number, margin: number): Wall | null {
     return keep(seen, [bodyKey(shape), place, near, far, low, high, margin].join('|'), () => wallOf(shape, frame, near, far, low, high, margin));
+}
+
+/**
+ * Whether a point (in the thread's frame) lies in the part's material, judged by the wall seen at two radii and its
+ * edge carried on in a straight line between and past them along the axis, within the wall's [low, high].
+ */
+function inMaterial(wall: Wall): (p: Vec3) => boolean {
+    const [r0, r1] = [wall.near.radius, wall.far?.radius ?? wall.near.radius];
+    return ([x, y, z]) => {
+        if (y < wall.low - 1e-9 || y > wall.high + 1e-9) {
+            return false;
+        }
+        const angle = Math.atan2(-z, x);
+        const c0 = wall.near.crossings(angle);
+        const c1 = wall.far?.crossings(angle) ?? [];
+        const k = (Math.hypot(x, z) - r0) / (r1 - r0);
+        const c = c1.length === c0.length && Number.isFinite(k) ? c0.map((v, i) => v + k * (c1[i] - v)) : c0;
+        for (let i = 0; i + 1 < c.length; i += 2) {
+            if (y > c[i] && y < c[i + 1]) {
+                return false;
+            }
+        }
+        // Where the edge runs along the axis: the face taken across the section as the straight line through where
+        // it meets the two radii, next to the point's own angle (as ridgePieces does).
+        const a0 = wall.near.around(y, angle);
+        const a1 = wall.far?.around(y, angle);
+        if (a1 && a0.angles.length && a1.angles.length === a0.angles.length) {
+            let i = 0;
+            for (let j = 1; j < a0.angles.length; j++) {
+                if (Math.abs(a0.angles[j] - a0.at) < Math.abs(a0.angles[i] - a0.at)) {
+                    i = j;
+                }
+            }
+            const open = i % 2 === 0 ? 1 : -1;
+            const point = (radius: number, a: number): P2 => [radius * Math.cos(a), radius * Math.sin(a)];
+            const [n, f] = [point(r0, a0.angles[i]), point(r1, a1.angles[i])];
+            if (Math.hypot(f[0] - n[0], f[1] - n[1]) > 1e-9) {
+                const side = (q: P2): number => (f[0] - n[0]) * (q[1] - n[1]) - (f[1] - n[1]) * (q[0] - n[0]);
+                if (side(point(Math.hypot(x, z), a0.at)) * side(point(r0, a0.angles[i] - open * 0.01)) < 0) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
 }
 
 /** Lift of a hidden thread's helix off the surface it is drawn on (into the hole, out from a shaft), so it shows. */
@@ -1061,12 +1143,21 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
         const wall = !edge ? null : f.kind === 'external'
             ? wallSeen(shape, frame, place, core, core - Math.min(0.3, core / 2), low, high, 2 * lead + 1)
             : wallSeen(shape, frame, place, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, low, high, 2 * lead + 1);
-        const pieces = Array.from({ length: starts }, (_, i) => ridgePieces(spec, wall, turnOf(i))).flat();
-        const ghosts: ThreadGhost[] = pieces.map((piece) => ({ spec: piece, origin, axis, angle: f.startAngle ?? 0 }));
+        // A cut thread is shown as the build cuts it: the whole ridge, crests at the hole's or shaft's surface where that
+        // is past the thread's minor or major diameter, cut where the part's material ends.
+        const external = f.kind === 'external';
+        const rCrest = external ? rMaj : rMaj - (MINOR_DEPTH * pitch) / 2;
+        const cut = picked !== null && (f.method ?? (external ? (picked < rMaj - 1e-4 ? 'extrude' : 'cut') : (picked > rCrest + 1e-4 ? 'extrude' : 'cut'))) === 'cut';
+        const crest = !cut ? rCrest : external ? Math.min(rMaj, picked!) : Math.max(rCrest, picked!);
+        const shown = cut ? crestAt(spec, crest)! : spec;
+        const material = !cut ? null : wallSeen(shape, frame, place, external ? crest - 0.02 : crest + 0.02,
+            external ? spec.rBase - 0.05 : spec.rBase + 0.05, low, high, 0);
+        const pieces = Array.from({ length: starts }, (_, i) => ridgePieces(shown, cut ? null : wall, turnOf(i))).flat();
+        const ghosts: ThreadGhost[] = pieces.map((piece) => ({ spec: piece, origin, axis, angle: f.startAngle ?? 0,
+            ...(material ? { keep: inMaterial(material) } : {}) }));
         if (f.cosmetic && ghosts.length) {
             // Hidden: one helix per start drawn on the hole's or shaft's own surface, where that surface is; from a
             // point, at the thread's major (hole) or minor (shaft) diameter.
-            const external = f.kind === 'external';
             const inward = external ? -1 : 1;
             const surface = picked === null ? null
                 : keep(surfaces, [bodyKey(shape), place, picked, low, high, f.kind].join('|'),
@@ -1170,14 +1261,71 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
             wantIn || wantOut || trim ? [low, high, reachOut] : undefined, true);
     };
     /**
+     * Cut thread where the hole or shaft comes out through a face of the part (or meets another hole) along the
+     * thread: what a tap or die removes, `stock` without the ridges, taken from the part, so the ridges are the part's
+     * own material left between the grooves and run right up to its faces, cut by them exactly. The stock is built
+     * over the thread's own range, and past an end of the hole or shaft where that is free space, so that the ridge
+     * starts and ends inside it and runs out through the part's end face. Where the kernel cannot make the cut with the
+     * far end run out (some shafts threaded over their whole length), that end is left as it would be without Trim
+     * with end face, then the start too.
+     */
+    const cutThread = (stock: (from: number, to: number) => Shape3D, ridge: (from: number, to: number) => RidgeSpec | null, reachOut: number): Shape3D => {
+        const before = -2 * lead - 0.5;
+        const canIn = wantIn && free(stock(before, low - 1e-3));
+        const canOut = wantOut && free(stock(high + 1e-3, high + 2 * lead + 0.5));
+        // [run in, run out, end the ridge inside the range]: the last also when the thread was asked longer than the
+        // hole or shaft, so that nothing of the tool's far end lies in the part's own end face.
+        const plans = ([[canIn, canOut, false], [canIn, false, false], [canIn, false, true], [false, false, true]] as [boolean, boolean, boolean][])
+            .map(([runIn, runOut, inside]) => ({ runIn, runOut, to: runOut ? high + 2 * lead : inside ? Math.min(length, high) : length }))
+            .filter((plan, n, all) => all.findIndex((other) => other.runIn === plan.runIn && other.runOut === plan.runOut && other.to === plan.to) === n);
+        let failure: unknown;
+        for (const { runIn, runOut, to } of plans) {
+            try {
+                // Whole leads before the start, so the helix keeps its place around the axis.
+                const span: [number, number] = [runIn ? -2 * lead : 0, to];
+                // A ridge that still runs past the range (asked longer than the hole, or started before its edge, with no
+                // free space there) is cut off square a little outside it: the kernel will not cut with a sweep's raw ends.
+                const pokesIn = !runIn && low > 1e-9;
+                const pokesOut = !runOut && to > high + 1e-9;
+                const kept = ridges(ridge(span[0], span[1]), null, pokesIn || pokesOut
+                    ? [pokesIn ? low - 0.2 : span[0] - 1, pokesOut ? high + 0.2 : span[1] + 1, reachOut] : undefined);
+                const bore = at(stock(runIn ? before : low, runOut ? high + 2 * lead + 0.5 : high));
+                const made = tapCut(shape, bore, at(kept));
+                const change = measureVolume(shape) - measureVolume(made);
+                if (change > 1e-6 && change <= measureVolume(bore) + 1e-6 && isValid(made)) {
+                    return made;
+                }
+                failure = new Error('the thread cut gave a broken body');
+            } catch (e) {
+                failure = e;
+            }
+        }
+        throw failure;
+    };
+    /** Whether the wall cuts the ridge short anywhere along the thread (where the hole or shaft comes out). */
+    const broken = (ridge: (from: number, to: number) => RidgeSpec | null, wall: Wall | null): boolean => {
+        const spec = ridge(wantIn ? -2 * lead : 0, wantOut ? high + 2 * lead : length);
+        return !!wall && !!spec && Array.from({ length: starts }, (_, i) => ridgePieces(spec, wall, turnOf(i)))
+            .some((pieces) => pieces.length !== 1 || pieces[0].height < spec.height - 1e-9);
+    };
+    /**
      * The thread on the piece of the part: `stock` (the bore opened to the major diameter, or the ring turned off a
      * shaft) taken away over the thread's length, run on past an end where there is free space so that it never ends
-     * in the part's own end face, then the ridges put back where the wall or core stands behind them (`near` and
-     * `far` the radii it is looked for at). One fuse with the ridges, on the small piece around the hole or shaft.
+     * in the part's own end face, then the ridges put back where the wall or core stands behind their whole profile
+     * (`near` and `far` the radii it is looked for at). One fuse with the ridges, on the small piece around the hole or
+     * shaft. A cut thread (`cutter`: its ridges as a tap or die leaves them) whose ridges the wall cuts short is cut
+     * exactly instead (cutThread); should the kernel fail at that, it is made as above.
      */
     const threadOn = (stock: ((from: number, to: number) => Shape3D) | null, ridge: (from: number, to: number) => RidgeSpec | null,
-        reachOut: number, near: number, far: number): Shape3D => {
+        reachOut: number, near: number, far: number, cutter: ((from: number, to: number) => RidgeSpec | null) | null = null): Shape3D => {
         const wall = picked === null ? null : wallOf(shape, frame, near, far, low, high, 2 * lead + 1);
+        if (cutter && stock && broken(ridge, wall)) {
+            try {
+                return cutThread(stock, cutter, reachOut);
+            } catch {
+                // Kept to the wall below.
+            }
+        }
         const added = ridgesToAdd(ridge, reachOut, wall);
         if (stock) {
             const runIn = wantIn && free(stock(-2 * lead - 0.5, low - 1e-3));
@@ -1186,9 +1334,6 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
         }
         return applied(added, true);
     };
-    /** A ridge with its crest moved to radius `crest` (its flanks carried on to there): kept to where there was material. */
-    const crestAt = (spec: RidgeSpec | null, crest: number): RidgeSpec | null => (!spec || Math.abs(crest - spec.rCrest) < 1e-9 ? spec
-        : { ...spec, rCrest: crest, wCrest: spec.wCrest + 2 * Math.abs(crest - spec.rCrest) * TAN30 });
     if (f.kind === 'external') {
         const rMaj = diameter / 2;
         const rRoot = rMaj - 0.6134 * pitch;
@@ -1205,15 +1350,19 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
         const core = rRoot - WALL_DEPTH;
         const coreFar = core - Math.min(0.3, core / 2);
         if (method === 'cut') {
-            // Cut thread, as a die cuts: the shaft turned down to the root and the ridges between the grooves left, only
-            // where the shaft's material was (its core behind them, and no wider than the shaft: the crests stop just
-            // inside its surface), so a slanted end, a flat or a cross hole keeps nothing standing in the air.
+            // Cut thread, as a die cuts: the shaft turned down to the root and the ridges between the grooves left, as
+            // far as the shaft's material was (no wider than the shaft: the crests stop just inside its surface; cut by
+            // a slanted end, a flat or a cross hole), so nothing stands in the air.
             if (picked <= rRoot + 0.006) {
                 throw new Error(`Cut thread: the shaft (${fmtMm(2 * picked)}) is no thicker than the root of the thread `
                     + `(${fmtMm(2 * rRoot)}), so there is nothing to cut. Make the shaft ${fmtMm(diameter)} thick, or use Extrude thread`);
             }
-            const crest = Math.min(rMaj, picked - 0.005);
-            return done(threadOn(ring, (from, to) => crestAt(externalSpec(pitch, rMaj, rRoot, from, to, hand), crest), rMaj + pitch, core, coreFar));
+            // Where the shaft stands all round the ridges are put back on it, crests no wider than the shaft; where it
+            // does not, the die's cut is made, its crests sharpened on past a shaft as thick as the thread, so the
+            // cutter has neither a face nor an edge in the shaft's surface.
+            const proud = picked > rMaj + 1e-4 ? 0 : 0.09 * pitch;
+            return done(threadOn(ring, (from, to) => crestAt(externalSpec(pitch, rMaj, rRoot, from, to, hand), Math.min(rMaj, picked)), rMaj + pitch,
+                core, coreFar, (from, to) => crestAt(externalSpec(pitch, rMaj, rRoot, from, to, hand), rMaj + proud)));
         }
         // Extrude thread: the ridges are added on the shaft, which is first turned down to the root where it is thicker;
         // only where the shaft's core stands behind them (not across a flat or a cross hole).
@@ -1225,21 +1374,82 @@ function threadOne(shape: Shape3D, f: ThreadStep, print: PrintSettings, edge: Th
     const method = f.method ?? (picked !== null && picked > rCrest + 1e-4 ? 'extrude' : 'cut');
     const bore = (from: number, to: number): Shape3D => cylinderY(rMaj, from, to);
     if (method === 'cut') {
-        // Cut thread, as a tap cuts: the hole opened to the major diameter and the ridges between the grooves left, only
-        // where there was material (the wall behind them, and outside the hole: where it is wider than the thread's
-        // minor diameter the crests stop just inside its wall), so nothing is left hanging where the hole comes out.
+        // Cut thread, as a tap cuts: the hole opened to the major diameter and the ridges between the grooves left, as
+        // far as there was material (outside the hole: where it is wider than the thread's minor diameter the crests
+        // stop just inside its wall; cut by the face the hole comes out through), so nothing hangs in the air.
         if (picked !== null && picked >= Math.min(diameter / 2 - 1e-6, rMaj - 0.006)) {
             throw new Error(`Cut thread: the hole (${fmtMm(2 * picked)}) is already as wide as the thread (${fmtMm(diameter)}), so `
                 + `there is nothing to cut. Make the hole the tap size, ${fmtMm(diameter - MINOR_DEPTH * pitch)}, or use Extrude thread`);
         }
-        const crest = picked === null ? rCrest : Math.max(rCrest, picked + 0.005);
+        // Likewise in a hole: crests no narrower than the hole, or the tap's cut, its crests sharpened on into a hole
+        // drilled right at the thread's minor diameter.
+        const crest = picked === null ? rCrest : Math.max(rCrest, picked);
+        const proud = picked !== null && Math.abs(picked - rCrest) < 1e-4 ? 0.1 * pitch : 0;
         return done(threadOn(bore, (from, to) => crestAt(internalSpec(pitch, rMaj, from, to, hand), crest), rMaj + pitch,
-            rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3));
+            rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3, (from, to) => crestAt(internalSpec(pitch, rMaj, from, to, hand), rCrest - proud)));
     }
     // Extrude thread: the hole is opened to the major diameter where it is narrower, and the ridges are added on its
     // wall, only where the wall stands (not where the hole comes out through a slanted or curved face, or meets
     // another hole).
     return done(threadOn(bore, (from, to) => internalSpec(pitch, rMaj, from, to, hand), rMaj + pitch, rMaj + WALL_DEPTH, rMaj + WALL_DEPTH + 0.3));
+}
+
+/**
+ * What a tap or die leaves of `piece`: the piece without `bore` (the hole opened to the major diameter, or the ring
+ * turned off a shaft) except where `ridges` stand, i.e. piece - (bore - ridges), each surface met only once. One
+ * general fuse of the three splits them into cells; the cells in the piece that are outside the bore or inside a
+ * ridge are kept and glued together along the faces they share.
+ */
+function tapCut(piece: Shape3D, bore: Shape3D, ridges: Shape3D): Shape3D {
+    type Topo = Shape3D['wrapped'];
+    const oc = getOC();
+    const [r, gc] = localGC();
+    try {
+        const list = (shapes: Topo[]) => {
+            const out = r(new oc.NCollection_List_TopoDS_Shape());
+            shapes.forEach((s) => out.Append(s));
+            return out;
+        };
+        const solids = (shape: Shape3D): Topo[] => shape.solids.map((s) => s.wrapped);
+        const [ofPiece, ofBore, ofRidges] = [solids(piece), solids(bore), solids(ridges)];
+        const builder = r(new oc.BRepAlgoAPI_BuilderAlgo());
+        builder.SetArguments(list([...ofPiece, ...ofBore, ...ofRidges]));
+        builder.Build();
+        if (!builder.IsDone()) {
+            throw new Error('the thread cut failed');
+        }
+        /** The cells an argument was split into (itself when it was not split). */
+        const images = (args: Topo[]): Topo[] => args.flatMap((arg) => {
+            const parts = r(new oc.NCollection_List_TopoDS_Shape(builder.Modified(arg)));
+            const out: Topo[] = [];
+            while (!parts.IsEmpty()) {
+                out.push(parts.First());
+                parts.RemoveFirst();
+            }
+            return out.length ? out : [arg];
+        });
+        const [inPiece, inBore, inRidges] = [images(ofPiece), images(ofBore), images(ofRidges)];
+        const among = (set: Topo[], cell: Topo): boolean => set.some((s) => s.IsSame(cell));
+        const kept = inPiece.filter((cell) => !among(inBore, cell) || among(inRidges, cell));
+        if (kept.length === 0) {
+            throw new Error('the thread cut left nothing');
+        }
+        if (kept.length === 1) {
+            return asSolid(cast(downcast(kept[0])), 'thread');
+        }
+        const glue = r(new oc.BRepAlgoAPI_Fuse());
+        glue.SetArguments(list(kept.slice(0, 1)));
+        glue.SetTools(list(kept.slice(1)));
+        glue.SetGlue(oc.BOPAlgo_GlueEnum.BOPAlgo_GlueFull);
+        glue.Build();
+        const joined = glue.IsDone() ? cast(downcast(glue.Shape())) as Shape3D : null;
+        if (!joined || joined.solids.length !== 1) {
+            throw new Error('the thread cut could not be joined');
+        }
+        return asSolid(joined, 'thread');
+    } finally {
+        gc();
+    }
 }
 
 /** The part split at a cylinder about a thread's axis: the piece inside it (where the thread goes) and the rest. */

@@ -595,10 +595,16 @@ describe('features', () => {
             diameter: 5, method: 'cut',
         };
         const drilled = await mesh(block, [slant, ...holes]);
+        // Timed against Extrude thread on the same holes, built just before (the machine may be busy): the hole that
+        // comes out through the slanted face is cut exactly, which may take longer, but not many times as long.
         let started = Date.now();
+        await mesh(block, [slant, ...holes, { ...thread, method: 'extrude' } as Feature]);
+        const extruded = Date.now() - started;
+        started = Date.now();
         const tapped = await mesh(block, [slant, ...holes, thread]);
         const first = Date.now() - started;
-        expect(first).toBeLessThan(90_000);
+        expect(first).toBeLessThan(3 * extruded + 10_000);
+        expect(first).toBeLessThan(300_000);
         expect(openEdges(tapped)).toBe(0);
         expectBounds(tapped, [-20, -10, -10], [20, 10, 10]);
         // Opened to the major diameter over both holes, less the ridges left standing.
@@ -622,7 +628,60 @@ describe('features', () => {
         expect(Date.now() - started).toBeLessThan(first / 2);
         expect(openEdges(again)).toBe(0);
         expect(Math.abs(volume(redrilled) - volume(again) - taken)).toBeLessThan(0.005 * taken);
-    }, 300_000);
+    }, 900_000);
+
+    it('cuts a thread right up to where the hole breaks out at a grazing angle, and nothing past it', async () => {
+        // A block 30 x 20 x 20 with an M5 tap hole along X; a large round cut (radius 60, axis along Y) passes over the
+        // hole at a grazing angle: for x > 0 it leaves a wall over the hole that thins to nothing, for x < 0 the hole
+        // is open along its top.
+        const block = sharpBox([30, 20, 20]);
+        const hole: Feature = { id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 4.2 }, position: [15, 0, 0], direction: [-1, 0, 0] };
+        const r = (4.2 + DEFAULT_PRINT.holeTolerance) / 2;
+        const round: Feature = { id: 'c', op: 'cut', shape: { kind: 'cylinder', radius: 60, height: 40, bevel: 0 }, position: [-8.9, 0, 61.93] };
+        const thread: Feature = { id: 't', op: 'thread', kind: 'internal', at: [15, r, 0], pitch: 0.8, length: 30, diameter: 5, method: 'cut' };
+        const plugged = await mesh(block, [round]);
+        const drilled = await mesh(block, [round, hole]);
+        const tapped = await mesh(block, [round, hole, thread]);
+        expect(openEdges(tapped)).toBe(0);
+        expect(volume(tapped)).toBeLessThan(volume(drilled));
+        // The ridges (between the crest and the major radius) stand in the part as it was before the hole was drilled,
+        // and run right up to the round face: they are cut by it, so many of their points lie on it.
+        const rMaj = (5 + DEFAULT_PRINT.holeTolerance) / 2;
+        let ridge = 0;
+        let outside = 0;
+        let onFace = 0;
+        for (let i = 0; i < tapped.positions.length; i += 3) {
+            const p: Vec3 = [tapped.positions[i], tapped.positions[i + 1], tapped.positions[i + 2]];
+            const radius = Math.hypot(p[1], p[2]);
+            if (radius > r + 0.01 && radius < rMaj - 0.01) {
+                ridge++;
+                if (!insideMesh(plugged, p, 1e-3)) {
+                    outside++;
+                }
+                if (Math.abs(Math.hypot(p[0] + 8.9, p[2] - 61.93) - 60) < 1e-3) {
+                    onFace++;
+                }
+            }
+        }
+        expect(ridge).toBeGreaterThan(100);
+        expect(outside).toBe(0);
+        expect(onFace).toBeGreaterThan(50);
+        // The preview shows the ridges as the build cuts them: up to the round face, and not past it.
+        const ghost = await mesh(block, [round, hole, { ...thread, preview: true } as Feature]);
+        let shown = 0;
+        let near = 0;
+        // Every seventh point of the ghost (enough to find one out of place, quick to test).
+        for (let i = drilled.positions.length; i < ghost.positions.length; i += 3 * 7) {
+            const p: Vec3 = [ghost.positions[i], ghost.positions[i + 1], ghost.positions[i + 2]];
+            shown++;
+            expect(insideMesh(plugged, p, 0.01)).toBe(true);
+            if (Math.abs(Math.hypot(p[0] + 8.9, p[2] - 61.93) - 60) < 0.05) {
+                near++;
+            }
+        }
+        expect(shown).toBeGreaterThan(300);
+        expect(near).toBeGreaterThan(5);
+    }, SLOW);
 
     it('shows a thread being edited as its ridges on the body, at once, for a preview', async () => {
         const block = sharpBox([20, 20, 20]);
