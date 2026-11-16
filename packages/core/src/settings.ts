@@ -477,9 +477,22 @@ export type SettingsPatch = Partial<StudioSettings>;
 export function applyPatch(settings: StudioSettings, patch: unknown, base: StudioSettings = DEFAULT_SETTINGS): StudioSettings {
     const p = obj(patch);
     const merged: Raw = { ...settings };
+    // A category's fields that the patch leaves out keep their values (a nested group such as perspective too): only
+    // what is sent changes. Lists are replaced whole.
+    const plain = (v: unknown): v is Raw => !!v && typeof v === 'object' && !Array.isArray(v);
+    const merge = (was: unknown, change: unknown): unknown => {
+        if (!plain(was) || !plain(change)) {
+            return change;
+        }
+        const out: Raw = { ...was };
+        for (const [key, value] of Object.entries(change)) {
+            out[key] = merge(was[key], value);
+        }
+        return out;
+    };
     for (const category of SETTINGS_CATEGORIES) {
         if (p[category] !== undefined) {
-            merged[category] = p[category];
+            merged[category] = merge((settings as unknown as Raw)[category], p[category]);
         }
     }
     return normaliseSettings(merged, base);

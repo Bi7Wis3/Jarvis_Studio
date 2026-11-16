@@ -53,10 +53,22 @@ describe('normaliseSettings', () => {
 });
 
 describe('patches and resets', () => {
-    it('replaces whole categories and ignores unknown ones', () => {
+    it('changes the fields sent and ignores unknown categories', () => {
         const s = applyPatch(defaultSettings(), { units: { lengthDecimals: 2 }, nonsense: 1 });
         expect(s.units).toEqual({ ...DEFAULT_SETTINGS.units, lengthDecimals: 2 });
         expect('nonsense' in s).toBe(false);
+    });
+
+    it('keeps the fields a patch leaves out, nested ones too, and replaces lists whole', () => {
+        // Seen live: switching only See-through off reset the owner's background, edges, style and the rest to defaults.
+        const own = applyPatch(defaultSettings(), {
+            display: { ...DEFAULT_SETTINGS.display, background: '#12192b', edges: false, style: 'shaded', seeThrough: true,
+                perspective: { model: false, sketch: true } },
+        });
+        const s = applyPatch(own, { display: { seeThrough: false, perspective: { sketch: false } } });
+        expect(s.display).toEqual({ ...own.display, seeThrough: false, perspective: { model: false, sketch: false } });
+        const directional = own.lighting.directional.slice(0, 1);
+        expect(applyPatch(own, { lighting: { directional } }).lighting.directional).toEqual(directional);
     });
 
     it('resets one category', () => {
