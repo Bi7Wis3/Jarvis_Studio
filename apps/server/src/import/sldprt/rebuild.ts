@@ -7,12 +7,15 @@
 import {
     add, addScaled, cross, dist, dot, norm, nurbsEval, scale, sub, unit, type Nurbs, type NurbsSurf, type V3,
 } from './nurbs.js';
-import { BlendSurface, NurbsCurve, projectNear, type Curve, type Projection, type Surface } from './geometry.js';
+import { BlendSurface, NurbsCurve, projectNear, spineParam, type Curve, type Projection, type Surface } from './geometry.js';
 import { BlendBoundSurface, MM, UnsupportedGeometry, type CurveBuilder, type XtModel } from './xtModel.js';
 import type { XtNode } from './xtParse.js';
 
 /** Largest distance allowed between a rebuilt curve and the true one, mm. */
 export const CURVE_TOL = 1e-6;
+/** Points of a rebuilt curve closer than this (mm) are one point. */
+const MIN_SPAN = 1e-9;
+
 /** Largest distance allowed between a rebuilt blend surface and the true one, mm. */
 export const SURFACE_TOL = 1e-5;
 
@@ -32,9 +35,8 @@ export interface CurveRule {
 }
 
 /** Distance from a rolling-ball tube (its spine and radius). */
-function tubeDistance(blend: BlendSurface, x: V3, hint?: number): number {
-    const t = blend.spine.project(x, hint);
-    return Math.abs(dist(x, blend.spine.eval(t).p) - blend.r);
+function tubeDistance(blend: BlendSurface, x: V3): number {
+    return Math.abs(dist(x, blend.spine.eval(spineParam(blend.spine, x)).p) - blend.r);
 }
 
 function intersectionRule(m: XtModel, a: Surface, b: Surface): CurveRule {
@@ -49,15 +51,9 @@ function intersectionRule(m: XtModel, a: Surface, b: Surface): CurveRule {
         if (!(blend instanceof BlendSurface)) {
             throw new UnsupportedGeometry('A blend boundary without its blend');
         }
-        let hint: number | undefined;
-        const spineParam = (x: V3): number => {
-            const t = blend.spine.project(x, hint);
-            hint = t;
-            return t;
-        };
         return {
-            onCurve: (x) => other.project(blend.spine.eval(spineParam(x)).p).p,
-            error: (x) => Math.max(dist(other.project(x).p, x), tubeDistance(blend, x, hint)),
+            onCurve: (x) => other.project(blend.spine.eval(spineParam(blend.spine, x)).p).p,
+            error: (x) => Math.max(dist(other.project(x).p, x), tubeDistance(blend, x)),
             tangent: () => null,
         };
     }
@@ -135,7 +131,15 @@ function hvecs(values: number[]): V3[] {
 }
 
 /** Cubic B-spline (C1, double interior knots) through points with unit tangents, chord-length parameters. */
-export function hermiteNurbs(pts: CurvePoint[]): Nurbs {
+export function hermiteNurbs(points: CurvePoint[]): Nurbs {
+    // A span of zero length would repeat a knot past the degree, which OpenCascade refuses.
+    const pts = points.filter((q, i) => i === 0 || dist(q.p, points[i - 1].p) > MIN_SPAN);
+    if (pts.length < 2) {
+        throw new UnsupportedGeometry('A curve with fewer than two distinct points');
+    }
+    if (pts.length < points.length && dist(pts[pts.length - 1].p, points[points.length - 1].p) > 0) {
+        pts[pts.length - 1] = points[points.length - 1];
+    }
     const cw: number[][] = [];
     const knots: number[] = [0, 0, 0, 0];
     let t = 0;
@@ -177,7 +181,11 @@ export function densify(start: V3[], rule: CurveRule): CurvePoint[] {
         const fd = unit(sub(rule.onCurve(addScaled(p, dir, e)), rule.onCurve(addScaled(p, dir, -e))));
         return norm(fd) > 0 && dot(fd, dir) > 0 ? fd : dir;
     };
-    const refined = pts.map((p) => rule.onCurve(p));
+    // Points can land on the same spot once on the curve (two samples past a clamped end): keep one.
+    const refined = pts.map((p) => rule.onCurve(p)).filter((p, i, all) => i === 0 || dist(p, all[i - 1]) > MIN_SPAN);
+    if (refined.length < 2) {
+        throw new UnsupportedGeometry('A curve with fewer than two distinct points');
+    }
     const out: CurvePoint[] = refined.map((p, i) => {
         const prev = refined[Math.max(0, i - 1)];
         const next = refined[Math.min(refined.length - 1, i + 1)];
@@ -198,6 +206,14 @@ export function densify(start: V3[], rule: CurveRule): CurvePoint[] {
         }
         budget--;
         const mid = rule.onCurve(guess);
+        // The point found must lie between the two it splits: where the surfaces meet in another branch nearby
+        // (an offset that folds), refinement can jump to it, and the curve would double back on itself.
+        const chord = sub(b.p, a.p);
+        const along = dot(sub(mid, a.p), chord) / dot(chord, chord);
+        if (!(along > 0.05 && along < 0.95)) {
+            result.push(b);
+            return;
+        }
         const m: CurvePoint = { p: mid, t: tangentOf(mid, unit(sub(b.p, a.p)), h) };
         split(a, m, depth + 1, err);
         split(m, b, depth + 1, err);
@@ -335,13 +351,10 @@ export function blendPatch(blend: BlendSurface, boundary: V3[]): BlendPatch {
     if (!(r > 0)) {
         throw new UnsupportedGeometry('A blend of zero radius');
     }
-    // Spine parameters of the boundary points.
-    let hint: number | undefined;
-    const params = boundary.map((x) => {
-        const t = spine.project(x, hint);
-        hint = t;
-        return t;
-    });
+    // Spine parameters of the boundary points. A face can reach past the end of its spine's range (near a
+    // terminator): follow the spine's tangent continuation there rather than stopping at its end, or the patch
+    // falls short and the angles measured from the end come out wrong.
+    const params = boundary.map((x) => spineParam(spine, x));
     let t0: number;
     let t1: number;
     let uClosed = false;
@@ -382,10 +395,6 @@ export function blendPatch(blend: BlendSurface, boundary: V3[]): BlendPatch {
         const margin = span * 0.02;
         t0 -= margin;
         t1 += margin;
-        if (!spine.period) {
-            t0 = Math.max(t0, spine.range[0] - margin);
-            t1 = Math.min(t1, spine.range[1] + margin);
-        }
     }
 
     // Frames at a fine set of stations; boundary points measured in the nearest one.

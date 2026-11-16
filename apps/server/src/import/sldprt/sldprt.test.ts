@@ -6,9 +6,9 @@ import { setOC } from 'replicad';
 import { readContainer } from './container.js';
 import { parseXt } from './xtParse.js';
 import { XtModel } from './xtModel.js';
-import { blendPatch, curveBuilder, CURVE_TOL, SURFACE_TOL } from './rebuild.js';
-import { BlendSurface, ConeSurface, LineCurve, SphereSurface, TorusSurface } from './geometry.js';
-import { bodyToBrep } from './brep.js';
+import { blendPatch, curveBuilder, CURVE_TOL, hermiteNurbs, SURFACE_TOL } from './rebuild.js';
+import { BlendSurface, ConeSurface, LineCurve, NurbsCurve, SphereSurface, SweptSurface, TorusSurface } from './geometry.js';
+import { bodyToBrep, nurbsRecord } from './brep.js';
 import { isValidShape, shapeVolume, solidsFromBrep } from './occ.js';
 import { readSldprt } from './readSldprt.js';
 import { dist, nurbsEval, nurbsSegment, surfEval, type V3 } from './nurbs.js';
@@ -192,6 +192,45 @@ describe('geometry', () => {
                 expect(Math.abs(Math.hypot(p[0], p[2]) - 2)).toBeLessThan(1e-9);
             }
         }
+    });
+});
+
+// The FuelGauge case parts (Case_Back, bigBatt.Case) failed on these: a fitted edge curve whose last two points
+// coincided (a knot repeated past the degree: OpenCascade's reader dropped that curve and shifted all later ones
+// onto the wrong edges), a spine on an offset of a swept surface reaching far past the section's end, and blend
+// faces reaching past the end of their spine.
+describe('robustness (FuelGauge case parts)', () => {
+    it('fits a curve whose points coincide at its end without repeating a knot past the degree', () => {
+        const pts = [0, 1, 2, 3, 3].map((x) => ({ p: [x, x * x * 0.1, 0] as V3, t: [1, 0, 0] as V3 }));
+        const c = hermiteNurbs(pts);
+        const counts = new Map<number, number>();
+        c.knots.forEach((k) => counts.set(k, (counts.get(k) ?? 0) + 1));
+        expect(Math.max(...counts.values())).toBe(4);
+        expect(() => nurbsRecord(c)).not.toThrow();
+        // The writer refuses what OpenCascade would drop.
+        expect(() => nurbsRecord({ ...c, knots: [...c.knots.slice(0, -4), 3, 3, 3, 3, 3, 3].slice(-(c.cw.length + 4)) })).toThrow();
+    });
+
+    it('projects onto a swept surface far past the end of its section', () => {
+        // A quadratic section from (0,0,0) to (2,1,0), swept along z; Parasolid continues it along its end tangent.
+        const section = new NurbsCurve({ degree: 2, knots: [0, 0, 0, 1, 1, 1], cw: [[0, 0, 0, 1], [1, 0, 0, 1], [2, 1, 0, 1]], rational: false }, false);
+        const swept = new SweptSurface(section, [0, 0, 1]);
+        const end = section.eval(1);
+        const k = 8 / Math.hypot(end.d[0], end.d[1]);
+        const far: V3 = [end.p[0] + end.d[0] * k, end.p[1] + end.d[1] * k, 3];
+        expect(dist(swept.project(far).p, far)).toBeLessThan(1e-9);
+    });
+
+    it('covers a blend face reaching past the end of its spine', () => {
+        const spine = new NurbsCurve({ degree: 1, knots: [0, 0, 5, 5], cw: [[0, 0, 0, 1], [0, 5, 0, 1]], rational: false }, false);
+        const blend = new BlendSurface(spine, 2, [null, null]);
+        const boundary: V3[] = [];
+        for (let y = 1; y <= 8; y++) {
+            boundary.push([2, y, 0], [0, y, 2]);
+        }
+        const patch = blendPatch(blend, boundary);
+        expect(patch.surface.uKnots[patch.surface.uKnots.length - 1]).toBeGreaterThanOrEqual(8);
+        expect(patch.error).toBeLessThanOrEqual(SURFACE_TOL);
     });
 });
 

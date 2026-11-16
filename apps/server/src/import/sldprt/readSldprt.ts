@@ -143,7 +143,7 @@ export function readSldprt(bytes: Uint8Array): SldprtResult {
             } else if (result.repair) {
                 warnings.push(`${label} needed repair (${result.repair})`);
             }
-            if (brep.edgeDeviation.dev > 1e-3) {
+            if (brep.edgeDeviation.beyond > 1e-3) {
                 warnings.push(`${label} has an edge ${brep.edgeDeviation.dev.toPrecision(2)} mm off its faces`);
             }
             const faces = faceCount(result.shape.wrapped);

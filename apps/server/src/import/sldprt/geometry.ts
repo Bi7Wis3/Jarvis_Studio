@@ -33,6 +33,13 @@ export interface Surface {
 
 const TWO_PI = 2 * Math.PI;
 
+/**
+ * How far past their parameter range (in multiples of it) projections follow a surface's tangent continuation.
+ * Curves on offsets of swept and B-spline surfaces can reach well past the patch: a spine running on along a
+ * straight extension of a swept section, for one.
+ */
+const EXTEND = 10;
+
 export const wrapAngle = (t: number, from = 0): number => {
     let a = (t - from) % TWO_PI;
     if (a < 0) {
@@ -498,8 +505,8 @@ export class BSurface implements Surface {
         }
         // The foot point may run off the patch, onto the tangent continuation (see eval).
         const [u0, u1, v0, v1] = this.box;
-        const mu = (this.uPeriodic ? 10 : 0.5) * (u1 - u0);
-        const mv = (this.vPeriodic ? 10 : 0.5) * (v1 - v0);
+        const mu = (this.uPeriodic ? 10 : EXTEND) * (u1 - u0);
+        const mv = (this.vPeriodic ? 10 : EXTEND) * (v1 - v0);
         const uv = newtonSurface(this, x, start!, [u0 - mu, u1 + mu, v0 - mv, v1 + mv]);
         const e = this.eval(uv[0], uv[1]);
         return { p: e.p, n: normalOf(e.du, e.dv), uv };
@@ -547,7 +554,7 @@ export class SweptSurface implements Surface {
             project: () => 0,
         };
         this.flatSamples ??= sampleCurve(flatCurve, 400);
-        const u = projectSampled(flatCurve, fx, this.flatSamples, 0.5);
+        const u = projectSampled(flatCurve, fx, this.flatSamples, EXTEND);
         const c = this.section.eval(u);
         const v = dot(sub(x, c.p), this.dir);
         return { p: addScaled(c.p, this.dir, v), n: normalOf(c.d, this.dir), uv: [u, v] };
@@ -586,7 +593,7 @@ export class SpunSurface implements Surface {
             project: () => 0,
         };
         this.meridianSamples ??= sampleCurve(mc, 400);
-        const u = projectSampled(mc, meridian(x), this.meridianSamples, 0.5);
+        const u = projectSampled(mc, meridian(x), this.meridianSamples, EXTEND);
         const c = this.profile.eval(u).p;
         const wc = sub(c, this.base);
         const wx = sub(x, this.base);
@@ -596,6 +603,17 @@ export class SpunSurface implements Surface {
         const e = this.eval(u, v);
         return { p: e.p, n: normalOf(e.du, e.dv), uv: [u, v] };
     }
+}
+
+/**
+ * Spine parameter of the point of a blend's tube nearest x. Near a terminator a blend reaches past the end of its
+ * spine's range: follow the spine's tangent continuation there instead of stopping at the end.
+ */
+export function spineParam(spine: Curve, x: V3): number {
+    const t = spine.project(x);
+    const [ra, rb] = spine.range;
+    const reach = rb - ra;
+    return spine.period || !Number.isFinite(reach) ? t : projectNear(spine, x, t, ra - reach, rb + reach);
 }
 
 /**
@@ -615,7 +633,7 @@ export class BlendSurface implements Surface {
         return { p: addScaled(c.p, radial, this.r), du: c.d, dv: scale(add(scale(x, -Math.sin(v)), scale(y, Math.cos(v))), this.r) };
     }
     project(x: V3): Projection {
-        const t = this.spine.project(x);
+        const t = spineParam(this.spine, x);
         const c = this.spine.eval(t).p;
         const dir = unit(sub(x, c));
         return { p: addScaled(c, dir, this.r), n: this.r > 0 ? dir : [0, 0, 0], uv: [t, 0] };

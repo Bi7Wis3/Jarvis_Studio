@@ -16,10 +16,26 @@ import type { XtNode } from './xtParse.js';
 const fmt = (x: number): string => (x === 0 ? '0' : String(x));
 const v3 = (v: V3): string => `${fmt(v[0])} ${fmt(v[1])} ${fmt(v[2])}`;
 
+/**
+ * Checks a knot vector as OpenCascade's B-spline constructors do. One record it refuses becomes a null curve
+ * in its reader, which then shifts every later curve onto the wrong edges, so a bad one must never be written.
+ */
+function checkKnots(values: number[], mults: number[], degree: number, poles: number): void {
+    const ok = poles >= 2 && values.length >= 2
+        && values.every((v, i) => Number.isFinite(v) && (i === 0 || v > values[i - 1]))
+        && mults[0] <= degree + 1 && mults[mults.length - 1] <= degree + 1
+        && mults.slice(1, -1).every((k) => k <= degree)
+        && mults.reduce((a, b) => a + b, 0) === poles + degree + 1;
+    if (!ok) {
+        throw new UnsupportedGeometry('A B-spline with an invalid knot vector');
+    }
+}
+
 /** Record of a NURBS curve (3D, or 2D with z = 0 when `dims` is 2). */
 export function nurbsRecord(c: Nurbs, dims: 2 | 3 = 3): string {
     const rational = c.rational && c.cw.some((pw) => Math.abs(pw[3] - c.cw[0][3]) > 1e-15 * Math.abs(c.cw[0][3]));
     const { values, mults } = knotsWithMults(c.knots);
+    checkKnots(values, mults, c.degree, c.cw.length);
     const poles = c.cw.map((pw) => {
         const w = pw[3];
         const xyz = dims === 3 ? `${fmt(pw[0] / w)} ${fmt(pw[1] / w)} ${fmt(pw[2] / w)}` : `${fmt(pw[0] / w)} ${fmt(pw[1] / w)}`;
@@ -32,6 +48,8 @@ export function nurbsSurfRecord(s: NurbsSurf): string {
     const rational = s.rational && s.cw.some((row) => row.some((pw) => Math.abs(pw[3] - s.cw[0][0][3]) > 1e-15));
     const u = knotsWithMults(s.uKnots);
     const v = knotsWithMults(s.vKnots);
+    checkKnots(u.values, u.mults, s.uDegree, s.cw.length);
+    checkKnots(v.values, v.mults, s.vDegree, s.cw[0].length);
     const poles: string[] = [];
     for (const row of s.cw) {
         for (const pw of row) {
@@ -335,10 +353,13 @@ export interface BodyBrep {
     solids: number;
     /** Faces whose surface had to be approximated, with the largest deviation found (mm). */
     approximated: { kind: string; count: number; error: number }[];
-    /** Largest distance of an edge curve from the faces it bounds, mm, and that edge's node index. */
-    edgeDeviation: { dev: number; edge: number };
+    /**
+     * The edge whose curve strays furthest from the faces it bounds beyond its own Parasolid tolerance (a
+     * tolerant edge may stray that far in the source model too): node index, distance, and the excess.
+     */
+    edgeDeviation: { edge: number; dev: number; beyond: number };
     /** Every edge's deviation (for diagnostics). */
-    edgeDeviations: { edge: number; dev: number }[];
+    edgeDeviations: { edge: number; dev: number; beyond: number }[];
 }
 
 interface EdgeGeo {
@@ -480,7 +501,7 @@ export function bodyToBrep(m: XtModel, body: XtNode, options: BrepOptions = {}):
         tol: number;
     }
     const pending: Pending[] = [];
-    const deviations: { edge: number; dev: number }[] = [];
+    const deviations: { edge: number; dev: number; beyond: number }[] = [];
     const vertexTol = new Map<number, number>();
     const bump = (v: XtNode | null, d: number): void => {
         if (v) {
@@ -520,7 +541,7 @@ export function bodyToBrep(m: XtModel, body: XtNode, options: BrepOptions = {}):
                 dev = Math.max(dev, dist(s.project(p).p, p));
             }
         }
-        deviations.push({ edge: edge.index, dev });
+        deviations.push({ edge: edge.index, dev, beyond: dev - (m.tolerance(edge) ?? 0) });
         const tol = Math.max(1e-7, m.tolerance(edge) ?? 0, tolerant ? CURVE_TOL : 0, Math.min(dev * 1.5, 1e-3));
         if (vFirst) {
             bump(vFirst, dist(curve.eval(range.first).p, m.point(vFirst)));
@@ -697,7 +718,7 @@ export function bodyToBrep(m: XtModel, body: XtNode, options: BrepOptions = {}):
         faces: faceCount,
         solids: solids.length,
         approximated: [...approximated.entries()].map(([kind, a]) => ({ kind, count: a.count, error: a.error })),
-        edgeDeviation: deviations.reduce((w, d) => (d.dev > w.dev ? d : w), { dev: 0, edge: 0 }),
+        edgeDeviation: deviations.reduce((w, d) => (d.beyond > w.beyond ? d : w), { edge: 0, dev: 0, beyond: 0 }),
         edgeDeviations: deviations,
     };
 }
