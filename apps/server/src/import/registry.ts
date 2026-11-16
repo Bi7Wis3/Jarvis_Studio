@@ -12,6 +12,7 @@ export const IMPORTERS: Importer[] = [
     { format: 'step', extensions: ['step', 'stp'], label: 'STEP AP203/AP214 (*.step, *.stp)', read: async (b, o) => (await import('./step.js')).readStep(b, o) },
     { format: 'stl', extensions: ['stl'], label: 'STL mesh (*.stl)', mesh: true, read: async (b, o) => (await import('./stl.js')).readStl(b, o) },
     { format: 'sldprt', extensions: ['sldprt'], label: 'SolidWorks part (*.sldprt)', read: async (b) => (await import('./sldprt.js')).readSldprt(b) },
+    { format: 'iges', extensions: ['igs', 'iges'], label: 'IGES (*.igs, *.iges)', read: async (b, o) => (await import('./iges/readIges.js')).readIges(b, o) },
 ];
 
 export const extensionOf = (filename: string): string => /\.([^./\\]+)$/.exec(filename)?.[1]?.toLowerCase() ?? '';

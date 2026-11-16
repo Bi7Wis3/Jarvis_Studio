@@ -57,7 +57,7 @@ export function knit(pieces: Raw[], tolerance: number): Raw {
 }
 
 /** Repairs a solid that fails the check; returns it unchanged when it passes or cannot be repaired. */
-function repaired(solid: Shape3D): { solid: Shape3D; state: 'valid' | 'repaired' | 'faulty' } {
+export function repaired(solid: Shape3D): { solid: Shape3D; state: 'valid' | 'repaired' | 'faulty' } {
     if (isValidShape(solid.wrapped)) {
         return { solid, state: 'valid' };
     }

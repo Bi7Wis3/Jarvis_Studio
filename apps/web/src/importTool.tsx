@@ -296,7 +296,7 @@ const opts = (...pairs: [string, string][]) => pairs.map(([value, label]) => ({ 
 function fields(ctx: Ctx): Field[] {
     const step = editedStep(ctx);
     const open: [string, string][] = ctx.part && !ctx.part.instanceOf ? [[ctx.part.id, `${ctx.part.name} (adds bodies)`]] : [];
-    // Until a mesh file is chosen the form shows the options of exact (STEP) files.
+    // Until a mesh file is chosen the form shows the options of exact files (STEP and IGES have the same ones).
     const isStep = (v: Values) => !v.mesh;
     // A SolidWorks part holds exact solids, always Y up: knitting, curve tolerance, repair and the up axis do not apply.
     const solidWorks = (v: Values) => (v.file ? /\.sldprt$/i.test(String(v.file)) : step?.file.format === 'sldprt');

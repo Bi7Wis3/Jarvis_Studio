@@ -111,7 +111,8 @@ describe('STL reading', () => {
         expect(importerFor('a.STEP')?.format).toBe('step');
         expect(importerFor('a.stp')?.format).toBe('step');
         expect(importerFor('b.stl')?.format).toBe('stl');
-        expect(importerFor('c.iges')).toBeNull();
+        expect(importerFor('c.iges')?.format).toBe('iges');
+        expect(importerFor('d.dxf')).toBeNull();
     });
 });
 
@@ -280,7 +281,7 @@ describe('import through the CAD worker', () => {
 
     it('says what it cannot read', async () => {
         const store = new ProjectStore();
-        await expect(importIntoProject(store, kernel, { filename: 'a.iges', bytes: new Uint8Array(10) })).rejects.toThrow(/cannot import this type/);
+        await expect(importIntoProject(store, kernel, { filename: 'a.dxf', bytes: new Uint8Array(10) })).rejects.toThrow(/cannot import this type/);
         await expect(kernel.importFile({ filename: 'bad.step', bytes: new TextEncoder().encode('not a step file'), options: {} })).rejects.toThrow(/could not be read as STEP/);
     }, SLOW);
 });

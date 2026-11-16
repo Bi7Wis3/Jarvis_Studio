@@ -357,8 +357,8 @@ Reference geometry
   progress in the form. Edit feature replaces the file, or reads the kept original again with new options. Bodies are
   stored as BREP and STL assets by content hash. A solid from a large mesh (thousands of faces) is slow to rebuild
   and to pick on; the form warns above 5000 faces. Fillet, chamfer, shell and draft still need a part of one solid,
-  so a multi-body import says to use Import multiple bodies as parts. Not there: IGES and other formats (this OpenCascade build has no
-  IGES reader), STEP names, colours, assembly structure and configuration data (no XCAF
+  so a multi-body import says to use Import multiple bodies as parts. Not there: other formats (IGES below), STEP
+  names, colours, assembly structure and configuration data (no XCAF
   reader in the build), surface bodies (Surface Body, Do not knit), mesh BREP bodies (Create mesh bodies bounded by
   single faces), free points and curves as sketches, Import Diagnostics (face and gap lists, heal), Match faces and
   edges on Edit feature, Unit = Document template specified unit (the studio is always mm; the file's unit is read).
@@ -374,6 +374,25 @@ Reference geometry
   Backspace and double click. Opens at the last folder used. The server reads the picked file by its path (no
   upload), home folder only. The system dialog stays as a link; files can still be dropped on the form. Not yet: the
   save mode for File > Save As (name field, replace question), recent documents (only folders), Description.
+- [~] IGES (.igs, .iges; IGES 5.3 ASCII), read by the studio's own reader (import/iges/): trimmed surfaces (144),
+  bounded surfaces (143, 141), untrimmed surfaces and bounded planes as faces, knitted into solids (Knit surfaces,
+  as for STEP), and manifold solid B-rep objects (186 with 502, 504, 508, 510, 514, void shells). Surfaces: B-spline
+  (128), parametric spline (114), ruled (118), revolution (120), tabulated cylinder (122), offset (140), plane (108),
+  plane, cylinder, cone, sphere and torus (190 to 198); revolutions and extrusions of lines and arcs become planes,
+  cylinders, cones, spheres and tori. Curves: arc (100), composite (102), conic (104), copious data (106), line
+  (110), parametric spline (112), B-spline (126), all through their transformation matrices (124, chained). Faces
+  are trimmed by their model-space curves, or by their parameter-space curves where a boundary has none. The
+  Global section's unit and model space scale give mm. Subfigure instances (408 of 308) are placed (scale too) and
+  named after their definition; body colour is the most common colour (314 or standard number) of its faces; 186
+  names from Name properties (406 form 15). Every body is checked (BRepCheck); options as for STEP: Knit surfaces,
+  Import multiple bodies as parts, Perform full entity check and repair errors, Customize curve tolerance (reading
+  precision and knitting gap), up axis. Not there: free points and curves as sketches or 3D curves (left out with a
+  warning), Show IGES levels (choosing levels and entity kinds), surface bodies (open surfaces are left out, as for
+  STEP), B-REP mapping (a 186 solid is knitted from its faces, the same solid, not mapped edge for edge), Merge
+  entities, per-face colours (one colour per body), offset curves (130), 402 groups, views, drawings and
+  annotation, compressed and binary IGES, Unit = Document template specified unit. Faces known only by
+  parameter-space curves are read on B-spline, ruled, spline and extruded surfaces and on revolutions of a line or a
+  B-spline, not on planes (108), the 190 to 198 surfaces or revolutions of arcs.
 
 ## Evaluate
 

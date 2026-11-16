@@ -17,7 +17,7 @@ export function importFileTool(store: ProjectStore, host: { kernel: CadKernel })
         name: 'import_file',
         description: `Imports a CAD file from this computer into the project (${types}). Its bodies come in as an `
             + 'Imported step (Imported1; STL Graphics1 for a mesh shown as a graphics body) at the top of a new part, or '
-            + 'appended to an existing part, and later features (fillets, cuts) work on its solid bodies. STEP keeps '
+            + 'appended to an existing part, and later features (fillets, cuts) work on its solid bodies. STEP and IGES keep '
             + 'exact solids; an STL comes in as a graphics body unless options.meshAs is "solid" (one face per facet, '
             + 'closed meshes only). Files are taken as Z up and turned to the studio\'s Y up unless options.up is "y".',
         schema: {
