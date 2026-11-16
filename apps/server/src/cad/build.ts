@@ -40,6 +40,8 @@ import {
 import {
     baseBodies, bodyOrdinals, cosmeticMarks, isCosmetic, markCosmetic, release, solidsOf, trackBodies, type BodyRecord,
 } from './bodies.js';
+import { applyImport } from '../import/apply.js';
+import { bodyOrdinalsOf, seamEdgeIds } from '../import/topology.js';
 
 type P2 = [number, number];
 
@@ -1432,6 +1434,8 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
         }
         case 'mirror':
             return mirror(shape, f, state);
+        case 'import':
+            return applyImport(shape, f);
         default: {
             const made = stepTool(shape, f, state, state.index);
             if (!made) {
@@ -1622,18 +1626,7 @@ export function buildPart(part: PartSpec, print: PrintSettings, context?: Combin
 // ---- Meshing ------------------------------------------------------------------------------------------------
 
 /** Hash codes of seam edges (where a closed surface meets itself), which CAD outlines leave out. */
-function seamEdges(shape: Shape3D): Set<number> {
-    const oc = getOC();
-    const seams = new Set<number>();
-    for (const face of shape.faces) {
-        for (const edge of face.edges) {
-            if (oc.BRep_Tool.IsClosed(edge.wrapped, face.wrapped)) {
-                seams.add(edge.hashCode);
-            }
-        }
-    }
-    return seams;
-}
+const seamEdges = seamEdgeIds;
 
 /** Removes zero-area slivers (two corners at the same point), which OpenCascade leaves at poles and apexes. */
 function dropDegenerate(positions: Float32Array, triangles: number[], faces: Uint32Array): { indices: Uint32Array; triFace: Uint32Array } {
@@ -1706,7 +1699,7 @@ export function meshWithOpenCascade(shape: Shape3D, quality: MeshQuality, reuse?
     const positions = Float32Array.from(mesh.vertices);
     const { indices, triFace } = dropDegenerate(positions, mesh.triangles, triangleFaces(mesh));
     // Which solid each face and edge belongs to, by the hash codes the ordinals were given for (in that order).
-    const { faceBody, edgeBody } = bodyOrdinals(shape, [...new Set(mesh.faceGroups.map((g) => g.faceId))], [...ordinals.keys()]);
+    const { faceBody, edgeBody } = bodyOrdinalsOf(shape, [...new Set(mesh.faceGroups.map((g) => g.faceId))], [...ordinals.keys()]);
     return { positions, normals: Float32Array.from(mesh.normals), indices, edges, triFace, segEdge, faceBody, edgeBody };
 }
 

@@ -15,6 +15,8 @@ import type { ModelQuery, ModelSketch, PlaneFrame3 } from '@jarvis/core/projecti
 import { freecadMacro, type FreecadExport } from '../export/freecadMacro.js';
 import type { BodyRecord } from './bodies.js';
 import { startProgress, type WorkerProgress } from './progress.js';
+import { runImport, type ImportJob, type ImportJobResult } from '../import/job.js';
+import { withGraphics } from '../import/graphics.js';
 
 export type WorkerRequest =
     | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext; quality?: MeshQuality }
@@ -23,7 +25,8 @@ export type WorkerRequest =
     | { id: number; type: 'step'; project: Project }
     | { id: number; type: 'props'; part: PartSpec; print: PrintSettings; context?: CombineContext }
     | { id: number; type: 'project'; part: PartSpec; print: PrintSettings; context?: CombineContext; frame: PlaneFrame3; query: ModelQuery }
-    | { id: number; type: 'freecad'; project: Project; partIds: string[] };
+    | { id: number; type: 'freecad'; project: Project; partIds: string[] }
+    | { id: number; type: 'import'; job: ImportJob };
 
 export type WorkerResponse =
     | { type: 'ready' }
@@ -36,6 +39,7 @@ export type WorkerResponse =
     | { id: number; ok: true; props: PropsResult }
     | { id: number; ok: true; model: ModelSketch }
     | { id: number; ok: true; freecad: FreecadExport }
+    | { id: number; ok: true; imported: ImportJobResult }
     | { id: number; ok: false; error: string; partial?: MeshData };
 
 const port = parentPort;
@@ -144,12 +148,14 @@ async function handle(request: WorkerRequest): Promise<void> {
             if (built.error) {
                 watch?.discard();
                 const partial = built.shape ? { ...meshSolid(built.shape, request.quality), ...extra } : undefined;
+                if (partial) Object.assign(partial, withGraphics(partial, request.part, built.error));
                 const response: WorkerResponse = { id: request.id, ok: false, error: built.error, partial };
                 port!.postMessage(response, partial ? meshTransfer(partial) : []);
                 return;
             }
             // A part with no body yet (an empty shape with only sketches) meshes as nothing.
             const mesh = { ...(built.shape ? meshSolid(built.shape, request.quality) : emptyMesh()), ...extra };
+            Object.assign(mesh, withGraphics(mesh, request.part, null));
             if (watch) {
                 const change = watch.mesh(built.shape, mesh, request.quality);
                 port!.postMessage({ id: request.id, ok: true, mesh, change, changeMs: watch.ms } satisfies WorkerResponse,
@@ -172,6 +178,8 @@ async function handle(request: WorkerRequest): Promise<void> {
             port!.postMessage({ id: request.id, ok: true, model } satisfies WorkerResponse);
         } else if (request.type === 'freecad') {
             port!.postMessage({ id: request.id, ok: true, freecad: freecadMacro(request.project, request.partIds) } satisfies WorkerResponse);
+        } else if (request.type === 'import') {
+            port!.postMessage({ id: request.id, ok: true, imported: await runImport(request.job) } satisfies WorkerResponse);
         } else {
             const bytes = await step(request.project);
             port!.postMessage({ id: request.id, ok: true, step: bytes } satisfies WorkerResponse,

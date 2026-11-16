@@ -1,6 +1,7 @@
 // Shared project model and wire protocol. Units are millimetres, Y is up.
 
 import type { CadActivity } from './cadActivity';
+import type { ImportStep } from './imported';
 
 export type Vec3 = [number, number, number];
 
@@ -940,6 +941,8 @@ export type Feature = FeatureBase & (
          */
         cosmetic?: boolean;
     }
+    /** Bodies read from a STEP, STL or other CAD file (imported.ts). */
+    | ImportStep
 );
 
 /** Settings for designing parts to be 3D printed (FDM by default). */

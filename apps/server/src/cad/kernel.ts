@@ -13,6 +13,7 @@ import type { BodyInfo } from '@jarvis/core/visibility';
 import type { FreecadExport } from '../export/freecadMacro.js';
 import type { ChangeRange } from './change.js';
 import { jobLabel, KernelTracker, type KernelActivity, type KernelJobLabel } from './activity.js';
+import type { ImportJob, ImportJobResult } from '../import/job.js';
 
 export { meshKey } from './key.js';
 export { combineContext, type CombineContext, type CombinePart } from './context.js';
@@ -80,7 +81,8 @@ export interface CadKernelOptions {
 type JobRequest = Omit<Extract<WorkerRequest, { type: 'mesh' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'step' }>, 'id'>
     | Omit<Extract<WorkerRequest, { type: 'change' }>, 'id'>
     | Omit<Extract<WorkerRequest, { type: 'props' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'project' }>, 'id'>
-    | Omit<Extract<WorkerRequest, { type: 'freecad' }>, 'id'>;
+    | Omit<Extract<WorkerRequest, { type: 'freecad' }>, 'id'>
+    | Omit<Extract<WorkerRequest, { type: 'import' }>, 'id'>;
 
 interface Job {
     request: JobRequest;
@@ -204,6 +206,11 @@ export class CadKernel {
         return this.run({ type: 'props', part: { shape: part.shape, features: part.features }, print, context }, part) as Promise<PropsResult>;
     }
 
+    /** Reads a CAD file (STEP, STL...) and stores its bodies as assets, in the worker; see import/job.ts. */
+    importFile(job: ImportJob): Promise<ImportJobResult> {
+        return this.run({ type: 'import', job }) as Promise<ImportJobResult>;
+    }
+
     async close(): Promise<void> {
         this.closed = true;
         const error = new Error('CAD kernel closed');
@@ -286,7 +293,7 @@ export class CadKernel {
         if (message.ok) {
             current.job.resolve('change' in message ? { mesh: message.mesh, change: message.change, changeMs: message.changeMs }
                 : 'mesh' in message ? message.mesh : 'props' in message ? message.props : 'model' in message ? message.model
-                : 'freecad' in message ? message.freecad : message.step);
+                : 'freecad' in message ? message.freecad : 'imported' in message ? message.imported : message.step);
         } else {
             current.job.reject(new CadBuildError(message.error, message.partial));
         }

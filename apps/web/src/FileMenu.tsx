@@ -4,6 +4,7 @@ import { InlineInput, tool, typingInField, useDismiss } from './menus';
 import { createProject, deleteProject, openProject, renameProject, saveProjectAs, useStudio } from './state';
 import { confirmDeletes, openOptions } from './options';
 import { OptionsButton } from './OptionsPage';
+import { openImport } from './importTool';
 import './browser.css';
 
 type View = 'menu' | 'open' | 'new' | 'saveAs' | 'print';
@@ -123,6 +124,10 @@ export function FileMenu() {
                                 close();
                                 openOptions();
                             }}
+                            onImport={() => {
+                                close();
+                                openImport();
+                            }}
                         />
                     )}
                     {view === 'open' && <OpenList onBack={() => setView('menu')} onDone={close} />}
@@ -171,8 +176,9 @@ function MainMenu(props: {
     onRename: () => void;
     onRun: (label: string, tool: string, args?: Record<string, unknown>) => void;
     onOptions: () => void;
+    onImport: () => void;
 }) {
-    const { onView, onRename, onRun, onOptions } = props;
+    const { onView, onRename, onRun, onOptions, onImport } = props;
     const item = (label: string, onClick: () => void, hint?: string) => (
         <button type="button" role="menuitem" onClick={onClick}>
             <span>{label}</span>
@@ -186,6 +192,7 @@ function MainMenu(props: {
             {item('Rename…', onRename)}
             {item('Save as copy…', () => onView('saveAs'), 'Ctrl+Shift+S')}
             <div className="ctx-sep" role="separator" />
+            {item('Import…', onImport)}
             {item('Export STL (printed parts)', () => onRun('Exporting STL', 'export_stl'))}
             {item('Export STEP', () => onRun('Exporting STEP', 'export_step'))}
             {item('Export history for FreeCAD', () => onRun('Exporting history for FreeCAD', 'export_freecad'))}

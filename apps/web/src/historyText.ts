@@ -4,6 +4,7 @@ import type {
     AxisRef, EdgeSelect, Feature, FastenerType, Part, PlaneRef, PointRef, Repeat, RevolveAxis, Shape, Sketch, SketchPlane, SketchSource, Vec3,
 } from '@jarvis/core';
 import { valueText } from './numberText';
+import { importSummary } from './importText';
 
 /** Number in mm without trailing zeros: 4, 2.5, 0.25. */
 export function mm(value: number): string {
@@ -43,6 +44,7 @@ const OPS: Record<Feature['op'], string> = {
     combine: 'Combine',
     split: 'Split',
     draft: 'Draft',
+    import: 'Imported',
 };
 
 /** Construction steps: they build nothing, other steps use them by id. */
@@ -500,6 +502,8 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                 ...(feature.leftHanded ? ['left hand'] : []),
                 ...(feature.at ? [feature.alsoAt?.length ? `on ${feature.alsoAt.length + 1} picked edges` : 'on a picked edge'] : []),
             ].join(' · ');
+        case 'import':
+            return importSummary(feature);
     }
 }
 

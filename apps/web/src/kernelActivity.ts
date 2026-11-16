@@ -63,7 +63,7 @@ export interface CadDisplay {
 }
 
 const BUILDING: Record<CadJobKind, string> = {
-    rebuild: 'Rebuilding', preview: 'Previewing', mesh: 'Building', export: 'Exporting', props: 'Measuring', query: 'Reading model',
+    rebuild: 'Rebuilding', preview: 'Previewing', mesh: 'Building', export: 'Exporting', props: 'Measuring', query: 'Reading model', import: 'Importing',
 };
 
 /** Seconds so far, whole: "7 s", "1 min 12 s". */

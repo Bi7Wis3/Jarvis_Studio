@@ -62,6 +62,7 @@ import { askDiscard } from './sketchBar';
 import { primitiveEditor, primitiveFeatureTools } from './primitiveToolDefs';
 import { hiddenStepsNow } from './stepVisibility';
 import { displayStyleTools } from './displayStyleTools';
+import { importTool } from './importTool';
 
 export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
@@ -2660,6 +2661,7 @@ export const ALL_TOOLS: ToolDef[] = [
     dimensionForm,
     ...drawCommandForms,
     normalToTool,
+    importTool,
 ];
 
 /** The editor for a history item: a feature tool by op, or a create tool by the base body's shape kind. */
@@ -2672,6 +2674,9 @@ export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketc
     }
     if (feature?.op === 'combine' || feature?.op === 'split') {
         return feature.op === 'combine' ? combineTool : splitTool;
+    }
+    if (feature?.op === 'import') {
+        return importTool;
     }
     if (feature?.op === 'loft') {
         return feature.sections.every((s) => s.sketchRef) ? loftTool : noEditTool;

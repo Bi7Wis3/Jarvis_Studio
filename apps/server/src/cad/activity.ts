@@ -9,7 +9,7 @@ import { PROGRESS_INTERVAL_MS, ProgressMailbox, type WorkerProgress } from './pr
 import type { WorkerRequest } from './worker.js';
 
 /** mesh: a part's mesh (for the view, an export or a preview without steps of its own); preview: a tool's preview. */
-export type KernelJobKind = 'mesh' | 'preview' | 'export' | 'props' | 'query';
+export type KernelJobKind = 'mesh' | 'preview' | 'export' | 'props' | 'query' | 'import';
 
 export interface KernelJobLabel {
     kind: KernelJobKind;
@@ -42,7 +42,7 @@ export interface KernelActivity {
 type JobRequest = WorkerRequest extends infer R ? R extends WorkerRequest ? Omit<R, 'id'> : never : never;
 
 const KIND: Record<WorkerRequest['type'], KernelJobKind> = {
-    mesh: 'mesh', change: 'preview', step: 'export', freecad: 'export', props: 'props', project: 'query',
+    mesh: 'mesh', change: 'preview', step: 'export', freecad: 'export', props: 'props', project: 'query', import: 'import',
 };
 
 /** What a job is, from its request and the part it was asked for (a whole Part when the caller had one). */

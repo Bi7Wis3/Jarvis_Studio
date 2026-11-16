@@ -8,6 +8,7 @@ import { combineContext, type CadKernel, type MeshData } from './cad/kernel.js';
 import { combineProps, type Mat3, type MassProps, type Placement } from './cad/props.js';
 import { exportStl } from './exportStl.js';
 import { freecadTool } from './export/freecadTool.js';
+import { importFileTool } from './import/hostTool.js';
 import type { MeshService } from './meshes.js';
 import { EXPORTS_DIR } from './paths.js';
 import { slug, type ProjectStore } from './store.js';
@@ -263,5 +264,6 @@ export function createHostTools(store: ProjectStore, host: Host): HostTool[] {
             },
         },
         freecadTool(store, host),
+        importFileTool(store, host),
     ];
 }

@@ -5,6 +5,7 @@ import {
 import { hideConsumed } from '@jarvis/core/visibility';
 import { slug, type ProjectStore } from './store.js';
 import { folderTools } from './folders.js';
+import { importStepSchema } from './import/schema.js';
 
 export interface StudioTool {
     name: string;
@@ -528,6 +529,7 @@ const feature = z.discriminatedUnion('op', [
         startAngle: z.number().optional().describe('Degrees about the axis where the thread begins'),
         position: vec3.optional().describe('Without at: thread base on the +Y axis through this point'),
     }),
+    importStepSchema,
 ]);
 
 /**

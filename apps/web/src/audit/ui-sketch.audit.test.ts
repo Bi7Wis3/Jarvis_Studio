@@ -53,7 +53,8 @@ describe('leaving a sketch', () => {
     it('every form only the sketcher has counts as a sketch form, and no tool of the part or assembly does', () => {
         const model = new Set([...PART_GROUPS, ...ASSEMBLY_GROUPS].flatMap((g) => g.tools.map((t) => t.id)));
         expect(ALL_TOOLS.filter((t) => model.has(t.id) && isSketchForm(t)).map((t) => t.id)).toEqual([]);
-        const sketchOnly = ALL_TOOLS.filter((t) => !model.has(t.id) && t.id !== 'no-edit');
+        // Import opens from the File menu, not a toolbar.
+        const sketchOnly = ALL_TOOLS.filter((t) => !model.has(t.id) && t.id !== 'no-edit' && t.id !== 'import');
         expect(sketchOnly.filter((t) => !isSketchForm(t)).map((t) => t.id)).toEqual([]);
         expect(sketchOnly.map((t) => t.id)).toEqual(expect.arrayContaining(['sk-pm-dimension', 'sk-finish', 'sk-relations']));
     });

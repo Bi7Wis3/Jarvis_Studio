@@ -1,0 +1,59 @@
+/* File > Import form (importTool.tsx). The drop box itself is .pic-drop (toolbar.css). */
+
+.imp-drop {
+    margin-bottom: 8px;
+}
+
+.imp-file {
+    color: var(--text);
+    word-break: break-all;
+}
+
+.imp-types {
+    font-size: 11px;
+    opacity: 0.75;
+}
+
+.imp-drop .imp-report {
+    width: 100%;
+    margin: 0;
+    text-align: left;
+    white-space: pre-wrap;
+    font: inherit;
+    color: var(--text);
+}
+
+.imp-refused {
+    color: #ff7b6e;
+}
+
+.imp-progress {
+    display: grid;
+    gap: 4px;
+    width: 100%;
+    font-size: 11px;
+}
+
+.imp-bar {
+    display: block;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+}
+
+.imp-bar span {
+    display: block;
+    height: 100%;
+    background: #35e0ff;
+    transition: width 0.15s linear;
+}
+
+.imp-bar span.reading {
+    animation: imp-reading 1.2s ease-in-out infinite;
+}
+
+@keyframes imp-reading {
+    0%, 100% { opacity: 0.35; }
+    50% { opacity: 1; }
+}

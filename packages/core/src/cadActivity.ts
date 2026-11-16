@@ -6,7 +6,7 @@
  * steps of its own, an export at fine quality); export: STEP or FreeCAD; props: mass properties; query: the model as
  * a sketch sees it.
  */
-export type CadJobKind = 'rebuild' | 'preview' | 'mesh' | 'export' | 'props' | 'query';
+export type CadJobKind = 'rebuild' | 'preview' | 'mesh' | 'export' | 'props' | 'query' | 'import';
 
 /** building: running the history's steps; meshing: turning the solid into triangles for the view. */
 export type CadPhase = 'building' | 'meshing';

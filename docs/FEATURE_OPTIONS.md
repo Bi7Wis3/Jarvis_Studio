@@ -346,6 +346,22 @@ Reference geometry
   (sketches with relations and dimensions, Pad, Pocket, Revolution, Groove, lofts, pipes, helices, Fillet, Chamfer,
   Thickness, Draft, Hole, Mirrored, patterns, datums, threads as bore and helix ridge); steps FreeCAD cannot express
   come across as solids, and every step is checked against the kernel's body. SolidWorks and Fusion scripts: not yet.
+- [~] Import (File > Import, the import_file tool): STEP (.step, .stp) as exact solids, read with OpenCascade in the
+  CAD worker, each solid a body placed as in the file; STL (binary and ASCII) as a graphics body (shown, exported in
+  STL, no mass, no features) or as solid bodies (one face per facet, one solid per closed piece, Group facets into
+  faces merges coplanar facets). Into a new part (Imported1, or STL Graphics1, at the top of its history; the part
+  opens) or into the open part (adds bodies, as Insert > Features > Imported). Options: Knit surface(s) (closed
+  surfaces become solids; open ones are left out with a warning), Import multiple bodies as parts, Perform full entity
+  check and repair errors, Customize curve tolerance, mesh Unit (mm, cm, m, in, ft), Import as Graphics/Solid body,
+  and the file's up axis (Z up turned to Y up, the studio's own; not a SolidWorks option). Warnings and upload
+  progress in the form. Edit feature replaces the file, or reads the kept original again with new options. Bodies are
+  stored as BREP and STL assets by content hash. A solid from a large mesh (thousands of faces) is slow to rebuild
+  and to pick on; the form warns above 5000 faces. Fillet, chamfer, shell and draft still need a part of one solid,
+  so a multi-body import says to use Import multiple bodies as parts. Not there: IGES and other formats (this OpenCascade build has no
+  IGES reader; SLDPRT reader in progress), STEP names, colours, assembly structure and configuration data (no XCAF
+  reader in the build), surface bodies (Surface Body, Do not knit), mesh BREP bodies (Create mesh bodies bounded by
+  single faces), free points and curves as sketches, Import Diagnostics (face and gap lists, heal), Match faces and
+  edges on Edit feature, Unit = Document template specified unit (the studio is always mm; the file's unit is read).
 
 ## Evaluate
 
