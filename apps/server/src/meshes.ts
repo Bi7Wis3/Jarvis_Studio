@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { DEFAULT_PRINT, effectivePart, partsAtTimeline, type MeshStatus, type Part, type Project } from '@jarvis/core';
 import { viewPart } from '@jarvis/core/visibility';
-import { CadBuildError, combineContext, meshKey, type CadKernel, type CombineContext, type MeshData } from './cad/kernel.js';
+import { CadBuildError, CadJobDropped, combineContext, meshKey, type CadKernel, type CombineContext, type MeshData, type MeshOptions } from './cad/kernel.js';
 import { qualityKey, type MeshQuality } from './cad/meshQuality.js';
 import type { ChangeRange } from './cad/change.js';
+import { builtSpec, draftPart, MeshStages, RANK, type BuiltSpec } from './meshStages.js';
 
 const MAX_ENCODED = 500;
 
@@ -66,6 +67,13 @@ export class MeshService {
     private quality: MeshQuality = 'normal';
     /** Preview change meshes asked for (key of the part's mesh, then the range), and whether there was anything. */
     private changes = new Map<string, boolean>();
+    /** The mesh key each part shown wants since the last update, and those keys (builds for others are dropped). */
+    private wanted = new Map<string, string>();
+    private wantedKeys = new Set<string>();
+    /** Drafts and coarse meshes shown while the real ones build (meshStages.ts). */
+    private stages = new MeshStages();
+    /** What each part was last built from, to know which of its steps the kernel still has. */
+    private built = new Map<string, BuiltSpec>();
 
     constructor(private kernel: CadKernel, private changed: (status: MeshStatus) => void) {}
 
@@ -138,43 +146,128 @@ export class MeshService {
         const print = project.print ?? DEFAULT_PRINT;
         const keys: MeshStatus['keys'] = {};
         const errors: MeshStatus['errors'] = {};
-        const pending: { part: Part; context?: CombineContext }[] = [];
+        const pending: { part: Part; context?: CombineContext; key: string; solid: string }[] = [];
         const shown = partsAtTimeline(project);
+        this.wanted = new Map();
         // Instances build their source's design, so identical parts share one mesh. Combine steps key on the parts
         // they use (design and relative placement), so a change to those rebuilds the dependants too.
         for (const original of shown) {
             const part = shownPart(original, shown, project);
             const context = combineContext(original, shown);
-            const key = this.key(part, print, context);
+            const solid = meshKey(part, print, context);
+            const key = qualityKey(solid, this.quality);
+            this.wanted.set(part.id, key);
             if (this.meshes.has(key)) {
                 keys[part.id] = key;
+                this.stages.show(part.id, key, RANK.final, solid);
                 const failure = this.failed.get(key);
                 if (failure) {
                     errors[part.id] = failure;
                 }
             } else {
-                keys[part.id] = this.status.keys[part.id] ?? null;
-                pending.push({ part, context });
+                // Meanwhile the best picture of it so far (a draft, a coarse mesh), or else what the part showed.
+                const best = this.stages.bestFor(key);
+                if (best && this.meshes.has(best.key) && this.stages.better(part.id, key, best.rank, best.solid)) {
+                    keys[part.id] = best.key;
+                    this.stages.show(part.id, key, best.rank, best.solid);
+                } else {
+                    keys[part.id] = this.status.keys[part.id] ?? null;
+                }
+                pending.push({ part, context, key, solid });
             }
         }
+        this.wantedKeys = new Set(this.wanted.values());
         this.publish({ keys, errors });
-        for (const { part, context } of pending) {
-            this.build(part, print, context).then(
+        // Drafts first, for every part, then the real meshes. A build still queued when the model is edited again is
+        // dropped (see CadKernel.mesh).
+        const drafts = pending.map(({ part, context, key }) => {
+            const draft = draftPart(part, [print, context ?? null], this.built.get(part.id));
+            if (draft) {
+                void this.draft(key, draft, print, context);
+            }
+            return !!draft;
+        });
+        pending.forEach(({ part, context, key, solid }, i) => {
+            const options: MeshOptions = {
+                stale: () => !this.wantedKeys.has(key),
+                // With a draft shown already, a coarse mesh would only hold up the real one.
+                ...(drafts[i] ? {} : { interim: (mesh: MeshData) => this.interim(key, solid, mesh, RANK.coarse) }),
+            };
+            const spec = builtSpec(part, [print, context ?? null]);
+            this.build(part, print, context, this.quality, options).then(
                 (key) => {
+                    this.built.set(part.id, spec);
+                    this.stages.done(key);
                     if (generation === this.generation) {
+                        this.stages.show(part.id, key, RANK.final, solid);
                         this.publish({ keys: { ...this.status.keys, [part.id]: key }, errors: this.status.errors });
                     }
                 },
                 (error: unknown) => {
+                    if (error instanceof CadJobDropped) {
+                        return;
+                    }
+                    if (error instanceof CadBuildError) {
+                        this.built.set(part.id, spec);
+                    }
+                    this.stages.done(key);
                     if (generation === this.generation) {
                         const reason = error instanceof Error ? error.message : String(error);
                         console.warn(`[cad] ${part.id}: ${reason}`);
-                        const key = this.key(part, print, context);
-                        const keys = this.meshes.has(key) ? { ...this.status.keys, [part.id]: key } : this.status.keys;
+                        const has = this.meshes.has(key);
+                        if (has) {
+                            this.stages.show(part.id, key, RANK.final, solid);
+                        }
+                        const keys = has ? { ...this.status.keys, [part.id]: key } : this.status.keys;
                         this.publish({ keys, errors: { ...this.status.errors, [part.id]: reason } });
                     }
                 },
             );
+        });
+    }
+
+    /** Builds a part's draft (see meshStages.ts) and shows it until the real mesh `final` is there. */
+    private async draft(final: string, draft: Part, print: NonNullable<Project['print']>, context?: CombineContext): Promise<void> {
+        const solid = meshKey(draft, print, context);
+        let key: string;
+        try {
+            key = await this.build(draft, print, context, this.quality, {
+                stale: () => !this.wantedKeys.has(final),
+                interim: (mesh) => this.interim(final, solid, mesh, RANK.coarseDraft),
+            });
+        } catch {
+            return; // a draft that fails or is dropped shows nothing: the real build says what is wrong
+        }
+        if (!this.failed.has(key)) {
+            this.offer(final, key, RANK.draft, solid);
+        }
+    }
+
+    /** A coarse mesh of `solid` sent ahead of its real mesh (CadKernel.mesh's interim), shown while `final` builds. */
+    private interim(final: string, solid: string, mesh: MeshData, rank: number): void {
+        const key = qualityKey(solid, 'coarse');
+        if (!this.meshes.has(key)) {
+            this.remember(key, mesh);
+        }
+        this.offer(final, key, rank, solid);
+    }
+
+    /** Shows `key`, a picture of the real mesh `final`, on the parts waiting for that, unless they show better already. */
+    private offer(final: string, key: string, rank: number, solid: string): void {
+        if (this.meshes.has(final) || !this.meshes.has(key) || !this.stages.offer(final, key, rank, solid)) {
+            return;
+        }
+        const keys = { ...this.status.keys };
+        let changed = false;
+        for (const [partId, wanted] of this.wanted) {
+            if (wanted === final && keys[partId] !== key && this.stages.better(partId, final, rank, solid)) {
+                keys[partId] = key;
+                this.stages.show(partId, final, rank, solid);
+                changed = true;
+            }
+        }
+        if (changed) {
+            this.publish({ keys, errors: this.status.errors });
         }
     }
 
@@ -244,11 +337,11 @@ export class MeshService {
     }
 
     private async build(part: Part, print: NonNullable<Project['print']>, context?: CombineContext,
-        quality: MeshQuality = this.quality): Promise<string> {
+        quality: MeshQuality = this.quality, options?: MeshOptions): Promise<string> {
         const key = this.key(part, print, context, quality);
         if (!this.meshes.has(key)) {
             try {
-                this.remember(key, await this.kernel.mesh(part, print, context, quality));
+                this.remember(key, await this.kernel.mesh(part, print, context, quality, options));
             } catch (error) {
                 // Show the solid up to the failing step, so a broken feature does not make the part vanish.
                 if (error instanceof CadBuildError && error.partial) {

@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { DEFAULT_PRINT, type Feature } from '@jarvis/core';
 import { buildPartial, initOC, meshSolid } from './build.js';
+import { forgetMeshedFaces } from './incrementalMesh.js';
 import { meshKey } from './key.js';
 import { qualityKey, toleranceFor } from './meshQuality.js';
 import type { MeshQuality } from './meshQuality.js';
@@ -51,6 +52,8 @@ describe('display quality of a threaded part', () => {
             let best = Infinity;
             let triangles = 0;
             for (let i = 0; i < 2; i++) {
+                // Each time afresh: a solid meshed before keeps its triangles (incrementalMesh.ts).
+                forgetMeshedFaces();
                 const start = performance.now();
                 triangles = meshSolid(shape, quality).indices.length / 3;
                 best = Math.min(best, performance.now() - start);

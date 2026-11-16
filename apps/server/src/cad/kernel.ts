@@ -67,6 +67,21 @@ export class CadBuildError extends Error {
     }
 }
 
+/** A queued mesh job nobody wanted any more by the time its turn came (see MeshOptions.stale). */
+export class CadJobDropped extends Error {
+    constructor() {
+        super('CAD job dropped: the model changed again before it started');
+        this.name = 'CadJobDropped';
+    }
+}
+
+export interface MeshOptions {
+    /** Asked before the job starts: true when the mesh is no longer wanted, and the job is then dropped. */
+    stale?: () => boolean;
+    /** A coarse mesh of the same solid, sent first when the mesh itself will take a while (see cad/interimMesh.ts). */
+    interim?: (mesh: MeshData) => void;
+}
+
 export interface CadKernelOptions {
     /**
      * Per-job timeout; on expiry the worker is restarted. Default 15 minutes: a part with long modelled threads takes
@@ -89,16 +104,37 @@ interface Job {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
     label: KernelJobLabel;
+    /** Dropped before it starts when all of these say so; absent: always run (exports, previews, ready). */
+    stale?: (() => boolean)[];
+    interim?: ((mesh: MeshData) => void)[];
 }
 
 interface CacheEntry {
     promise: Promise<MeshData>;
     /** Set when the build failed: the feature names in its message, to rebuild if they are renamed. */
     failedNames?: string;
+    job: Partial<Job>;
 }
 
 const featureNames = (part: Pick<Part, 'features'>): string =>
     JSON.stringify((part.features ?? []).map((f) => [f.id, f.name]));
+
+/** Another caller of a mesh job: it keeps a queued job from being dropped unless it may be dropped too, and hears its interim mesh. */
+function join(job: Partial<Job>, options: MeshOptions, queued: boolean, running: boolean): void {
+    if (queued) {
+        if (options.stale && job.stale) {
+            job.stale.push(options.stale);
+        } else {
+            delete job.stale;
+        }
+        if (options.interim && job.request?.type === 'mesh') {
+            job.request = { ...job.request, interim: true };
+        }
+    }
+    if (options.interim && (queued || running)) {
+        (job.interim ??= []).push(options.interim);
+    }
+}
 
 export class CadKernel {
     /** Mutable so tests can shorten it. */
@@ -132,19 +168,27 @@ export class CadKernel {
 
     /**
      * Mesh of a part's solid at a display quality (see meshQuality.ts). `context` supplies the parts its combine steps
-     * use (see combineContext). Results are shared between callers: do not modify them.
+     * use (see combineContext). Results are shared between callers: do not modify them. `options`: see MeshOptions.
      */
-    mesh(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, context?: CombineContext, quality: MeshQuality = 'normal'): Promise<MeshData> {
+    mesh(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, context?: CombineContext, quality: MeshQuality = 'normal',
+        options: MeshOptions = {}): Promise<MeshData> {
         const key = qualityKey(meshKey(part, print, context), quality);
         const names = featureNames(part);
         const hit = this.cache.get(key);
         if (hit && (hit.failedNames === undefined || hit.failedNames === names)) {
             this.cache.delete(key);
             this.cache.set(key, hit);
+            join(hit.job, options, this.queue.includes(hit.job as Job), this.current?.job === hit.job);
             return hit.promise;
         }
+        const job: Partial<Job> = {
+            ...(options.stale ? { stale: [options.stale] } : {}),
+            ...(options.interim ? { interim: [options.interim] } : {}),
+        };
         const entry: CacheEntry = {
-            promise: this.run({ type: 'mesh', part: { shape: part.shape, features: part.features }, print, context, quality }, part) as Promise<MeshData>,
+            promise: this.run({ type: 'mesh', part: { shape: part.shape, features: part.features }, print, context, quality,
+                ...(options.interim ? { interim: true } : {}) }, part, job) as Promise<MeshData>,
+            job,
         };
         entry.promise.catch((error: unknown) => {
             if (error instanceof CadBuildError) {
@@ -237,13 +281,14 @@ export class CadKernel {
         return this.tracker.subscribe(listener);
     }
 
-    /** `part` is what the caller asked about (a whole Part when it had one), to name the job. */
-    private run(request: JobRequest, part?: object): Promise<unknown> {
+    /** `part` is what the caller asked about (a whole Part when it had one), to name the job; `extra`: the job's stale and
+     * interim hooks. */
+    private run(request: JobRequest, part?: object, extra: Partial<Job> = {}): Promise<unknown> {
         if (this.closed) {
             return Promise.reject(new Error('CAD kernel closed'));
         }
         return new Promise((resolve, reject) => {
-            this.queue.push({ request, resolve, reject, label: jobLabel(request, part) });
+            this.queue.push(Object.assign(extra, { request, resolve, reject, label: jobLabel(request, part) }));
             if (!this.worker) {
                 this.spawn();
             }
@@ -286,6 +331,16 @@ export class CadKernel {
         }
         const current = this.current;
         if (!current || current.id !== message.id) {
+            return;
+        }
+        if ('interim' in message) {
+            for (const listener of current.job.interim ?? []) {
+                try {
+                    listener(message.interim);
+                } catch {
+                    // A listener's trouble is its own; the job goes on.
+                }
+            }
             return;
         }
         clearTimeout(current.timer);
@@ -337,7 +392,19 @@ export class CadKernel {
     }
 
     private pump(): void {
-        if (!this.worker || !this.ready || this.current || this.queue.length === 0) {
+        if (!this.worker || !this.ready || this.current) {
+            return;
+        }
+        // A build for a state of the model that has been edited again since it was asked for is dropped, not run.
+        let dropped = false;
+        while (this.queue[0]?.stale?.length && this.queue[0].stale.every((stale) => stale())) {
+            this.queue.shift()!.reject(new CadJobDropped());
+            dropped = true;
+        }
+        if (this.queue.length === 0) {
+            if (dropped) {
+                this.tracker.changed();
+            }
             return;
         }
         const job = this.queue.shift()!;

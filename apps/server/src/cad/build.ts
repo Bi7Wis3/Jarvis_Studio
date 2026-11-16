@@ -41,14 +41,14 @@ import {
     baseBodies, bodyOrdinals, cosmeticMarks, isCosmetic, markCosmetic, release, solidsOf, trackBodies, type BodyRecord,
 } from './bodies.js';
 import { applyImport } from '../import/apply.js';
-import { bodyOrdinalsOf, seamEdgeIds } from '../import/topology.js';
+import { bodyOrdinalsOf } from '../import/topology.js';
+import { meshApart, meshFaces, quickDiagonal } from './incrementalMesh.js';
 
 type P2 = [number, number];
 
 /** Mesh tolerances for a solid at a display quality (see meshQuality.ts; normal: ~0.02% of its diagonal, 0.01 to 0.2 mm). */
 export function meshTolerance(shape: Shape3D, quality: MeshQuality = 'normal'): { tolerance: number; angularTolerance: number } {
-    const [lo, hi] = shapeBounds(shape);
-    return toleranceFor(Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]), quality);
+    return toleranceFor(quickDiagonal(shape), quality);
 }
 
 const EPS = 1e-3;
@@ -1625,11 +1625,8 @@ export function buildPart(part: PartSpec, print: PrintSettings, context?: Combin
 
 // ---- Meshing ------------------------------------------------------------------------------------------------
 
-/** Hash codes of seam edges (where a closed surface meets itself), which CAD outlines leave out. */
-const seamEdges = seamEdgeIds;
-
 /** Removes zero-area slivers (two corners at the same point), which OpenCascade leaves at poles and apexes. */
-function dropDegenerate(positions: Float32Array, triangles: number[], faces: Uint32Array): { indices: Uint32Array; triFace: Uint32Array } {
+function dropDegenerate(positions: Float32Array, triangles: ArrayLike<number>, faces: Uint32Array): { indices: Uint32Array; triFace: Uint32Array } {
     const same = (a: number, b: number): boolean => positions[a * 3] === positions[b * 3]
         && positions[a * 3 + 1] === positions[b * 3 + 1] && positions[a * 3 + 2] === positions[b * 3 + 2];
     const out: number[] = [];
@@ -1645,7 +1642,7 @@ function dropDegenerate(positions: Float32Array, triangles: number[], faces: Uin
 }
 
 /** Face ordinal of every triangle, from replicad's face groups (whose start/count are in index units). */
-function triangleFaces(mesh: { triangles: number[]; faceGroups: { start: number; count: number; faceId: number }[] }): Uint32Array {
+function triangleFaces(mesh: { triangles: ArrayLike<number>; faceGroups: { start: number; count: number; faceId: number }[] }): Uint32Array {
     const faces = new Uint32Array(Math.floor(mesh.triangles.length / 3));
     const ordinals = new Map<number, number>();
     for (const group of mesh.faceGroups) {
@@ -1661,13 +1658,10 @@ function triangleFaces(mesh: { triangles: number[]; faceGroups: { start: number;
 
 /** `reuse`: keep the faces' triangulations (made by meshing their solid at these tolerances) and mesh only the rest. */
 export function meshWithOpenCascade(shape: Shape3D, quality: MeshQuality, reuse?: { tolerance: number; angularTolerance: number }): MeshData {
-    // Faces shared with an earlier (already meshed) solid keep stale triangulations that no longer match the
-    // edges of new neighbouring faces; drop them so the whole solid is meshed in one consistent pass.
-    if (!reuse) getOC().BRepTools.Clean(shape.wrapped, true);
     const tolerance = reuse ?? meshTolerance(shape, quality);
-    const mesh = shape.mesh(tolerance);
-    const lines = shape.meshEdges(tolerance);
-    const seams = seamEdges(shape);
+    // Only the faces an edit changed are meshed; the others keep the triangles they have (incrementalMesh.ts). Faces
+    // meshed at a given tolerance (a preview's highlight) may be the part's own: they are meshed apart, on a copy.
+    const { mesh, lines, seams } = reuse ? meshApart(() => meshFaces(shape, tolerance)) : meshFaces(shape, tolerance);
     let segments = 0;
     for (const group of lines.edgeGroups) {
         if (!seams.has(group.edgeId)) {

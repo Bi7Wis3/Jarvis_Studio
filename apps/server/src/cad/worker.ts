@@ -17,9 +17,11 @@ import type { BodyRecord } from './bodies.js';
 import { startProgress, type WorkerProgress } from './progress.js';
 import { runImport, type ImportJob, type ImportJobResult } from '../import/job.js';
 import { withGraphics } from '../import/graphics.js';
+import { interimMesh } from './interimMesh.js';
 
 export type WorkerRequest =
-    | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext; quality?: MeshQuality }
+    /** `interim`: send a coarse mesh first when this one will take a while (interimMesh.ts). */
+    | { id: number; type: 'mesh'; part: PartSpec; print: PrintSettings; context?: CombineContext; quality?: MeshQuality; interim?: boolean }
     /** A preview's mesh with, alongside, what the steps of `range` do (see change.ts). */
     | { id: number; type: 'change'; part: PartSpec; print: PrintSettings; context?: CombineContext; quality?: MeshQuality; range: ChangeRange }
     | { id: number; type: 'step'; project: Project }
@@ -40,7 +42,9 @@ export type WorkerResponse =
     | { id: number; ok: true; model: ModelSketch }
     | { id: number; ok: true; freecad: FreecadExport }
     | { id: number; ok: true; imported: ImportJobResult }
-    | { id: number; ok: false; error: string; partial?: MeshData };
+    | { id: number; ok: false; error: string; partial?: MeshData }
+    /** Before the answer to a mesh job: a coarse mesh of the same solid to show meanwhile. */
+    | { id: number; interim: MeshData };
 
 const port = parentPort;
 if (!port) {
@@ -152,6 +156,12 @@ async function handle(request: WorkerRequest): Promise<void> {
                 const response: WorkerResponse = { id: request.id, ok: false, error: built.error, partial };
                 port!.postMessage(response, partial ? meshTransfer(partial) : []);
                 return;
+            }
+            // When the mesh will take a while, a coarse one goes first (interimMesh.ts).
+            const interim = request.type === 'mesh' && request.interim && built.shape ? interimMesh(built.shape, request.quality) : null;
+            if (interim) {
+                const early = { ...interim, ...extra };
+                port!.postMessage({ id: request.id, interim: early } satisfies WorkerResponse, meshTransfer(early));
             }
             // A part with no body yet (an empty shape with only sketches) meshes as nothing.
             const mesh = { ...(built.shape ? meshSolid(built.shape, request.quality) : emptyMesh()), ...extra };
