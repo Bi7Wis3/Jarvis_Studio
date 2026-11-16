@@ -234,24 +234,28 @@ function fields(ctx: Ctx): Field[] {
     const open: [string, string][] = ctx.part && !ctx.part.instanceOf ? [[ctx.part.id, `${ctx.part.name} (adds bodies)`]] : [];
     // Until a mesh file is chosen the form shows the options of exact (STEP) files.
     const isStep = (v: Values) => !v.mesh;
+    // A SolidWorks part holds exact solids, always Y up: knitting, curve tolerance, repair and the up axis do not apply.
+    const solidWorks = (v: Values) => (v.file ? /\.sldprt$/i.test(String(v.file)) : step?.file.format === 'sldprt');
+    const exact = (v: Values) => isStep(v) && !solidWorks(v);
     return [
         ...(step ? [] : [{
             key: 'target', label: 'Part', kind: 'select' as const, section: 'Import into', options: opts(['new', 'A new part'], ...open),
         }]),
-        { key: 'up', label: 'Up axis of the file', kind: 'select', section: 'Orientation',
+        { key: 'up', label: 'Up axis of the file', kind: 'select', section: 'Orientation', show: (v) => !solidWorks(v),
             options: opts(['z', 'Z up (turned to Y up)'], ['y', 'Y up (kept as it is)']) },
         { key: 'meshAs', label: 'Import as', kind: 'select', section: 'Mesh', show: (v) => !!v.mesh,
             options: opts(['graphics', 'Graphics body'], ['solid', 'Solid body']) },
         { key: 'groupFacets', label: 'Group facets into faces', kind: 'check', section: 'Mesh', show: (v) => !!v.mesh && v.meshAs === 'solid' },
         { key: 'unit', label: 'Unit', kind: 'select', section: 'Mesh', show: (v) => !!v.mesh,
             options: (Object.keys(IMPORT_UNITS) as (keyof typeof IMPORT_UNITS)[]).map((u) => ({ value: u, label: IMPORT_UNIT_NAMES[u] })) },
-        { key: 'knit', label: 'Knit surfaces into solids', kind: 'check', section: 'Solid and surface entities', show: isStep },
+        { key: 'knit', label: 'Knit surfaces into solids', kind: 'check', section: 'Solid and surface entities', show: exact },
         { key: 'bodiesAsParts', label: 'Import multiple bodies as parts', kind: 'check', section: 'Solid and surface entities',
             show: (v) => !step && v.target === 'new' && isStep(v) },
-        { key: 'repair', label: 'Perform full entity check and repair errors', kind: 'check', section: 'Solid and surface entities' },
-        { key: 'customTolerance', label: 'Customize curve tolerance', kind: 'check', section: 'Solid and surface entities', show: isStep },
+        { key: 'repair', label: 'Perform full entity check and repair errors', kind: 'check', section: 'Solid and surface entities',
+            show: (v) => !solidWorks(v) },
+        { key: 'customTolerance', label: 'Customize curve tolerance', kind: 'check', section: 'Solid and surface entities', show: exact },
         { key: 'tolerance', label: 'Tolerance', kind: 'number', unit: 'mm', step: 0.001, min: 0, section: 'Solid and surface entities',
-            show: (v) => isStep(v) && !!v.customTolerance },
+            show: (v) => exact(v) && !!v.customTolerance },
     ];
 }
 

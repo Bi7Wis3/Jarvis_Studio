@@ -11,6 +11,7 @@ import type { Importer, ImportResult } from './types.js';
 export const IMPORTERS: Importer[] = [
     { format: 'step', extensions: ['step', 'stp'], label: 'STEP AP203/AP214 (*.step, *.stp)', read: async (b, o) => (await import('./step.js')).readStep(b, o) },
     { format: 'stl', extensions: ['stl'], label: 'STL mesh (*.stl)', mesh: true, read: async (b, o) => (await import('./stl.js')).readStl(b, o) },
+    { format: 'sldprt', extensions: ['sldprt'], label: 'SolidWorks part (*.sldprt)', read: async (b) => (await import('./sldprt.js')).readSldprt(b) },
 ];
 
 export const extensionOf = (filename: string): string => /\.([^./\\]+)$/.exec(filename)?.[1]?.toLowerCase() ?? '';

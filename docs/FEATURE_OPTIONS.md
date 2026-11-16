@@ -358,10 +358,15 @@ Reference geometry
   stored as BREP and STL assets by content hash. A solid from a large mesh (thousands of faces) is slow to rebuild
   and to pick on; the form warns above 5000 faces. Fillet, chamfer, shell and draft still need a part of one solid,
   so a multi-body import says to use Import multiple bodies as parts. Not there: IGES and other formats (this OpenCascade build has no
-  IGES reader; SLDPRT reader in progress), STEP names, colours, assembly structure and configuration data (no XCAF
+  IGES reader), STEP names, colours, assembly structure and configuration data (no XCAF
   reader in the build), surface bodies (Surface Body, Do not knit), mesh BREP bodies (Create mesh bodies bounded by
   single faces), free points and curves as sketches, Import Diagnostics (face and gap lists, heal), Match faces and
   edges on Edit feature, Unit = Document template specified unit (the studio is always mm; the file's unit is read).
+- [x] SolidWorks parts (.sldprt, 2015+ and older OLE files): the exact solid bodies of the file's Parasolid data, read
+  by the studio's own reader (sldprt/), Y up, with the file's preview picture; the feature history (SolidWorks' own)
+  is not read. Rolling-ball blends and intersection curves are rebuilt as B-splines within 5e-6 mm (a warning names
+  them); only the first configuration is read. 52 of the owner's 54 files read as valid solids, matching their STL
+  exports to 0.0002 to 0.003 mm on average.
 
 ## Evaluate
 
