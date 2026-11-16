@@ -1,0 +1,173 @@
+{
+ "format": "jarvis-sw-history",
+ "version": 1,
+ "kind": "assembly",
+ "units": {
+  "length": "m",
+  "angle": "rad",
+  "area": "m^2",
+  "volume": "m^3",
+  "mass": "kg"
+ },
+ "exporter": {
+  "script": "JarvisHistoryExport.vbs",
+  "version": "1.0",
+  "solidworks": "23.2.1",
+  "date": "2026-11-16 20:00:00"
+ },
+ "document": {
+  "file": "stand.SLDASM",
+  "path": "Z:\\3D_Prints\\Fixtures\\stand.SLDASM",
+  "title": "stand.SLDASM",
+  "configuration": "Default"
+ },
+ "mass": {
+  "volume": 0.00002811256600888212,
+  "area": 0,
+  "centre": [
+   0,
+   0,
+   0
+  ]
+ },
+ "box": null,
+ "components": [
+  {
+   "name": "plate-1",
+   "file": "plate.SLDPRT",
+   "path": "Z:\\3D_Prints\\Fixtures\\plate.SLDPRT",
+   "configuration": "Default",
+   "suppression": 2,
+   "suppressed": false,
+   "fixed": true,
+   "visible": 1,
+   "excludeFromBOM": false,
+   "virtual": false,
+   "transform": [
+    1,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0
+   ],
+   "children": []
+  },
+  {
+   "name": "plate-2",
+   "file": "plate.SLDPRT",
+   "path": "Z:\\3D_Prints\\Fixtures\\plate.SLDPRT",
+   "configuration": "Default",
+   "suppression": 2,
+   "suppressed": false,
+   "fixed": false,
+   "visible": 1,
+   "excludeFromBOM": false,
+   "virtual": false,
+   "transform": [
+    6.123233995736766e-17,
+    0,
+    -1,
+    0,
+    1,
+    0,
+    1,
+    0,
+    6.123233995736766e-17,
+    0.1,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0
+   ],
+   "children": []
+  },
+  {
+   "name": "tube-1",
+   "file": "tube.SLDPRT",
+   "path": "Z:\\3D_Prints\\Fixtures\\tube.SLDPRT",
+   "configuration": "Default",
+   "suppression": 2,
+   "suppressed": false,
+   "fixed": true,
+   "visible": 1,
+   "excludeFromBOM": false,
+   "virtual": false,
+   "transform": [
+    1,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0.005,
+    0,
+    1,
+    0,
+    0,
+    0
+   ],
+   "children": []
+  }
+ ],
+ "mates": [
+  {
+   "name": "Coincident1",
+   "featureType": "MateCoincident",
+   "suppressed": false,
+   "type": 0,
+   "alignment": 1,
+   "flipped": false,
+   "entities": [
+    {
+     "referenceType": 2,
+     "component": "plate-1",
+     "params": [
+      0,
+      0.005,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "referenceType": 2,
+     "component": "tube-1",
+     "params": [
+      0,
+      0.005,
+      0,
+      0,
+      -1,
+      0,
+      0,
+      0
+     ]
+    }
+   ],
+   "errors": []
+  }
+ ],
+ "log": [
+  "Jarvis history export 1.0 (fixture written by fixtures.test-helper.ts)"
+ ]
+}

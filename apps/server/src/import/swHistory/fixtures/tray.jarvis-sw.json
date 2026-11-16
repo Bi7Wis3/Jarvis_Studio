@@ -1,0 +1,499 @@
+{
+ "format": "jarvis-sw-history",
+ "version": 1,
+ "kind": "part",
+ "units": {
+  "length": "m",
+  "angle": "rad",
+  "area": "m^2",
+  "volume": "m^3",
+  "mass": "kg"
+ },
+ "exporter": {
+  "script": "JarvisHistoryExport.vbs",
+  "version": "1.0",
+  "solidworks": "23.2.1",
+  "date": "2026-11-16 20:00:00"
+ },
+ "document": {
+  "file": "tray.SLDPRT",
+  "path": "Z:\\3D_Prints\\Fixtures\\tray.SLDPRT",
+  "title": "tray.SLDPRT",
+  "configuration": "Default"
+ },
+ "mass": {
+  "volume": 0.000005832,
+  "area": 0,
+  "centre": [
+   0,
+   0,
+   0
+  ],
+  "mass": 0.005832,
+  "density": 1000
+ },
+ "box": {
+  "min": [
+   -0.015,
+   0,
+   -0.015
+  ],
+  "max": [
+   0.015,
+   0.02,
+   0.015
+  ]
+ },
+ "tessBox": {
+  "min": [
+   -0.015,
+   0,
+   -0.015
+  ],
+  "max": [
+   0.015,
+   0.02,
+   0.015
+  ]
+ },
+ "bodies": [
+  {
+   "name": "Body1",
+   "type": 0,
+   "volume": 0.000005832
+  }
+ ],
+ "features": [
+  {
+   "name": "Comments",
+   "type": "CommentsFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Favorites",
+   "type": "FavoriteFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "History",
+   "type": "HistoryFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Sensors",
+   "type": "SensorFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Annotations",
+   "type": "DetailCabinet",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Solid Bodies",
+   "type": "SolidBodyFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Material <not specified>",
+   "type": "MaterialFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Front Plane",
+   "type": "RefPlane",
+   "id": 1,
+   "suppressed": false,
+   "parents": [],
+   "subFeatures": [],
+   "plane": {
+    "transform": [
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "data": {
+    "object": "IRefPlaneFeatureData",
+    "Type": 0,
+    "Type2": 0
+   },
+   "errors": []
+  },
+  {
+   "name": "Top Plane",
+   "type": "RefPlane",
+   "id": 2,
+   "suppressed": false,
+   "parents": [],
+   "subFeatures": [],
+   "plane": {
+    "transform": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     -1,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "data": {
+    "object": "IRefPlaneFeatureData",
+    "Type": 0,
+    "Type2": 0
+   },
+   "errors": []
+  },
+  {
+   "name": "Right Plane",
+   "type": "RefPlane",
+   "id": 3,
+   "suppressed": false,
+   "parents": [],
+   "subFeatures": [],
+   "plane": {
+    "transform": [
+     0,
+     0,
+     -1,
+     0,
+     1,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "data": {
+    "object": "IRefPlaneFeatureData",
+    "Type": 0,
+    "Type2": 0
+   },
+   "errors": []
+  },
+  {
+   "name": "Origin",
+   "type": "OriginProfileFeature",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Shelled",
+   "type": "FtrFolder",
+   "id": 30,
+   "suppressed": false
+  },
+  {
+   "name": "Sketch1",
+   "type": "ProfileFeature",
+   "id": 20,
+   "suppressed": false,
+   "parents": [
+    "Top Plane"
+   ],
+   "subFeatures": [],
+   "sketch": {
+    "is3d": false,
+    "toSketch": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     -1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ],
+    "segments": [
+     {
+      "id": "s0_14_0",
+      "type": 0,
+      "kind": "line",
+      "construction": false,
+      "length": 0.03,
+      "start": "p10_0",
+      "end": "p11_0",
+      "infinite": false
+     },
+     {
+      "id": "s0_15_0",
+      "type": 0,
+      "kind": "line",
+      "construction": false,
+      "length": 0.03,
+      "start": "p11_0",
+      "end": "p12_0",
+      "infinite": false
+     },
+     {
+      "id": "s0_16_0",
+      "type": 0,
+      "kind": "line",
+      "construction": false,
+      "length": 0.03,
+      "start": "p12_0",
+      "end": "p13_0",
+      "infinite": false
+     },
+     {
+      "id": "s0_17_0",
+      "type": 0,
+      "kind": "line",
+      "construction": false,
+      "length": 0.03,
+      "start": "p13_0",
+      "end": "p10_0",
+      "infinite": false
+     }
+    ],
+    "relations": [
+     {
+      "type": 4,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_14_0"
+       }
+      ]
+     },
+     {
+      "type": 5,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_15_0"
+       }
+      ]
+     },
+     {
+      "type": 4,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_16_0"
+       }
+      ]
+     },
+     {
+      "type": 5,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_17_0"
+       }
+      ]
+     },
+     {
+      "type": 1,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_14_0"
+       }
+      ],
+      "dimension": {
+       "value": 0.03,
+       "type": 2,
+       "driven": 2,
+       "name": "D5"
+      }
+     },
+     {
+      "type": 1,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_15_0"
+       }
+      ],
+      "dimension": {
+       "value": 0.03,
+       "type": 2,
+       "driven": 2,
+       "name": "D6"
+      }
+     }
+    ],
+    "contours": [],
+    "points": [
+     {
+      "id": "p10_0",
+      "x": -0.015,
+      "y": -0.015,
+      "z": 0,
+      "type": 1
+     },
+     {
+      "id": "p11_0",
+      "x": 0.015,
+      "y": -0.015,
+      "z": 0,
+      "type": 1
+     },
+     {
+      "id": "p12_0",
+      "x": 0.015,
+      "y": 0.015,
+      "z": 0,
+      "type": 1
+     },
+     {
+      "id": "p13_0",
+      "x": -0.015,
+      "y": 0.015,
+      "z": 0,
+      "type": 1
+     }
+    ]
+   },
+   "errors": []
+  },
+  {
+   "name": "Boss-Extrude1",
+   "type": "Extrusion",
+   "id": 21,
+   "suppressed": false,
+   "parents": [
+    "Sketch1"
+   ],
+   "subFeatures": [
+    {
+     "name": "Sketch1",
+     "type": "ProfileFeature"
+    }
+   ],
+   "after": {
+    "volume": 0.000018,
+    "area": null,
+    "bodies": 1
+   },
+   "data": {
+    "object": "IExtrudeFeatureData2",
+    "IsBossFeature": true,
+    "IsThinFeature": false,
+    "BothDirections": false,
+    "ReverseDirection": false,
+    "FlipSideToCut": false,
+    "FromType": 0,
+    "FromOffsetDistance": 0,
+    "FromOffsetReverse": false,
+    "Merge": true,
+    "GetEndCondition(True)": 0,
+    "GetEndCondition(False)": 0,
+    "GetDepth(True)": 0.02,
+    "GetDepth(False)": 0,
+    "GetDraftWhileExtruding(True)": false,
+    "GetDraftWhileExtruding(False)": false,
+    "GetDraftAngle(True)": 0,
+    "GetDraftAngle(False)": 0,
+    "GetDraftOutward(True)": false,
+    "GetDraftOutward(False)": false,
+    "Contours": null,
+    "FeatureScopeBodies": null
+   },
+   "errors": []
+  },
+  {
+   "name": "Shell1",
+   "type": "Shell",
+   "id": 22,
+   "suppressed": false,
+   "parents": [
+    "Boss-Extrude1"
+   ],
+   "subFeatures": [],
+   "after": {
+    "volume": 0.000005832,
+    "area": null,
+    "bodies": 1
+   },
+   "data": {
+    "object": "IShellFeatureData",
+    "Thickness": 0.002,
+    "Direction": false,
+    "FacesRemovedCount": 1,
+    "GetMultipleThicknessFacesCount": 0,
+    "FacesRemoved": [
+     {
+      "kind": "face",
+      "point": [
+       0.005,
+       0.02,
+       0.005
+      ],
+      "normal": [
+       0,
+       1,
+       0
+      ],
+      "surface": "plane",
+      "params": null,
+      "box": null
+     }
+    ],
+    "MultipleThicknessFaces": null
+   },
+   "errors": []
+  },
+  {
+   "name": "Folder1___EndTag___",
+   "type": "FtrFolder",
+   "id": 31,
+   "suppressed": false
+  }
+ ],
+ "log": [
+  "Jarvis history export 1.0 (fixture written by fixtures.test-helper.ts)"
+ ]
+}

@@ -13,6 +13,7 @@ export const IMPORTERS: Importer[] = [
     { format: 'stl', extensions: ['stl'], label: 'STL mesh (*.stl)', mesh: true, read: async (b, o) => (await import('./stl.js')).readStl(b, o) },
     { format: 'sldprt', extensions: ['sldprt'], label: 'SolidWorks part (*.sldprt)', read: async (b) => (await import('./sldprt.js')).readSldprt(b) },
     { format: 'iges', extensions: ['igs', 'iges'], label: 'IGES (*.igs, *.iges)', read: async (b, o) => (await import('./iges/readIges.js')).readIges(b, o) },
+    { format: 'swhistory', extensions: ['json'], label: 'SolidWorks history (*.jarvis-sw.json)', read: () => { throw new Error('a SolidWorks history is rebuilt as features (swHistory/importHistory.ts)'); } },
 ];
 
 export const extensionOf = (filename: string): string => /\.([^./\\]+)$/.exec(filename)?.[1]?.toLowerCase() ?? '';

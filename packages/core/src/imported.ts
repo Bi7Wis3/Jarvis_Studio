@@ -62,6 +62,22 @@ export interface ImportStep {
     bodies?: ImportedBodyInfo[];
     /** The options it was read with. */
     options?: ImportOptions;
+    /**
+     * Its solids replace the body built so far instead of joining it: a SolidWorks history import continues from
+     * SolidWorks' own body where a feature could not be rebuilt.
+     */
+    replaceBody?: boolean;
+}
+
+/** Mates of a SolidWorks assembly as its history export wrote them, kept with the project until the studio has mates. */
+export interface ImportedMates {
+    /** The SolidWorks assembly file, and the .jarvis-sw.json it came from. */
+    assembly: string;
+    source: string;
+    /** SolidWorks component names (Name2) to the studio parts they became. */
+    components: Record<string, string>;
+    /** The exported mates, untouched (apps/server/src/import/swHistory/format.ts, SwMate). */
+    mates: unknown[];
 }
 
 /** Asset ids of import files: 24 hex digits of the content's SHA-256 and the file's own extension. */

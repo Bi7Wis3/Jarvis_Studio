@@ -21,6 +21,8 @@ export interface ImportRequest {
     target?: string;
     /** The id of an Imported step of the target part to replace with this file (Edit feature). */
     replace?: string;
+    /** Where the file is on this machine, when it was read from the disk (files next to it may be read too). */
+    path?: string;
 }
 
 export interface ImportReport {
@@ -99,6 +101,10 @@ export function effectiveOptions(filename: string, options: ImportOptions = {}):
  * read again (with new options).
  */
 export async function importIntoProject(store: ProjectStore, kernel: CadKernel, request: ImportRequest): Promise<ImportReport> {
+    // A SolidWorks feature history (.jarvis-sw.json) is rebuilt as features, not read as bodies.
+    if (importerFor(request.filename)?.format === 'swhistory') {
+        return (await import('./swHistory/importHistory.js')).importSwHistory(store, kernel, request);
+    }
     const target = request.target && request.target !== 'new' ? store.get().parts.find((p) => p.id === request.target) : null;
     if (request.target && request.target !== 'new' && !target) {
         throw new Error(`No part with id "${request.target}"`);

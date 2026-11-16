@@ -14,7 +14,7 @@ export function applyImport(shape: Shape3D | null, step: ImportStep): Shape3D | 
         return shape;
     }
     const imported = loadBrep(step.brep);
-    if (!shape) {
+    if (!shape || step.replaceBody) {
         return imported;
     }
     // One flat compound of every solid, so later steps and the Solid Bodies folder see each body.

@@ -27,4 +27,5 @@ export const importStepSchema = z.object({
     mesh: asset.optional(),
     bodies: z.array(z.object({ name: z.string().optional(), color: z.string().optional() })).optional(),
     options: importOptionsSchema.optional(),
+    replaceBody: z.boolean().optional().describe('Its solids replace the body built so far (a SolidWorks history import)'),
 });

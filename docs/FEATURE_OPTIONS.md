@@ -90,21 +90,35 @@ Fillet
 - [ ] Profile: circular, elliptic, conic rho, conic radius, curvature continuous.
 - [ ] Setback vertices and distances, partial edge start/end condition, round corners, keep features, overflow
   type (default, keep edge, keep surface), select through faces, omit attach edges. Drag handle for the radius.
-- [~] Blends the kernel's builder gives up on (constant radius): a closed loop of edges, such as the rim of a hole
-  leaving a curved or lofted surface at a shallow angle with a face edge ending on the rim, is rolled section by
-  section (loopBlend.ts); straight edges between flat faces that end on an earlier, smaller fillet or chamfer run
-  out into it (runoutBlend.ts); inside corners between flat faces along straight edges are filled with the round's
-  material where the faces end square across the corner (else the kernel's failure stands). A result of the kernel's
-  that takes material away at inside corners, or adds it at outside edges, is refused. Tangent propagation follows an
-  edge on only where the faces beside it carry on too (not from an inside corner into the outside edge in line with
-  it). A failure names the place and the cause, and calls the size too large only when a tenth of it works. Not yet:
-  open chains on curved faces, variable radius.
+- [~] Blends the kernel's builder gives up on (constant radius) are made from the blend's true sections
+  (sectionBlend.ts) on any chain of edges: open or closed, straight or curved, between faces of any kind (plane,
+  cylinder, cone, sphere, torus, spline, offset), at outside and inside corners. The rolling ball is solved on the
+  faces' surfaces at stations along the edges, added until the blend lies within 1e-4 mm of the true one (measured:
+  1e-6 to 4e-5 mm; on the rim of a tilted hole the kernel's own fillet strays 2e-3 to 1e-2 mm from it). A chain's
+  end runs out where the faces there fall away, and stops against a wall (flat or curved) or, at an inside corner,
+  against the face the corner ends on; a spline face that ends short of the blend is carried on along its tangents.
+  Tried before that: a closed loop rolled section by section (loopBlend.ts), straight edges between flat faces run
+  out into an earlier smaller blend (runoutBlend.ts). Edges an earlier step left flagged as smooth joins where the
+  faces meet at an angle (the kernel refuses those) are cleared first (edgeContinuity.ts); edges along which the
+  faces really join smoothly (an earlier fillet's edges, seams in a smooth surface) are refused with that reason. A
+  blend wider than a face beside the edge is refused at once as too large. A result of the kernel's that takes
+  material away at inside corners, or adds it at outside edges, is refused; a result made another way must lie within
+  the body (outside edges) or around it (inside corners), checked on points of its faces.
+  Tangent propagation follows an edge on only where the faces beside it carry on too (not from an inside corner into
+  the outside edge in line with it). A failure names the place and the cause, and calls the size too large only when
+  a tenth of it works. Not yet on the section path: SolidWorks' rounded corner patch where blends meet at a vertex
+  (fillets are made chain by chain, a later one running into the earlier ones), setbacks, overflow types (keep edge,
+  keep surface: a blend wider than a face beside it fails, except near a chain's ends), a chain that turns from
+  convex to concave, variable radius.
 
 Chamfer
 - [x] Equal distance on an edge group.
-- [~] As for fillets: closed loops chamfered section by section, straight edges between flat faces run out into an
-  earlier smaller blend, inside corners filled, wrong-way results refused, tangent propagation as for fillets. Not
-  yet: a mitre where a loop bends towards one face (refused with the place).
+- [~] As for fillets: equal distance, two distances and distance-angle made from true sections on any chain of edges
+  the kernel refuses (distances measured as chords in the plane square to the edge, as the kernel measures them),
+  closed loops chamfered section by section, straight edges between flat faces run out into an earlier smaller
+  blend, inside corners filled, false smooth-join flags cleared, wrong-way results refused, tangent propagation as for
+  fillets. Not yet: SolidWorks' corner treatment where chamfers on the section path meet at a vertex (they meet where
+  they intersect), a mitre where a loop bends towards one face (refused with the place).
 - [ ] Selected edges, faces, features and loops; tangent propagation; previews.
 - [ ] Types: angle-distance, distance-distance (symmetric or asymmetric), vertex (three distances or equal),
   offset face (multi-distance), face-face (symmetric, asymmetric, chord width, hold line); flip direction.
@@ -367,6 +381,20 @@ Reference geometry
   is not read. Rolling-ball blends and intersection curves are rebuilt as B-splines within 5e-6 mm (a warning names
   them); only the first configuration is read. 52 of the owner's 54 files read as valid solids, matching their STL
   exports to 0.0002 to 0.003 mm on average.
+- [~] SolidWorks feature history (.jarvis-sw.json, written in SolidWorks by tools/solidworks/JarvisHistoryExport.vbs,
+  a double-click script that exports a folder tree read-only): parts are rebuilt as studio features with SolidWorks'
+  names and folders: sketches (plane, points, lines, arcs, circles, ellipses, exact splines, parabolas, construction;
+  relations and dimensions as constraints, each checked against the geometry first), extrudes and cuts (blind, through
+  all, up to next, mid plane, both directions, draft, flip side, offset start, selected contours; up to vertex or
+  surface and offset from surface when flat and parallel, as blind), revolves, constant-radius fillets, chamfers,
+  Hole Wizard holes (counterbore, countersink, hole, tap drill) as cuts, simple holes, linear and circular patterns,
+  mirrors of features and bodies, shells, lofts and sweeps without guides, neutral-plane drafts, reference planes, axes
+  and points (by value). From the first feature that cannot be rebuilt, or that rebuilds to a volume other than
+  SolidWorks' (measured after every feature), the part continues from SolidWorks' body read from the SLDPRT (an
+  Imported step that replaces the body). The result is checked against SolidWorks' volume and box. Assemblies: one part
+  per component, placed by its transform, repeated parts as instances, subassemblies flattened, mates kept raw with
+  the project. Not yet: thin features, ribs, variable/face/full round fillets, vertex chamfers, up to body, starts from
+  a surface, pattern of bodies, 3D sketches, sketch text, pipe tap and slot holes, guide curves, mates themselves.
 - [~] File browser (the studio's own, in the Import form; as SolidWorks' Open dialog): Places (Home, Desktop,
   Documents, Downloads, pinned folders, the last 10 folders imported from, kept in the settings), breadcrumb path, a
   virtual list (folders first, natural order), filter by name, Quick filter buttons per type in any combination, Show

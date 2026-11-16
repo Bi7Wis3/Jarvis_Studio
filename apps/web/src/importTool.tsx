@@ -64,8 +64,8 @@ function formatOf(name: string): Format | null {
 const editedStep = (ctx: Ctx): Extract<Feature, { op: 'import' }> | null => (ctx.edit?.feature?.op === 'import' ? ctx.edit.feature : null);
 
 /** Quick filter buttons in the file browser, one per format the server reads, in the SolidWorks dialog's order. */
-const QUICK_ORDER = ['step', 'iges', 'stl', 'sldprt'];
-const QUICK_LABELS: Record<string, string> = { step: 'STEP', iges: 'IGES', stl: 'STL', sldprt: 'SolidWorks' };
+const QUICK_ORDER = ['step', 'iges', 'stl', 'sldprt', 'swhistory'];
+const QUICK_LABELS: Record<string, string> = { step: 'STEP', iges: 'IGES', stl: 'STL', sldprt: 'SolidWorks', swhistory: 'SolidWorks history' };
 
 export function quickFilters(formats: Format[] | null): QuickFilter[] {
     const rank = (f: Format) => (QUICK_ORDER.includes(f.format) ? QUICK_ORDER.indexOf(f.format) : QUICK_ORDER.length);
@@ -299,11 +299,14 @@ function fields(ctx: Ctx): Field[] {
     // Until a mesh file is chosen the form shows the options of exact files (STEP and IGES have the same ones).
     const isStep = (v: Values) => !v.mesh;
     // A SolidWorks part holds exact solids, always Y up: knitting, curve tolerance, repair and the up axis do not apply.
-    const solidWorks = (v: Values) => (v.file ? /\.sldprt$/i.test(String(v.file)) : step?.file.format === 'sldprt');
+    const solidWorks = (v: Values) => (v.file ? /\.(sldprt|jarvis-sw\.json)$/i.test(String(v.file)) : step?.file.format === 'sldprt');
+    // A SolidWorks history (.jarvis-sw.json, tools/solidworks) is rebuilt as new parts with their own features.
+    const history = (v: Values) => /\.jarvis-sw\.json$/i.test(String(v.file ?? ''));
     const exact = (v: Values) => isStep(v) && !solidWorks(v);
     return [
         ...(step ? [] : [{
             key: 'target', label: 'Part', kind: 'select' as const, section: 'Import into', options: opts(['new', 'A new part'], ...open),
+            show: (v: Values) => !history(v),
         }]),
         { key: 'up', label: 'Up axis of the file', kind: 'select', section: 'Orientation', show: (v) => !solidWorks(v),
             options: opts(['z', 'Z up (turned to Y up)'], ['y', 'Y up (kept as it is)']) },
@@ -314,7 +317,7 @@ function fields(ctx: Ctx): Field[] {
             options: (Object.keys(IMPORT_UNITS) as (keyof typeof IMPORT_UNITS)[]).map((u) => ({ value: u, label: IMPORT_UNIT_NAMES[u] })) },
         { key: 'knit', label: 'Knit surfaces into solids', kind: 'check', section: 'Solid and surface entities', show: exact },
         { key: 'bodiesAsParts', label: 'Import multiple bodies as parts', kind: 'check', section: 'Solid and surface entities',
-            show: (v) => !step && v.target === 'new' && isStep(v) },
+            show: (v) => !step && v.target === 'new' && isStep(v) && !history(v) },
         { key: 'repair', label: 'Perform full entity check and repair errors', kind: 'check', section: 'Solid and surface entities',
             show: (v) => !solidWorks(v) },
         { key: 'customTolerance', label: 'Customize curve tolerance', kind: 'check', section: 'Solid and surface entities', show: exact },

@@ -30,5 +30,5 @@ export async function importFromPath(store: ProjectStore, kernel: Pick<CadKernel
     request: Omit<ImportRequest, 'filename' | 'bytes'> = {}, home?: string): Promise<ImportReport & { path: string }> {
     const file = await resolveInHome(path, home ?? await homeFolder(), 'file');
     const { filename, bytes } = await readImportFile(file.path);
-    return { ...await importIntoProject(store, kernel as CadKernel, { ...request, filename, bytes }), path: file.path };
+    return { ...await importIntoProject(store, kernel as CadKernel, { ...request, filename, bytes, path: file.path }), path: file.path };
 }

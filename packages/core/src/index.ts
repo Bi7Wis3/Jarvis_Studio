@@ -1,7 +1,7 @@
 // Shared project model and wire protocol. Units are millimetres, Y is up.
 
 import type { CadActivity } from './cadActivity';
-import type { ImportStep } from './imported';
+import type { ImportedMates, ImportStep } from './imported';
 
 export type Vec3 = [number, number, number];
 
@@ -1068,6 +1068,8 @@ export interface Project {
     parts: Part[];
     view: ViewState;
     print?: PrintSettings;
+    /** Mates of imported SolidWorks assemblies, kept as exported until the studio has mates. */
+    importedMates?: ImportedMates[];
 }
 
 /** Real geometry from the CAD kernel: mesh key per part (null while building) and build errors. */

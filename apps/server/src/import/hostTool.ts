@@ -31,7 +31,7 @@ export function importFileTool(store: ProjectStore, host: { kernel: CadKernel })
             if (!isAbsolute(full)) {
                 throw new Error('Give the absolute path of the file');
             }
-            const report = await importIntoProject(store, host.kernel, { ...await readImportFile(full), options, target, replace });
+            const report = await importIntoProject(store, host.kernel, { ...await readImportFile(full), path: full, options, target, replace });
             return { text: `${report.text}\nParts: ${report.parts.join(', ')}; steps: ${report.steps.join(', ')}.` };
         },
     };

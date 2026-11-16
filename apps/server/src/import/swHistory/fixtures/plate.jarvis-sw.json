@@ -1,0 +1,694 @@
+{
+ "format": "jarvis-sw-history",
+ "version": 1,
+ "kind": "part",
+ "units": {
+  "length": "m",
+  "angle": "rad",
+  "area": "m^2",
+  "volume": "m^3",
+  "mass": "kg"
+ },
+ "exporter": {
+  "script": "JarvisHistoryExport.vbs",
+  "version": "1.0",
+  "solidworks": "23.2.1",
+  "date": "2026-11-16 20:00:00"
+ },
+ "document": {
+  "file": "plate.SLDPRT",
+  "path": "Z:\\3D_Prints\\Fixtures\\plate.SLDPRT",
+  "title": "plate.SLDPRT",
+  "configuration": "Default"
+ },
+ "mass": {
+  "volume": 0.000011700088514248714,
+  "area": 0,
+  "centre": [
+   0,
+   0,
+   0
+  ],
+  "mass": 0.011700088514248714,
+  "density": 1000
+ },
+ "box": {
+  "min": [
+   -0.03,
+   0,
+   -0.02
+  ],
+  "max": [
+   0.03,
+   0.005,
+   0.02
+  ]
+ },
+ "tessBox": {
+  "min": [
+   -0.03,
+   0,
+   -0.02
+  ],
+  "max": [
+   0.03,
+   0.005,
+   0.02
+  ]
+ },
+ "bodies": [
+  {
+   "name": "Body1",
+   "type": 0,
+   "volume": 0.000011700088514248714
+  }
+ ],
+ "features": [
+  {
+   "name": "Comments",
+   "type": "CommentsFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Favorites",
+   "type": "FavoriteFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "History",
+   "type": "HistoryFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Sensors",
+   "type": "SensorFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Annotations",
+   "type": "DetailCabinet",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Solid Bodies",
+   "type": "SolidBodyFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Material <not specified>",
+   "type": "MaterialFolder",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Front Plane",
+   "type": "RefPlane",
+   "id": 1,
+   "suppressed": false,
+   "parents": [],
+   "subFeatures": [],
+   "plane": {
+    "transform": [
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "data": {
+    "object": "IRefPlaneFeatureData",
+    "Type": 0,
+    "Type2": 0
+   },
+   "errors": []
+  },
+  {
+   "name": "Top Plane",
+   "type": "RefPlane",
+   "id": 2,
+   "suppressed": false,
+   "parents": [],
+   "subFeatures": [],
+   "plane": {
+    "transform": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     -1,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "data": {
+    "object": "IRefPlaneFeatureData",
+    "Type": 0,
+    "Type2": 0
+   },
+   "errors": []
+  },
+  {
+   "name": "Right Plane",
+   "type": "RefPlane",
+   "id": 3,
+   "suppressed": false,
+   "parents": [],
+   "subFeatures": [],
+   "plane": {
+    "transform": [
+     0,
+     0,
+     -1,
+     0,
+     1,
+     0,
+     1,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ]
+   },
+   "data": {
+    "object": "IRefPlaneFeatureData",
+    "Type": 0,
+    "Type2": 0
+   },
+   "errors": []
+  },
+  {
+   "name": "Origin",
+   "type": "OriginProfileFeature",
+   "id": 0,
+   "suppressed": false
+  },
+  {
+   "name": "Sketch1",
+   "type": "ProfileFeature",
+   "id": 20,
+   "suppressed": false,
+   "parents": [
+    "Top Plane"
+   ],
+   "subFeatures": [],
+   "sketch": {
+    "is3d": false,
+    "toSketch": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     -1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     0
+    ],
+    "segments": [
+     {
+      "id": "s0_14_0",
+      "type": 0,
+      "kind": "line",
+      "construction": false,
+      "length": 0.06,
+      "start": "p10_0",
+      "end": "p11_0",
+      "infinite": false
+     },
+     {
+      "id": "s0_15_0",
+      "type": 0,
+      "kind": "line",
+      "construction": false,
+      "length": 0.04,
+      "start": "p11_0",
+      "end": "p12_0",
+      "infinite": false
+     },
+     {
+      "id": "s0_16_0",
+      "type": 0,
+      "kind": "line",
+      "construction": false,
+      "length": 0.06,
+      "start": "p12_0",
+      "end": "p13_0",
+      "infinite": false
+     },
+     {
+      "id": "s0_17_0",
+      "type": 0,
+      "kind": "line",
+      "construction": false,
+      "length": 0.04,
+      "start": "p13_0",
+      "end": "p10_0",
+      "infinite": false
+     }
+    ],
+    "relations": [
+     {
+      "type": 4,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_14_0"
+       }
+      ]
+     },
+     {
+      "type": 5,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_15_0"
+       }
+      ]
+     },
+     {
+      "type": 4,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_16_0"
+       }
+      ]
+     },
+     {
+      "type": 5,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_17_0"
+       }
+      ]
+     },
+     {
+      "type": 1,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_14_0"
+       }
+      ],
+      "dimension": {
+       "value": 0.06,
+       "type": 2,
+       "driven": 2,
+       "name": "D5"
+      }
+     },
+     {
+      "type": 1,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 3,
+        "ref": "s0_15_0"
+       }
+      ],
+      "dimension": {
+       "value": 0.04,
+       "type": 2,
+       "driven": 2,
+       "name": "D6"
+      }
+     }
+    ],
+    "contours": [],
+    "points": [
+     {
+      "id": "p10_0",
+      "x": -0.03,
+      "y": -0.02,
+      "z": 0,
+      "type": 1
+     },
+     {
+      "id": "p11_0",
+      "x": 0.03,
+      "y": -0.02,
+      "z": 0,
+      "type": 1
+     },
+     {
+      "id": "p12_0",
+      "x": 0.03,
+      "y": 0.02,
+      "z": 0,
+      "type": 1
+     },
+     {
+      "id": "p13_0",
+      "x": -0.03,
+      "y": 0.02,
+      "z": 0,
+      "type": 1
+     }
+    ]
+   },
+   "errors": []
+  },
+  {
+   "name": "Boss-Extrude1",
+   "type": "Extrusion",
+   "baseType": "Extrusion",
+   "id": 21,
+   "suppressed": false,
+   "parents": [
+    "Sketch1"
+   ],
+   "subFeatures": [
+    {
+     "name": "Sketch1",
+     "type": "ProfileFeature"
+    }
+   ],
+   "after": {
+    "volume": 0.000012,
+    "area": null,
+    "bodies": 1
+   },
+   "data": {
+    "object": "IExtrudeFeatureData2",
+    "IsBossFeature": true,
+    "IsThinFeature": false,
+    "BothDirections": false,
+    "ReverseDirection": false,
+    "FlipSideToCut": false,
+    "FromType": 0,
+    "FromOffsetDistance": 0,
+    "FromOffsetReverse": false,
+    "Merge": true,
+    "GetEndCondition(True)": 0,
+    "GetEndCondition(False)": 0,
+    "GetDepth(True)": 0.005,
+    "GetDepth(False)": 0,
+    "GetDraftWhileExtruding(True)": false,
+    "GetDraftWhileExtruding(False)": false,
+    "GetDraftAngle(True)": 0,
+    "GetDraftAngle(False)": 0,
+    "GetDraftOutward(True)": false,
+    "GetDraftOutward(False)": false,
+    "Contours": null,
+    "FeatureScopeBodies": null
+   },
+   "ends": [],
+   "faces": [],
+   "errors": []
+  },
+  {
+   "name": "Sketch2",
+   "type": "ProfileFeature",
+   "id": 22,
+   "suppressed": false,
+   "parents": [
+    "Boss-Extrude1"
+   ],
+   "subFeatures": [],
+   "sketch": {
+    "is3d": false,
+    "toSketch": [
+     1,
+     0,
+     0,
+     0,
+     0,
+     1,
+     0,
+     -1,
+     0,
+     0,
+     0,
+     -0.005,
+     1,
+     0,
+     0,
+     0
+    ],
+    "segments": [
+     {
+      "id": "s1_11_0",
+      "type": 1,
+      "kind": "arc",
+      "construction": false,
+      "length": 0.01884955592153876,
+      "start": null,
+      "end": null,
+      "centre": "p10_0",
+      "radius": 0.003,
+      "dir": 1,
+      "circle": true,
+      "normal": [
+       0,
+       0,
+       1
+      ]
+     },
+     {
+      "id": "s1_13_0",
+      "type": 1,
+      "kind": "arc",
+      "construction": false,
+      "length": 0.01884955592153876,
+      "start": null,
+      "end": null,
+      "centre": "p12_0",
+      "radius": 0.003,
+      "dir": 1,
+      "circle": true,
+      "normal": [
+       0,
+       0,
+       1
+      ]
+     }
+    ],
+    "relations": [
+     {
+      "type": 15,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 4,
+        "ref": "s1_11_0"
+       }
+      ],
+      "dimension": {
+       "value": 0.006,
+       "type": 6,
+       "driven": 2,
+       "name": "D1"
+      }
+     },
+     {
+      "type": 15,
+      "suppressed": false,
+      "entities": [
+       {
+        "type": 4,
+        "ref": "s1_13_0"
+       }
+      ],
+      "dimension": {
+       "value": 0.006,
+       "type": 6,
+       "driven": 2,
+       "name": "D2"
+      }
+     }
+    ],
+    "contours": [],
+    "points": [
+     {
+      "id": "p10_0",
+      "x": -0.02,
+      "y": 0,
+      "z": 0,
+      "type": 1
+     },
+     {
+      "id": "p12_0",
+      "x": 0.02,
+      "y": 0,
+      "z": 0,
+      "type": 1
+     }
+    ]
+   },
+   "errors": []
+  },
+  {
+   "name": "Cut-Extrude1",
+   "type": "ICE",
+   "baseType": "Cut",
+   "id": 23,
+   "suppressed": false,
+   "parents": [
+    "Sketch2"
+   ],
+   "subFeatures": [
+    {
+     "name": "Sketch2",
+     "type": "ProfileFeature"
+    }
+   ],
+   "after": {
+    "volume": 0.000011717256661176919,
+    "area": null,
+    "bodies": 1
+   },
+   "data": {
+    "object": "IExtrudeFeatureData2",
+    "IsBossFeature": false,
+    "IsThinFeature": false,
+    "BothDirections": false,
+    "ReverseDirection": false,
+    "FlipSideToCut": false,
+    "FromType": 0,
+    "FromOffsetDistance": 0,
+    "FromOffsetReverse": false,
+    "Merge": true,
+    "GetEndCondition(True)": 1,
+    "GetEndCondition(False)": 0,
+    "GetDepth(True)": 0,
+    "GetDepth(False)": 0,
+    "GetDraftWhileExtruding(True)": false,
+    "GetDraftWhileExtruding(False)": false,
+    "GetDraftAngle(True)": 0,
+    "GetDraftAngle(False)": 0,
+    "GetDraftOutward(True)": false,
+    "GetDraftOutward(False)": false,
+    "Contours": null,
+    "FeatureScopeBodies": null
+   },
+   "ends": [],
+   "faces": [],
+   "errors": []
+  },
+  {
+   "name": "Fillet1",
+   "type": "Fillet",
+   "id": 24,
+   "suppressed": false,
+   "parents": [
+    "Cut-Extrude1"
+   ],
+   "subFeatures": [],
+   "after": {
+    "volume": 0.000011700088514248714,
+    "area": null,
+    "bodies": 1
+   },
+   "data": {
+    "object": "ISimpleFilletFeatureData2",
+    "Type": 0,
+    "DefaultRadius": 0.002,
+    "IsMultipleRadius": false,
+    "PropagateToTangentFaces": true,
+    "AsymmetricFillet": false,
+    "Edges": [
+     {
+      "kind": "edge",
+      "point": [
+       -0.03,
+       0.0025,
+       -0.02
+      ],
+      "start": null,
+      "end": null,
+      "curve": "line",
+      "params": null
+     },
+     {
+      "kind": "edge",
+      "point": [
+       0.03,
+       0.0025,
+       -0.02
+      ],
+      "start": null,
+      "end": null,
+      "curve": "line",
+      "params": null
+     },
+     {
+      "kind": "edge",
+      "point": [
+       0.03,
+       0.0025,
+       0.02
+      ],
+      "start": null,
+      "end": null,
+      "curve": "line",
+      "params": null
+     },
+     {
+      "kind": "edge",
+      "point": [
+       -0.03,
+       0.0025,
+       0.02
+      ],
+      "start": null,
+      "end": null,
+      "curve": "line",
+      "params": null
+     }
+    ],
+    "GetFaces(0)": null,
+    "Features": null,
+    "Loops": null
+   },
+   "errors": []
+  }
+ ],
+ "log": [
+  "Jarvis history export 1.0 (fixture written by fixtures.test-helper.ts)"
+ ]
+}
