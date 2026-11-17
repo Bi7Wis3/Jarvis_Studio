@@ -661,7 +661,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                         </mesh>
                     )}
                     <group position={part.position} rotation={rotation}>
-                        <CosmeticMarks geometry={bodyDisplay.marks} dimmed={dimmed} />
+                        <CosmeticMarks geometry={bodyDisplay.marks} dimmed={dimmed} color={part.material.color} />
                         {bodyDisplay.highlight && <PickOverlay faces={bodyDisplay.highlight} edges={null} strong={false} />}
                     </group>
                     {edges && !dimmed && (selected || (kernel && (look.edges !== 'none' || sketching))) && (

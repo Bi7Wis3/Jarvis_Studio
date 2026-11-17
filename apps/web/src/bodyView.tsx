@@ -200,24 +200,34 @@ export function useBodyDisplay(part: Pick<Part, 'id' | 'instanceOf'>, kernel: Ke
     return useMemo(() => ({ ...display, highlight }), [display, highlight]);
 }
 
-/** Where cosmetic threads run: dashed marks over the model, and faintly where they lie inside it. */
-export function CosmeticMarks({ geometry, dimmed }: { geometry: BufferGeometry | null; dimmed: boolean }) {
+/**
+ * Where cosmetic threads run: a helix on the hole's or shaft's surface, hidden behind the model like its edges, in a
+ * colour that stands out from the part's own (near black on a light part, near white on a dark one).
+ */
+export function CosmeticMarks({ geometry, dimmed, color }: { geometry: BufferGeometry | null; dimmed: boolean; color: string }) {
     if (!geometry || dimmed) {
         return null;
     }
     return (
-        <>
-            <lineSegments geometry={geometry} raycast={noRaycast}>
-                <lineBasicMaterial color={MARK_COLOR} transparent opacity={0.9} />
-            </lineSegments>
-            <lineSegments geometry={geometry} raycast={noRaycast} renderOrder={2}>
-                <lineBasicMaterial color={MARK_COLOR} transparent opacity={0.22} depthTest={false} depthWrite={false} />
-            </lineSegments>
-        </>
+        <lineSegments geometry={geometry} raycast={noRaycast}>
+            <lineBasicMaterial color={markColor(color)} />
+        </lineSegments>
     );
 }
 
-const MARK_COLOR = '#e8b04a';
+/** A mark colour that stands out from a part of colour `surface` (#rrggbb): dark on light parts, light on dark ones. */
+export function markColor(surface: string): string {
+    const m = /^#?([0-9a-f]{6})$/i.exec(surface.trim());
+    if (!m) {
+        return MARK_DARK;
+    }
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16) / 255)
+        .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.18 ? MARK_DARK : MARK_LIGHT;
+}
+
+const MARK_DARK = '#141414';
+const MARK_LIGHT = '#f0f0f0';
 /** Opacity of a see-through body (SolidWorks makes a transparent body about three quarters clear). */
 export const SEE_THROUGH = 0.28;
 const noRaycast = () => null;
