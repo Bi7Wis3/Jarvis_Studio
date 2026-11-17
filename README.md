@@ -36,7 +36,9 @@ Design notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The order of w
   and group them in folders. Parts move within the freedom their mates leave.
 - **Project files:** File > Save and Save As write a `.jarvis` file wherever you like, holding the design with every
   imported file and picture it uses and a preview picture; File > Open brings one back as a project. The format is in
-  [docs/FILE_FORMAT.md](docs/FILE_FORMAT.md). Inside the studio every change is saved as you work.
+  [docs/FILE_FORMAT.md](docs/FILE_FORMAT.md). Inside the studio every change is saved as you work. To see a whole
+  design, open [examples/Skateboard.jarvis](examples/Skateboard.jarvis): a street skateboard with a maple deck, trucks,
+  wheels on 608 bearings and the screws and nuts that hold it together.
 - **Import:**
   - STEP, IGES, STL and .sldprt parts (read from the file's own Parasolid data);
   - feature histories exported from another CAD program with the macro in `tools/`, rebuilt as features, with
