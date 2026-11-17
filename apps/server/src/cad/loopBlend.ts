@@ -633,7 +633,7 @@ function periodicCurve(oc: OC, r: <T>(x: T) => T, points: V[], params: number[])
     params.forEach((u, i) => ua.SetValue(i + 1, u));
     const pts = r(new oc.NCollection_HArray1_gp_Pnt(pa));
     const ps = r(new oc.NCollection_HArray1_double(ua));
-    const interp = r(new oc.GeomAPI_Interpolate(pts, ps, true, 1e-9));
+    const interp = r(new oc.GeomAPI_Interpolate(pts, ps, true, 1e-15));
     interp.Perform();
     if (!interp.IsDone()) {
         throw new LoopBlendError('could not run a curve through the blend sections');
@@ -856,6 +856,16 @@ function build(oc: OC, r: <T>(x: T) => T, shape: Shape3D, loop: Edge[], blend: L
         return chamferSection(oc, s, sideA, sideB, refIsA ? first : second, refIsA ? second : first);
     };
     const sections = st.map(sectionOf);
+    // Stations whose section is the one before's (where the section turns about a corner the contact points may stay
+    // put) would give the curves through them two equal points: drop them.
+    for (let i = sections.length - 1; i > 0; i--) {
+        const x = sections[i];
+        const y = sections[i - 1];
+        if (len(sub(x.a, y.a)) + len(sub(x.b, y.b)) < 1e-7) {
+            sections.splice(i, 1);
+            st.splice(i, 1);
+        }
+    }
 
     // Parameters: mean chord length of the two contact curves (the rim itself can turn much faster than they do).
     // (Where a contact curve crosses a crease between two faces of one side it has a small kink, which the curves
@@ -1061,11 +1071,14 @@ function build(oc: OC, r: <T>(x: T) => T, shape: Shape3D, loop: Edge[], blend: L
             });
         }
     }
-    // The strips must be narrow bands along the loop, no more than about the blend's width.
+    // The strips must be narrow bands along the loop, no more than about the blend's width: each between the loop and a
+    // contact curve, about the quadrilaterals between consecutive stations (the contact curve can run much longer than
+    // the loop where the faces meet at a knife edge and the ball sits far from it).
     let expected = 0;
+    const quad = (p0: V, p1: V, q1: V, q0: V): number => len(cross(sub(q1, p0), sub(q0, p1))) / 2;
     for (let i = 0; i < st.length; i++) {
-        const step = len(sub(st[(i + 1) % st.length].p, st[i].p));
-        expected += step * (len(sub(sections[i].a, st[i].p)) + len(sub(sections[i].b, st[i].p)));
+        const j = (i + 1) % st.length;
+        expected += quad(st[i].p, st[j].p, sections[j].a, sections[i].a) + quad(st[i].p, st[j].p, sections[j].b, sections[i].b);
     }
     const stripArea = [...strip].reduce((sum, i) => sum + measureArea(pieces[i]), 0);
     if (strip.size === pieces.length || stripArea > 1.5 * expected + 1e-6) {

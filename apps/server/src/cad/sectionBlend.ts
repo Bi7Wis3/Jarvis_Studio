@@ -685,12 +685,14 @@ function sectionAt(oc: OC, A: Probe, B: Probe, o: V, t: V, p0: V, spec: Spec, co
     let pt = t;
     if (c) {
         const n = unit(cross(sub(a.q, c), sub(b.q, c)));
-        pt = dot(n, t) > 0 ? n : mul(n, -1);
-        const q = cornerIn(oc, A, B, c, pt, p);
-        if (!q) {
-            throw new SectionBlendError(`the faces could not be followed at ${fmtPoint(p)}`, p);
+        const tilted = dot(n, t) > 0 ? n : mul(n, -1);
+        // Where the faces meet at a knife edge that plane can lean far off the edge's square; then the sides are laid in
+        // the station's plane (only the caps at an open chain's ends need the outline flat).
+        const q = cornerIn(oc, A, B, c, tilted, p);
+        if (q && len(sub(q, p)) < 4 * spec.radius) {
+            po = q;
+            pt = tilted;
         }
-        po = q;
     }
     const ga = footOn(oc, A, po);
     const gb = footOn(oc, B, po);
@@ -1357,6 +1359,30 @@ export function overflowsFace(shape: Shape3D, edges: Edge[], blend: SectionBlend
     }
 }
 
+/**
+ * Fillets on chains that meet at a vertex turning only a little (a face edge ending on the picked edges bends them
+ * there): SolidWorks rolls the ball over the face edge; made chain by chain they would meet in a corner that leaves
+ * material standing, so they are refused. (Where chains meet at a real corner, a box's, they meet in that corner.)
+ */
+function refuseRollOver(chains: Chain[]): void {
+    const ends = chains.flatMap((c, i) => c.ends.map((e) => ({ i, ...e })));
+    for (const a of ends) {
+        for (const b of ends) {
+            if (a.i < b.i && len(sub(a.at, b.at)) < 1e-5) {
+                const turn = Math.acos(Math.max(-1, Math.min(1, -dot(a.out, b.out))));
+                if (turn < ROLL_OVER_CORNER) {
+                    throw new SectionBlendError(`the fillet would have to roll over the face edge that ends on the selected `
+                        + `edges at ${fmtPoint(a.at)}, where they turn by ${deg(turn)}°: blends from sections do not make that `
+                        + 'corner', a.at);
+                }
+            }
+        }
+    }
+}
+
+/** Chains meeting at a vertex turning by less than this make a corner a fillet should roll through. */
+const ROLL_OVER_CORNER = 45 * Math.PI / 180;
+
 /** The tools of one chain's blend. */
 function chainTool(oc: OC, r: R, shape: Shape3D, chain0: Chain, blend: SectionBlend): Tool {
     let chain = chain0;
@@ -1797,6 +1823,9 @@ export function sectionBlend(shape: Shape3D, edges: Edge[], blend: SectionBlend,
     const r = keep as R;
     try {
         const chains = chainsOf(oc, r, shape, edges);
+        if (blend.kind === 'fillet') {
+            refuseRollOver(chains);
+        }
         const size = blend.kind === 'fillet' ? blend.radius : 'distances' in blend ? Math.max(...blend.distances) : blend.distance;
         const fuzzy = Math.min(1e-5, 1e-3 * size);
         // Chamfers in one go (their solids meet the faces at an angle, so they may overlap at a corner); fillets chain

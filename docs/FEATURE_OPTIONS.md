@@ -98,7 +98,11 @@ Fillet
   end runs out where the faces there fall away, and stops against a wall (flat or curved) or, at an inside corner,
   against the face the corner ends on; a spline face that ends short of the blend is carried on along its tangents.
   Tried before that: a closed loop rolled section by section (loopBlend.ts), straight edges between flat faces run
-  out into an earlier smaller blend (runoutBlend.ts). Edges an earlier step left flagged as smooth joins where the
+  out into an earlier smaller blend (runoutBlend.ts). A loop such as a hole's rim that crosses the edge between two
+  faces of the surface the hole comes out through has its round carried across onto the next face, also where the
+  faces meet at a knife edge; where the rim bends so sharply there that the round would fold over itself on the inside
+  of the bend (a mitre), it is refused with the place. On an open chain the section blend does not yet roll a fillet
+  over such a face edge (refused with the place). Edges an earlier step left flagged as smooth joins where the
   faces meet at an angle (the kernel refuses those) are cleared first (edgeContinuity.ts); edges along which the
   faces really join smoothly (an earlier fillet's edges, seams in a smooth surface) are refused with that reason. A
   blend wider than a face beside the edge is refused at once as too large. A result of the kernel's that takes

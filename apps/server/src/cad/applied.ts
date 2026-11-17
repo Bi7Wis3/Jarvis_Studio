@@ -307,10 +307,40 @@ function blendWithFallbacks(shape: Shape3D, edges: Edge[], label: string, kernel
             + 'faces next to them; try a smaller size or fewer edges', true);
     }
     const angles = faceAngles(shape, edges);
+    const meet = angles ? ` (along these edges the faces meet at ${round1(angles[0])}° to ${round1(angles[1])}°)` : '';
+    // Where the edge of another face ends on the selected edges, that is the likely cause: name the place.
+    const crossings = faceEdgeEnds(shape, edges);
+    if (crossings.length) {
+        const at = crossings.slice(0, 2).map((p) => `(${p.map((x) => Math.round(x * 1000) / 1000).join(', ')})`).join(' and ');
+        throw new BlendError(`${label} failed on the selected edges (${ocMessage(first)}${also}). The edge between two of the `
+            + `faces beside them ends on them at ${at}, where the blend has to pass from one face to the next${meet}; it `
+            + 'could not be carried across there, at a tenth of the size either. Try the edges on either side of that point '
+            + 'as separate fillets, or a smaller size', false);
+    }
     throw new BlendError(`${label} failed on the selected edges (${ocMessage(first)}${also}), and OpenCascade cannot make `
-        + `it here at a tenth of the size either, so the size is not the cause${angles ? `: along these edges the faces meet `
-        + `at ${round1(angles[0])}° to ${round1(angles[1])}°` : ''}. Blends where faces meet nearly tangentially or at a `
-        + 'knife edge, or where another face edge ends on the selected edges there, are the usual trouble; try picking fewer edges', false);
+        + `it here at a tenth of the size either, so the size is not the cause${meet}. Blends where faces meet nearly `
+        + 'tangentially or at a knife edge are the usual trouble; try picking fewer edges', false);
+}
+
+/**
+ * Points where two of the edges meet and the edge of another face ends too (the faces beside the edges change there),
+ * found by where the edges' ends lie.
+ */
+function faceEdgeEnds(shape: Shape3D, edges: Edge[]): V[] {
+    const ends = (e: Edge): V[] => [vecOf(e.pointAt(0)), vecOf(e.pointAt(1))];
+    const picked = edges.flatMap(ends);
+    const out: V[] = [];
+    for (const p of picked) {
+        if (out.some((q) => dist(p, q) < 1e-6) || picked.filter((q) => dist(p, q) < 1e-6).length !== 2) {
+            continue;
+        }
+        const others = shape.edges.filter((e) => !edges.some((x) => x.isSame(e)) && ends(e).some((q) => dist(p, q) < 1e-6));
+        // A seam of one face (both sides the same face) does not count.
+        if (others.some((e) => shape.faces.filter((f) => f.edges.some((x) => x.isSame(e))).length === 2)) {
+            out.push(p);
+        }
+    }
+    return out;
 }
 
 /**

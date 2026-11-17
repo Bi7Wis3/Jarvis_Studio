@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import opencascade from 'replicad-opencascadejs';
 import { cast, getOC, makeBox, makeCylinder, setOC, type Edge, type Shape3D } from 'replicad';
-import { strays } from './applied.js';
+import { blendTap, filletEdges, strays, type BlendWay } from './applied.js';
 import { resolveEdges } from './refs.js';
 import { sectionBlend, type SectionBlendInfo } from './sectionBlend.js';
 
@@ -233,6 +233,58 @@ describe('sectionBlend', () => {
         expect(Math.abs(change(plate, made) - change(plate, occ))).toBeLessThan(1e-3 * Math.abs(change(plate, occ)));
         expect(info.error!).toBeLessThan(1e-3);
         void oc;
+    }, SLOW);
+});
+
+/**
+ * A block whose top is a steep slope (rising 2 in 1 along x) folded gently along y = 0 (the two top faces rise by
+ * `fold` per mm away from it), with a vertical hole of radius 2 through the fold: the hole's rim crosses the edge
+ * between the two top faces twice, and on its downhill side the faces meet at a knife edge (as the owner's Fillet7).
+ */
+function holeThroughFold(fold: number): { body: Shape3D; rim: Edge[] } {
+    const oc = getOC() as OC;
+    const under = (k: number, y0: number, y1: number): Shape3D => {
+        const plane = new oc.gp_Pln(new oc.gp_Pnt(0, 0, 20), new oc.gp_Dir(-2, -k, 1));
+        const half = cast(new oc.BRepPrimAPI_MakeHalfSpace(new oc.BRepBuilderAPI_MakeFace(plane).Face(), new oc.gp_Pnt(0, 0, -100)).Solid()) as Shape3D;
+        return makeBox([-8, y0, -20], [8, y1, 60]).intersect(half) as Shape3D;
+    };
+    const body = (under(-fold, -8, 0).fuse(under(fold, 0, 8)) as Shape3D).cut(makeCylinder(2, 100, [0, 0, -30], [0, 0, 1])) as Shape3D;
+    return { body, rim: edgesWhere(body, (m, e) => Math.abs(Math.hypot(m[0], m[1]) - 2) < 1e-3 && m[2] > -10 && e.geomType !== 'LINE') };
+}
+
+describe('fillets round a hole whose rim crosses a face edge', () => {
+    it('carries the round across the edge between the two top faces (the loop blend), where OpenCascade fails', () => {
+        const { body, rim } = holeThroughFold(0.03);
+        expect(rim).toHaveLength(2);
+        let way: BlendWay | null = null;
+        blendTap.made = (w) => {
+            way = w;
+        };
+        try {
+            const made = filletEdges(body, rim, { radius: 0.5 });
+            expect(way).toBe('loop');
+            expect(made.solids).toHaveLength(1);
+            expect(leaves(body, rim, made, 0.5)).toBeNull();
+            // The rim is about 2 pi 2.2 long; the round takes away at most what a 20 degree knife edge would.
+            const taken = -change(body, made);
+            expect(taken).toBeGreaterThan(0.25 * 0.25 * (1 - Math.PI / 4) * 13);
+            expect(taken).toBeLessThan(0.25 * (1 / Math.tan(Math.PI / 18) - (Math.PI - Math.PI / 9) / 2) * 15);
+        } finally {
+            blendTap.made = null;
+        }
+    }, SLOW);
+
+    it('says where and why when the round cannot be carried across', () => {
+        // A sharper fold: on the inside of the rim's bend at the face edge the round would fold over itself.
+        const { body, rim } = holeThroughFold(0.1);
+        let message = '';
+        try {
+            filletEdges(body, rim, { radius: 1 });
+        } catch (e) {
+            message = (e as Error).message;
+        }
+        expect(message).toMatch(/face edge/);
+        expect(message).not.toMatch(/size is not the cause/);
     }, SLOW);
 });
 
