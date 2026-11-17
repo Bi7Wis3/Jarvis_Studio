@@ -4,14 +4,19 @@
 import { create } from 'zustand';
 import type { ExtrudeDirection, ExtrudeEnd, RevolveType } from '@jarvis/core';
 import {
-    defaultSettings, maskKey, normaliseSettings, type AiAuth, type Effort, type SettingsCategory, type StudioSettings,
-    type StudioSettingsView, type ToolDefaultValue,
+    COMPATIBLE_PRESET_IDS, defaultSettings, maskKey, normaliseSettings, type AiAuth, type AiProvider, type CompatiblePreset, type Effort,
+    type SettingsCategory, type StudioSettings, type StudioSettingsView, type ToolDefaultValue,
 } from '@jarvis/core/settings';
 
 export type { SettingsCategory, StudioSettings, StudioSettingsView } from '@jarvis/core/settings';
 
-/** A patch of whole categories; `ai.apiKey` sets the key ('' removes it), absent keeps it. */
-export type OptionsPatch = Partial<Omit<StudioSettings, 'ai'>> & { ai?: StudioSettings['ai'] & { apiKey?: string } };
+/**
+ * A patch of whole categories; `ai.apiKey` sets the Anthropic key ('' removes it), absent keeps it; `ai.compatibleKeys`
+ * the same for each OpenAI-compatible service named.
+ */
+export type OptionsPatch = Partial<Omit<StudioSettings, 'ai'>> & {
+    ai?: StudioSettings['ai'] & { apiKey?: string; compatibleKeys?: Partial<Record<CompatiblePreset, string>> };
+};
 
 interface OptionsState {
     /** The settings in force (as last saved on the server, or the defaults until they have loaded). */
@@ -29,10 +34,19 @@ export function viewOf(settings: StudioSettings, apiKey = ''): StudioSettingsVie
 /** The settings view from a server answer: the settings normalised, the key status as sent. */
 export function viewFromServer(raw: unknown): StudioSettingsView {
     const settings = normaliseSettings(raw);
-    const ai = (raw && typeof raw === 'object' ? (raw as { ai?: { apiKeySet?: unknown; apiKeyMasked?: unknown } }).ai : undefined) ?? {};
+    const ai = (raw && typeof raw === 'object'
+        ? (raw as { ai?: { apiKeySet?: unknown; apiKeyMasked?: unknown; compatibleKeys?: unknown } }).ai : undefined) ?? {};
+    const masked = ai.compatibleKeys && typeof ai.compatibleKeys === 'object' ? ai.compatibleKeys as Record<string, unknown> : {};
+    const compatibleKeys = Object.fromEntries(Object.entries(masked)
+        .filter(([preset, m]) => COMPATIBLE_PRESET_IDS.includes(preset as CompatiblePreset) && typeof m === 'string' && m !== ''));
     return {
         ...settings,
-        ai: { ...settings.ai, apiKeySet: ai.apiKeySet === true, apiKeyMasked: typeof ai.apiKeyMasked === 'string' ? ai.apiKeyMasked : '' },
+        ai: {
+            ...settings.ai,
+            apiKeySet: ai.apiKeySet === true,
+            apiKeyMasked: typeof ai.apiKeyMasked === 'string' ? ai.apiKeyMasked : '',
+            compatibleKeys: compatibleKeys as Partial<Record<CompatiblePreset, string>>,
+        },
     };
 }
 
@@ -93,9 +107,10 @@ export interface AiTestResult {
     models?: { value: string; name: string; efforts?: Effort[] }[];
 }
 
-/** Test connection: one short request to Claude with what the form shows (a typed key is used, not saved). */
-export async function testAiConnection(form: { auth: AiAuth; apiKey?: string; model: string; effort: Effort },
-    fetcher: Fetch = http): Promise<AiTestResult> {
+/** Test connection: one short request with what the form shows (a typed key is used, not saved). */
+export async function testAiConnection(form: {
+    provider?: AiProvider; auth?: AiAuth; apiKey?: string; model: string; effort?: Effort; preset?: CompatiblePreset; baseUrl?: string;
+}, fetcher: Fetch = http): Promise<AiTestResult> {
     try {
         const response = await fetcher('/api/settings/ai-test', {
             method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(form),

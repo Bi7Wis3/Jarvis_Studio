@@ -5,7 +5,8 @@ Every phase leaves the app usable, and every feature stays callable both from th
 
 Out of scope: team and collaboration features (sharing, comments, multi-user editing, PDM, cloud data management).
 This is a single-user local app: projects, exports, tool libraries and CAM data stay on this machine, with no cloud
-storage, sync, rendering or computation. (Jarvis itself still talks to Claude through Claude Code.)
+storage, sync, rendering or computation. (Jarvis itself talks to Claude through Claude Code, or to another provider
+with its API key when the owner picks one.)
 
 Status key: [x] done, [~] partial, [ ] not started.
 

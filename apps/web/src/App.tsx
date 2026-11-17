@@ -15,6 +15,7 @@ import { Hud } from './Hud';
 import { ViewMenu } from './viewMenu';
 import { OptionsPage } from './OptionsPage';
 import { useOptions } from './options';
+import { qualityTitle } from './aiModels';
 
 const QUICK_ACTIONS: { label: string; action: ViewAction }[] = [
     { label: 'Explode', action: 'explode' },
@@ -41,8 +42,7 @@ function StatusChip() {
                         type="button"
                         className={quality === q ? 'on' : ''}
                         onClick={() => setQuality(q)}
-                        title={q === 'fast' ? `${ai.fast.model} at ${ai.fast.effort} effort: quick`
-                            : `${ai.best.model} at ${ai.best.effort} effort: slower, better designs`}
+                        title={qualityTitle(ai, q)}
                     >
                         {q === 'fast' ? 'Fast' : 'Best'}
                     </button>

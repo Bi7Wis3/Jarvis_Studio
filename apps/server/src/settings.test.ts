@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
@@ -141,6 +141,65 @@ describe('the API key', () => {
                 expect(readFileSync(join(dir, f), 'utf8')).not.toContain(KEY);
             }
         }
+    });
+});
+
+describe('the keys of other providers', () => {
+    const OPENAI = 'sk-FAKE-openai-key-for-tests-1111';
+    const GROQ = 'gsk_FAKE-groq-key-for-tests-2222';
+
+    it('keeps one key per service, masked to the web, each kept when switching between them', () => {
+        const store = new SettingsStore(file, DEFAULT_SETTINGS);
+        store.update({ ai: { provider: 'openai-compatible', compatible: { preset: 'openai' }, compatibleKeys: { openai: ` ${OPENAI} ` } } });
+        store.update({ ai: { compatible: { preset: 'groq' }, compatibleKeys: { groq: GROQ } } });
+        store.update({ ai: { compatible: { preset: 'openai' } } });
+        expect(store.ai().compatibleKeys).toEqual({ openai: OPENAI, groq: GROQ });
+        const view = store.view();
+        expect(view.ai.compatibleKeys).toEqual({ openai: '••••••••1111', groq: '••••••••2222' });
+        expect(JSON.stringify(view)).not.toContain(OPENAI);
+        expect(JSON.stringify(store.get())).not.toContain(GROQ);
+        const raw = JSON.parse(readFileSync(file, 'utf8'));
+        expect(raw.secrets.compatibleKeys).toEqual({ openai: OPENAI, groq: GROQ });
+        expect(JSON.stringify(raw.settings)).not.toContain(OPENAI);
+        expect(new SettingsStore(file, DEFAULT_SETTINGS).ai().compatibleKeys).toEqual({ openai: OPENAI, groq: GROQ });
+    });
+
+    it('removes a key with an empty one, refuses a bad one or an unknown service, and keeps them on reset', () => {
+        const store = new SettingsStore(file, DEFAULT_SETTINGS);
+        store.update({ ai: { compatibleKeys: { openai: OPENAI, groq: GROQ } } });
+        expect(() => store.update({ ai: { compatibleKeys: { openai: 'two words' } } })).toThrow(SettingsError);
+        expect(() => store.update({ ai: { compatibleKeys: { skynet: OPENAI } } })).toThrow(SettingsError);
+        expect(() => store.update({ ai: { compatibleKeys: 'x' } })).toThrow(SettingsError);
+        store.reset(['ai']);
+        expect(store.ai().compatibleKeys).toEqual({ openai: OPENAI, groq: GROQ });
+        store.update({ ai: { compatibleKeys: { groq: '' } } });
+        expect(store.ai().compatibleKeys).toEqual({ openai: OPENAI });
+        expect(readFileSync(file, 'utf8')).not.toContain(GROQ);
+    });
+
+    it('loads a file from before other providers unchanged', () => {
+        mkdirSync(join(dir, '.studio'), { recursive: true });
+        writeFileSync(file, JSON.stringify({
+            version: 1,
+            settings: { ai: { auth: 'apiKey', fast: { model: 'haiku', effort: 'low' }, best: { model: 'fable', effort: 'high' } } },
+            secrets: { anthropicApiKey: KEY },
+        }), { mode: 0o600 });
+        const store = new SettingsStore(file, DEFAULT_SETTINGS);
+        expect(store.ai()).toMatchObject({
+            provider: 'claude', auth: 'apiKey', apiKey: KEY, compatibleKeys: {},
+            fast: { model: 'haiku', effort: 'low' }, best: { model: 'fable', effort: 'high' },
+        });
+        expect(store.view().ai.compatibleKeys).toEqual({});
+    });
+
+    it('tells when any key changes without showing one', () => {
+        const store = new SettingsStore(file, DEFAULT_SETTINGS);
+        const before = store.keysStamp();
+        store.update({ general: { confirmDelete: false } });
+        expect(store.keysStamp()).toBe(before);
+        store.update({ ai: { compatibleKeys: { openai: OPENAI } } });
+        expect(store.keysStamp()).not.toBe(before);
+        expect(store.keysStamp()).not.toContain(OPENAI);
     });
 });
 

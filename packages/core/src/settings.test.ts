@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     applyPatch, DEFAULT_SETTINGS, defaultSettings, LIGHTING_PRESETS, lightCount, lightPoint, maskKey, MAX_LIGHTS, MAX_RECENT_FOLDERS,
     normaliseSettings, placedLight, plainData, resetCategory, sphericalOf, sphericalPoint, validModel, withPreset,
+    COMPATIBLE_PRESETS, compatibleBaseUrl, compatibleModels, enabledSkillIds, validBaseUrl, validCompatibleModel, validSkillId,
 } from './settings';
 
 describe('normaliseSettings', () => {
@@ -18,7 +19,72 @@ describe('normaliseSettings', () => {
         });
         expect(s.units).toEqual({ lengthDecimals: 8, angleDecimals: 0, angleUnit: 'deg', formDecimals: 3 });
         expect(s.display).toMatchObject({ meshQuality: 'normal', edgeColor: '#abcdef', edgeOpacity: 1, transition: 'normal' });
-        expect(s.ai).toEqual({ auth: 'local', fast: DEFAULT_SETTINGS.ai.fast, best: { model: 'claude-opus-5-5', effort: 'max' } });
+        expect(s.ai).toEqual({
+            ...DEFAULT_SETTINGS.ai, auth: 'local', fast: DEFAULT_SETTINGS.ai.fast, best: { model: 'claude-opus-5-5', effort: 'max' },
+        });
+    });
+
+    it('loads an AI section from before other providers as Claude, unchanged', () => {
+        const old = { auth: 'apiKey', fast: { model: 'haiku', effort: 'low' }, best: { model: 'fable', effort: 'high' } };
+        expect(normaliseSettings({ ai: old }).ai).toEqual({ ...old, provider: 'claude', compatible: { preset: 'openai', baseUrl: '', models: {} } });
+    });
+
+    it('keeps the OpenAI-compatible service, a sound base URL and each preset its own model ids', () => {
+        const ai = normaliseSettings({
+            ai: {
+                provider: 'openai-compatible',
+                compatible: {
+                    preset: 'custom',
+                    baseUrl: ' http://192.168.1.20:8080/v1/ ',
+                    models: {
+                        openrouter: { fast: 'anthropic/claude-sonnet-4', best: ' openai/gpt-5 ' },
+                        ollama: { fast: 'qwen3:8b', best: 'rm -rf /' },
+                        nowhere: { fast: 'x', best: 'y' },
+                    },
+                },
+            },
+        }).ai;
+        expect(ai.provider).toBe('openai-compatible');
+        expect(ai.compatible).toEqual({
+            preset: 'custom',
+            baseUrl: 'http://192.168.1.20:8080/v1',
+            models: { openrouter: { fast: 'anthropic/claude-sonnet-4', best: 'openai/gpt-5' }, ollama: { fast: 'qwen3:8b', best: '' } },
+        });
+        expect(compatibleBaseUrl(ai.compatible)).toBe('http://192.168.1.20:8080/v1');
+        expect(compatibleBaseUrl(ai.compatible, 'groq')).toBe('https://api.groq.com/openai/v1');
+        expect(compatibleModels(ai.compatible, 'gemini')).toEqual({ fast: '', best: '' });
+        const bad = normaliseSettings({ ai: { provider: 'skynet', compatible: { preset: 'nope', baseUrl: 'ftp://x', models: [] } } }).ai;
+        expect(bad).toMatchObject({ provider: 'claude', compatible: { preset: 'openai', baseUrl: '', models: {} } });
+    });
+
+    it('keeps the skills that are on as valid ids, each once, and leaves them absent when none are named', () => {
+        expect('skills' in normaliseSettings({ ai: { auth: 'local' } }).ai).toBe(false);
+        expect('skills' in DEFAULT_SETTINGS.ai).toBe(false);
+        expect(normaliseSettings({ ai: { skills: ['jarvis:manage', 'own:gears', 'own:gears', 'no colon', 7, 'x:../../etc'] } }).ai.skills)
+            .toEqual(['jarvis:manage', 'own:gears']);
+        expect(normaliseSettings({ ai: { skills: [] } }).ai.skills).toEqual([]);
+        const found = [{ id: 'jarvis:manage' }, { id: 'own:gears' }];
+        expect(enabledSkillIds(found, undefined)).toEqual(['jarvis:manage', 'own:gears']);
+        expect(enabledSkillIds(found, ['own:gears', 'own:gone'])).toEqual(['own:gears']);
+        expect(validSkillId('jarvis:manage')).toBe(true);
+        expect(validSkillId('manage')).toBe(false);
+    });
+
+    it('takes only http and https base URLs without credentials or queries', () => {
+        expect(validBaseUrl('https://api.openai.com/v1')).toBe(true);
+        expect(validBaseUrl('http://localhost:11434/v1')).toBe(true);
+        for (const url of ['localhost:1234/v1', 'file:///etc/passwd', 'https://user:pw@example.com/v1', 'https://example.com/v1?key=1', 'javascript:alert(1)', 7]) {
+            expect(validBaseUrl(url)).toBe(false);
+        }
+        expect(validCompatibleModel('hf.co/someone/Model-GGUF:Q4_K_M')).toBe(true);
+        expect(validCompatibleModel('two words')).toBe(false);
+    });
+
+    it('lists every preset with a base URL, Custom alone without one', () => {
+        for (const preset of COMPATIBLE_PRESETS) {
+            expect(preset.id === 'custom' ? preset.baseUrl === '' : validBaseUrl(preset.baseUrl)).toBe(true);
+        }
+        expect(COMPATIBLE_PRESETS.filter((p) => p.local).map((p) => p.id)).toEqual(['ollama', 'lmstudio']);
     });
 
     it('keeps up to the light limit with unique ids', () => {

@@ -46,6 +46,11 @@ function ago(at: number): string {
     return minutes < 60 ? `${minutes}m` : `${Math.round(minutes / 60)}h`;
 }
 
+/** A running request's part builders (subagents Jarvis delegates to), or null when it has none. */
+export function buildersNote(entry: ActivityEntry): string | null {
+    return entry.state === 'running' && entry.builders ? `with ${entry.builders} part builder${entry.builders === 1 ? '' : 's'}` : null;
+}
+
 /** Top right: what is happening in the background, and the commands sent to Jarvis. */
 export function Activity() {
     const { status, detail, speaking, meshes, activity, connected } = useStudio();
@@ -93,6 +98,7 @@ export function Activity() {
                             <button type="button" className="text" onClick={() => draftPrompt(entry.text)} title={`Edit and resend: ${entry.text}`}>
                                 {entry.images > 0 && <span className="pics">▣{entry.images > 1 ? entry.images : ''}</span>}
                                 {entry.text}
+                                {buildersNote(entry) && <span className="builders"> · {buildersNote(entry)}</span>}
                             </button>
                             <span className="when">{ago(entry.at)}</span>
                         </li>

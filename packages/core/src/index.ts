@@ -1127,6 +1127,8 @@ export interface ActivityEntry {
     images: number;
     at: number;
     state: 'running' | 'done' | 'stopped' | 'failed';
+    /** Part builders (subagents) Jarvis has at work on this request. */
+    builders?: number;
 }
 
 export type AgentStatus = 'idle' | 'thinking' | 'working' | 'speaking';

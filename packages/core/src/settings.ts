@@ -29,17 +29,131 @@ export interface AiModelChoice {
     effort: Effort;
 }
 
-export interface AiSettings {
-    auth: AiAuth;
-    fast: AiModelChoice;
-    best: AiModelChoice;
+/** Which service runs Jarvis: Claude through Claude Code, or a service that speaks OpenAI's Chat Completions API. */
+export type AiProvider = 'claude' | 'openai-compatible';
+export const AI_PROVIDERS: AiProvider[] = ['claude', 'openai-compatible'];
+
+export type CompatiblePreset = 'openai' | 'gemini' | 'mistral' | 'groq' | 'deepseek' | 'xai' | 'openrouter' | 'ollama' | 'lmstudio' | 'custom';
+
+export interface CompatiblePresetInfo {
+    id: CompatiblePreset;
+    name: string;
+    /** Base URL of the Chat Completions API (chat/completions and models are under it); '' for Custom, typed in. */
+    baseUrl: string;
+    /** Runs on this computer: no key needed. */
+    local: boolean;
+    /** What a key of the service starts with, for the key field's placeholder. */
+    keyHint: string;
 }
 
-/** What the web sees of the AI settings: never the key itself. */
+// Base URLs as each provider's documentation gives them (checked 2026-11-17):
+// OpenAI: https://developers.openai.com/api/reference/overview (requests to https://api.openai.com/v1/...)
+// Gemini: https://ai.google.dev/gemini-api/docs/openai (base_url .../v1beta/openai/, models listed under it)
+// Mistral: https://docs.mistral.ai/api/ (https://api.mistral.ai/v1/chat/completions, GET /v1/models)
+// Groq: https://console.groq.com/docs/openai (base_url https://api.groq.com/openai/v1)
+// DeepSeek: https://api-docs.deepseek.com/ (base_url https://api.deepseek.com, GET /models)
+// xAI: https://docs.x.ai/developers/rest-api-reference/inference/chat-completions (https://api.x.ai/v1)
+// OpenRouter: https://openrouter.ai/docs/api-reference/overview (https://openrouter.ai/api/v1, GET /models)
+// Ollama: https://docs.ollama.com/api/openai-compatibility (http://localhost:11434/v1/, GET /v1/models)
+// LM Studio: https://lmstudio.ai/docs/app/api/endpoints/openai (http://localhost:1234/v1, GET /v1/models)
+export const COMPATIBLE_PRESETS: CompatiblePresetInfo[] = [
+    { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', local: false, keyHint: 'sk-…' },
+    { id: 'gemini', name: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', local: false, keyHint: 'AIza…' },
+    { id: 'mistral', name: 'Mistral', baseUrl: 'https://api.mistral.ai/v1', local: false, keyHint: '' },
+    { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', local: false, keyHint: 'gsk_…' },
+    { id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com', local: false, keyHint: 'sk-…' },
+    { id: 'xai', name: 'xAI', baseUrl: 'https://api.x.ai/v1', local: false, keyHint: 'xai-…' },
+    { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', local: false, keyHint: 'sk-or-…' },
+    { id: 'ollama', name: 'Ollama (on this computer)', baseUrl: 'http://localhost:11434/v1', local: true, keyHint: '' },
+    { id: 'lmstudio', name: 'LM Studio (on this computer)', baseUrl: 'http://localhost:1234/v1', local: true, keyHint: '' },
+    { id: 'custom', name: 'Custom', baseUrl: '', local: false, keyHint: '' },
+];
+export const COMPATIBLE_PRESET_IDS: CompatiblePreset[] = COMPATIBLE_PRESETS.map((p) => p.id);
+
+export const compatiblePreset = (id: CompatiblePreset): CompatiblePresetInfo =>
+    COMPATIBLE_PRESETS.find((p) => p.id === id) ?? COMPATIBLE_PRESETS[COMPATIBLE_PRESETS.length - 1];
+
+/** The Fast and Best model ids of one OpenAI-compatible service ('' while none is chosen). */
+export interface CompatibleModels {
+    fast: string;
+    best: string;
+}
+
+export interface CompatibleSettings {
+    preset: CompatiblePreset;
+    /** Custom's base URL (each preset has its own fixed one). */
+    baseUrl: string;
+    /** Fast and Best per preset, so switching between services keeps each one's choice. */
+    models: Partial<Record<CompatiblePreset, CompatibleModels>>;
+}
+
+export interface AiSettings {
+    provider: AiProvider;
+    /** Claude: the Claude Code login or an Anthropic API key. */
+    auth: AiAuth;
+    /** Claude's Fast and Best. */
+    fast: AiModelChoice;
+    best: AiModelChoice;
+    /** The OpenAI-compatible service, its base URL and models (its keys are kept apart, like the Anthropic key). */
+    compatible: CompatibleSettings;
+    /**
+     * The skills Jarvis may use, by id (plugin:name, as jarvis:manage or own:my-skill). Absent: every skill found is
+     * on (an older settings file, or the list never changed).
+     */
+    skills?: string[];
+}
+
+/** A skill's id: the plugin it comes from and its name. */
+export function validSkillId(id: unknown): id is string {
+    return typeof id === 'string' && /^[a-z0-9][a-z0-9-]{0,39}:[A-Za-z0-9][\w-]{0,63}$/.test(id);
+}
+
+/** The skills that are on, of those found: all when the settings name none (absent), else the ones they list. */
+export function enabledSkillIds(found: { id: string }[], setting: string[] | undefined): string[] {
+    return found.map((s) => s.id).filter((id) => setting === undefined || setting.includes(id));
+}
+
+/** What the web sees of the AI settings: never the keys themselves. */
 export interface AiSettingsView extends AiSettings {
     apiKeySet: boolean;
     /** The key's last four characters behind dots, or '' when none is kept. */
     apiKeyMasked: string;
+    /** The OpenAI-compatible services' kept keys, masked, by preset (a preset without a key is absent). */
+    compatibleKeys?: Partial<Record<CompatiblePreset, string>>;
+}
+
+/** The base URL Jarvis uses for these settings: the preset's, or Custom's as typed. */
+export function compatibleBaseUrl(c: CompatibleSettings, preset: CompatiblePreset = c.preset): string {
+    return preset === 'custom' ? c.baseUrl : compatiblePreset(preset).baseUrl;
+}
+
+/** The Fast and Best models of a preset. */
+export function compatibleModels(c: CompatibleSettings, preset: CompatiblePreset = c.preset): CompatibleModels {
+    return c.models[preset] ?? { fast: '', best: '' };
+}
+
+/** A base URL: http or https, without a user name or password in it, of a sensible length. */
+export function validBaseUrl(url: unknown): url is string {
+    if (typeof url !== 'string' || url.length > 500) {
+        return false;
+    }
+    try {
+        const u = new URL(url.trim());
+        return (u.protocol === 'http:' || u.protocol === 'https:') && !u.username && !u.password && !u.search && !u.hash;
+    } catch {
+        return false;
+    }
+}
+
+/** A base URL as kept: trimmed, without trailing slashes. */
+export const tidyBaseUrl = (url: string): string => url.trim().replace(/\/+$/, '');
+
+/**
+ * A model id of an OpenAI-compatible service: wider than Claude's (OpenRouter and LM Studio use owner/name, Ollama
+ * name:tag); it only ever goes into a JSON request body.
+ */
+export function validCompatibleModel(model: unknown): model is string {
+    return typeof model === 'string' && /^[A-Za-z0-9][\w.\-:[\]/@+]{0,199}$/.test(model);
 }
 
 export interface GeneralSettings {
@@ -349,7 +463,13 @@ export const DEFAULT_SETTINGS: StudioSettings = {
         sketchQuality: 'fast',
     },
     lighting: clone(STUDIO),
-    ai: { auth: 'local', fast: { model: 'sonnet', effort: 'medium' }, best: { model: 'opus', effort: 'high' } },
+    ai: {
+        provider: 'claude',
+        auth: 'local',
+        fast: { model: 'sonnet', effort: 'medium' },
+        best: { model: 'opus', effort: 'high' },
+        compatible: { preset: 'openai', baseUrl: '', models: {} },
+    },
     toolbars: {},
     files: { lastFolder: '', recentFolders: [], favourites: [] },
 };
@@ -531,6 +651,23 @@ function modelChoice(v: unknown, fallback: AiModelChoice): AiModelChoice {
     return { model: validModel(model) ? model : fallback.model, effort: pick(r.effort, EFFORTS, fallback.effort) };
 }
 
+function compatibleSettings(v: unknown, fallback: CompatibleSettings): CompatibleSettings {
+    const r = obj(v);
+    const models: CompatibleSettings['models'] = {};
+    const id = (m: unknown) => (typeof m === 'string' && validCompatibleModel(m.trim()) ? m.trim() : '');
+    for (const [preset, m] of Object.entries(obj(r.models))) {
+        if (COMPATIBLE_PRESET_IDS.includes(preset as CompatiblePreset)) {
+            const choice = obj(m);
+            models[preset as CompatiblePreset] = { fast: id(choice.fast), best: id(choice.best) };
+        }
+    }
+    return {
+        preset: pick(r.preset, COMPATIBLE_PRESET_IDS, fallback.preset),
+        baseUrl: r.baseUrl === '' ? '' : validBaseUrl(r.baseUrl) ? tidyBaseUrl(r.baseUrl) : fallback.baseUrl,
+        models: r.models === undefined ? clone(fallback.models) : models,
+    };
+}
+
 function toolDefaults(v: unknown): StudioSettings['defaults'] {
     const out: StudioSettings['defaults'] = {};
     for (const [tool, values] of Object.entries(obj(v)).slice(0, 200)) {
@@ -622,9 +759,14 @@ export function normaliseSettings(raw: unknown, base: StudioSettings = DEFAULT_S
         },
         lighting: r.lighting === undefined ? clone(d.lighting) : lighting(r.lighting),
         ai: {
+            // A file from before other providers: Claude, as it was.
+            provider: pick(ai.provider, AI_PROVIDERS, d.ai.provider ?? 'claude'),
             auth: pick(ai.auth, ['local', 'apiKey'] as const, d.ai.auth),
             fast: modelChoice(ai.fast, d.ai.fast),
             best: modelChoice(ai.best, d.ai.best),
+            compatible: compatibleSettings(ai.compatible, d.ai.compatible ?? DEFAULT_SETTINGS.ai.compatible),
+            // Absent stays absent: every skill found is on.
+            ...(Array.isArray(ai.skills) ? { skills: [...new Set(ai.skills.filter(validSkillId))].slice(0, 200) } : {}),
         },
         toolbars: plainData(r.toolbars),
         files: r.files === undefined ? clone(d.files) : fileSettings(r.files),

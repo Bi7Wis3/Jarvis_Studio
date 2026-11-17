@@ -2,7 +2,8 @@
 // the patch sent to the server. Kept apart from the page so it can be tested without a browser.
 
 import {
-    defaultSettings, SETTINGS_CATEGORIES, type SettingsCategory, type StudioSettings, type StudioSettingsView,
+    defaultSettings, SETTINGS_CATEGORIES, validBaseUrl, type CompatiblePreset, type SettingsCategory, type StudioSettings,
+    type StudioSettingsView,
 } from '@jarvis/core/settings';
 import type { OptionsPatch } from './options';
 import { checkDefaults, DEFAULTS_TOOLS, defaultsValues, savedDefaults } from './optionsDefaults';
@@ -23,6 +24,8 @@ export interface Draft {
     defaults: Record<string, Values>;
     /** A new API key typed, '' to remove the kept one, null to keep it as it is. */
     apiKey: string | null;
+    /** The same for the OpenAI-compatible services, by preset (a preset left out keeps its key). */
+    compatibleKeys?: Partial<Record<CompatiblePreset, string>>;
 }
 
 /** Pages of the Options tree; a page belongs to one settings category (`defaults:<tool>` pages to Defaults). */
@@ -43,7 +46,7 @@ export function sketchValues(blob: SketchBlob): Values {
 
 /** The draft the page opens with: the saved settings, and the sketch settings as the sketcher has them now. */
 export function draftOf(saved: StudioSettingsView): Draft {
-    const { apiKeySet: _set, apiKeyMasked: _masked, ...ai } = saved.ai;
+    const { apiKeySet: _set, apiKeyMasked: _masked, compatibleKeys: _keys, ...ai } = saved.ai;
     const blob = currentSketch();
     return {
         settings: clone({ ...saved, ai }),
@@ -51,6 +54,7 @@ export function draftOf(saved: StudioSettingsView): Draft {
         sketchRest: { toggles: { ...blob.toggles }, snapsOff: [...blob.snapsOff] },
         defaults: Object.fromEntries(DEFAULTS_TOOLS.map((t) => [t.id, defaultsValues(t.id, saved.defaults[t.id])])),
         apiKey: null,
+        compatibleKeys: {},
     };
 }
 
@@ -86,6 +90,7 @@ export function resetPage(draft: Draft, page: PageId): Draft {
         (next.settings as unknown as Record<string, unknown>)[category] = clone(defaultSettings()[category]);
         if (category === 'ai') {
             next.apiKey = null;
+            next.compatibleKeys = {};
         }
     }
     return next;
@@ -127,8 +132,12 @@ export function draftPatch(draft: Draft, saved: StudioSettingsView): OptionsPatc
         }
     }
     const next: StudioSettings = { ...draft.settings, defaults };
+    const compatible = next.ai.compatible;
+    if (compatible.preset === 'custom' && compatible.baseUrl && !validBaseUrl(compatible.baseUrl)) {
+        throw new Error('The custom base URL must start with http:// or https:// (AI assistant).');
+    }
     const patch: Record<string, unknown> = {};
-    const { apiKeySet: _set, apiKeyMasked: _masked, ...savedAi } = saved.ai;
+    const { apiKeySet: _set, apiKeyMasked: _masked, compatibleKeys: _keys, ...savedAi } = saved.ai;
     const savedPlain: StudioSettings = { ...saved, ai: savedAi };
     for (const category of SETTINGS_CATEGORIES) {
         // The file browser's folders are kept by the server as they change, never by this page; the toolbars by their
@@ -140,8 +149,9 @@ export function draftPatch(draft: Draft, saved: StudioSettingsView): OptionsPatc
     if (!same(blob, readSketchBlob(saved.sketch))) {
         patch.sketch = blob;
     }
-    if (draft.apiKey !== null) {
-        patch.ai = { ...next.ai, apiKey: draft.apiKey };
+    const keys = draft.compatibleKeys ?? {};
+    if (draft.apiKey !== null || Object.keys(keys).length) {
+        patch.ai = { ...next.ai, ...(draft.apiKey !== null ? { apiKey: draft.apiKey } : {}), ...(Object.keys(keys).length ? { compatibleKeys: keys } : {}) };
     }
     return patch as OptionsPatch;
 }

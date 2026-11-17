@@ -151,6 +151,11 @@ const jarvis = new Jarvis(store, tools, {
         logActivity(turn, 'stopped');
     },
     finished: (turn, ok) => logActivity(turn, ok ? 'done' : 'failed'),
+    // The activity list says how many part builders work on the request.
+    delegating: (turn, builders) => {
+        activity = activity.map((a) => (a.turn === turn ? { ...a, builders } : a));
+        broadcast({ type: 'activity', entries: activity });
+    },
     error: (message) => broadcast({ type: 'error', message }),
     model: (name) => {
         model = name;
@@ -185,11 +190,11 @@ const jarvis = new Jarvis(store, tools, {
 model = jarvis.getModel();
 
 // Changed settings apply at once: the view's mesh quality, and the model and credentials of Jarvis's next session.
-let lastKey = settings.ai().apiKey;
+let lastKey = settings.keysStamp();
 settings.subscribe((next, previous) => {
     meshes.setQuality(next.display.meshQuality, store.get());
-    if (JSON.stringify(next.ai) !== JSON.stringify(previous.ai) || settings.ai().apiKey !== lastKey) {
-        lastKey = settings.ai().apiKey;
+    if (JSON.stringify(next.ai) !== JSON.stringify(previous.ai) || settings.keysStamp() !== lastKey) {
+        lastKey = settings.keysStamp();
         jarvis.reconfigure();
     }
 });

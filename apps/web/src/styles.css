@@ -844,6 +844,10 @@ footer {
     color: var(--accent-2);
 }
 
+.activity li .builders {
+    color: var(--accent-2);
+}
+
 .activity li .when {
     flex: none;
     color: var(--muted);

@@ -539,6 +539,19 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
   than 0.001 mm still count as one point.
 - [x] AI assistant settings: Claude Code login on this computer or an Anthropic API key (kept masked, owner-only
   file), model and effort for Fast and Best, Test connection; changes reach Jarvis's next request without a restart.
+  The model list comes from Claude Code itself (`GET /api/ai/models`, loaded on opening, Refresh list), each model with
+  only its own effort levels; the aliases (Sonnet, Opus, Haiku, Fable) stand in while it loads.
+- [x] Other AI providers (OpenAI-compatible Chat Completions with tool calling): OpenAI, Google Gemini, Mistral, Groq,
+  DeepSeek, xAI, OpenRouter, Ollama and LM Studio on this computer, or a custom base URL; one key per service (masked,
+  kept apart, sent only to that service's base URL), their model lists, Fast and Best, Test connection. Jarvis keeps
+  the same tools; screenshots go to models that take pictures. Not done: effort levels and other provider-specific
+  options (reasoning effort, OpenRouter routing), and native non-OpenAI APIs.
+- [x] Jarvis's skills: default ones in the repo (apps/server/jarvis-plugin, a Claude Code plugin) and the owner's own
+  in the data folder (projects/.studio/skills/<name>/SKILL.md), listed under Options > AI assistant > Skills with a
+  check box each (ai.skills; absent: all on). Manage splits a large job between part-builder subagents (the shared
+  modelling rules, the part tools only, the Fast model) and checks their work; the activity list and status show how
+  many builders work. With an OpenAI-compatible provider the skills' text goes into the system prompt instead (no
+  subagents there).
 - [x] Lighting (SolidWorks: Lights folder): ambient light (on, colour, intensity); up to eight directional, point and
   spot lights together, each with on, keep light when a preset is chosen (SolidWorks: when scene changes), colour,
   ambient, brightness, cast shadows and lock to model (off: the light turns with the view, its position given as seen

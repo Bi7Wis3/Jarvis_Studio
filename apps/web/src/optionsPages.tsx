@@ -1,10 +1,9 @@
 // The pages of the Options panel (OptionsPage.tsx). Each edits the draft; nothing is saved until Apply or OK. The
-// Lighting page has a module of its own (optionsLighting.tsx).
+// Lighting and AI assistant pages have modules of their own (optionsLighting.tsx, optionsAi.tsx).
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { EFFORTS, shownStyle, type DisplayStyle, type Effort, type StudioSettings, type StudioSettingsView } from '@jarvis/core/settings';
+import { shownStyle, type DisplayStyle, type StudioSettings, type StudioSettingsView } from '@jarvis/core/settings';
 import { DISPLAY_STYLES } from './displayStyle';
-import { testAiConnection, type AiTestResult } from './options';
 import { changeDefault, defaultsOf, DEFAULTS_TOOLS, shownDefaults } from './optionsDefaults';
 import type { Draft, PageId } from './optionsDraft';
 import { SKETCH_SETTING_FIELDS } from './sketchSettingsForm';
@@ -406,130 +405,6 @@ export function DisplayPage({ draft, setDraft, onPage }: PageProps) {
                     onChange={(sketchQuality) => set({ sketchQuality })}
                 />
             </Section>
-        </>
-    );
-}
-
-// ---- AI assistant --------------------------------------------------------------------------------------------------
-
-const ALIASES: [string, string][] = [['sonnet', 'Sonnet (latest)'], ['opus', 'Opus (latest)'], ['haiku', 'Haiku (latest)']];
-
-const credentialText = (source?: string) => source === 'ANTHROPIC_API_KEY' ? 'the API key'
-    : source === 'none' ? 'the Claude login' : source === '/login managed key' ? 'the Claude Code login (Console key)' : source ?? 'unknown';
-
-function ModelChoice(props: {
-    title: string; value: { model: string; effort: Effort }; models: AiTestResult['models']; onChange: (v: { model: string; effort: Effort }) => void;
-    onTest: () => void; testing: boolean;
-}) {
-    const { title, value, models, onChange, onTest, testing } = props;
-    const known: [string, string][] = [...ALIASES, ...(models ?? []).filter((m) => !ALIASES.some(([a]) => a === m.value)).map((m) => [m.value, m.name] as [string, string])];
-    const listed = known.some(([v]) => v === value.model);
-    const [other, setOther] = useState(!listed);
-    return (
-        <Section title={title}>
-            <Choice
-                label="Model"
-                value={other ? 'other' : value.model}
-                options={[...known, ['other', 'Another model id…']]}
-                onChange={(v) => {
-                    setOther(v === 'other');
-                    if (v !== 'other') {
-                        onChange({ ...value, model: v });
-                    }
-                }}
-            />
-            {other && (
-                <label className="tb-field">
-                    <span>Model id</span>
-                    <span className="tb-input">
-                        <input value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value.trim() })} placeholder="claude-…" spellCheck={false} />
-                    </span>
-                </label>
-            )}
-            <Choice
-                label="Effort"
-                value={value.effort}
-                options={EFFORTS.map((e): [Effort, string] => [e, e === 'xhigh' ? 'Extra high' : e[0].toUpperCase() + e.slice(1)])}
-                onChange={(effort) => onChange({ ...value, effort })}
-            />
-            <div className="op-row">
-                <button type="button" className="sk-small" disabled={testing} onClick={onTest}>{testing ? 'Testing…' : 'Test connection'}</button>
-            </div>
-        </Section>
-    );
-}
-
-export function AiPage({ draft, setDraft, saved }: PageProps) {
-    const ai = draft.settings.ai;
-    const set = (patch: Partial<typeof ai>) => setDraft(withCategory(draft, 'ai', { ...ai, ...patch }));
-    const [testing, setTesting] = useState<'fast' | 'best' | null>(null);
-    const [result, setResult] = useState<{ which: 'fast' | 'best'; r: AiTestResult } | null>(null);
-    const keyKept = saved.ai.apiKeySet && draft.apiKey === null;
-    const removing = saved.ai.apiKeySet && draft.apiKey === '';
-    const test = async (which: 'fast' | 'best') => {
-        setTesting(which);
-        setResult(null);
-        const r = await testAiConnection({ auth: ai.auth, apiKey: draft.apiKey || undefined, ...ai[which] });
-        setTesting(null);
-        setResult({ which, r });
-    };
-    return (
-        <>
-            <Section title="Connection">
-                <label className="tb-check">
-                    <input type="radio" name="op-auth" checked={ai.auth === 'local'} onChange={() => set({ auth: 'local' })} />
-                    <span>Claude Code on this computer (its own login, as before)</span>
-                </label>
-                <label className="tb-check">
-                    <input type="radio" name="op-auth" checked={ai.auth === 'apiKey'} onChange={() => set({ auth: 'apiKey' })} />
-                    <span>An Anthropic API key</span>
-                </label>
-                {ai.auth === 'apiKey' && (
-                    <>
-                        {keyKept && (
-                            <div className="op-row">
-                                <span className="op-key">Key kept: {saved.ai.apiKeyMasked}</span>
-                                <button type="button" className="sk-small" onClick={() => setDraft({ ...draft, apiKey: '' })}>Remove key</button>
-                            </div>
-                        )}
-                        {removing && (
-                            <div className="op-row">
-                                <span className="op-key">The kept key is removed when you apply.</span>
-                                <button type="button" className="sk-small" onClick={() => setDraft({ ...draft, apiKey: null })}>Keep it</button>
-                            </div>
-                        )}
-                        <label className="tb-field">
-                            <span>{saved.ai.apiKeySet ? 'New API key' : 'API key'}</span>
-                            <span className="tb-input">
-                                <input
-                                    type="password"
-                                    autoComplete="new-password"
-                                    spellCheck={false}
-                                    value={draft.apiKey ?? ''}
-                                    placeholder="sk-ant-…"
-                                    onChange={(e) => setDraft({ ...draft, apiKey: e.target.value === '' ? null : e.target.value })}
-                                />
-                            </span>
-                        </label>
-                        {!saved.ai.apiKeySet && !draft.apiKey && <Note>No key is kept yet: Jarvis cannot answer until one is applied.</Note>}
-                    </>
-                )}
-                <Note>
-                    The key is kept only on this computer, in the studio's settings file, which only you can read; it is never written into
-                    projects or logs, and only Jarvis's own requests to Anthropic use it.
-                </Note>
-            </Section>
-            <ModelChoice title="Fast" value={ai.fast} models={result?.r.models} onChange={(fast) => set({ fast })} onTest={() => void test('fast')} testing={testing === 'fast'} />
-            <ModelChoice title="Best" value={ai.best} models={result?.r.models} onChange={(best) => set({ best })} onTest={() => void test('best')} testing={testing === 'best'} />
-            {result && (
-                <p className={`op-test ${result.r.ok ? 'ok' : 'error'}`} role="status">
-                    {result.which === 'fast' ? 'Fast' : 'Best'}:{' '}
-                    {result.r.ok
-                        ? `connected. ${result.r.model ?? 'The model'} answered in ${(result.r.ms / 1000).toFixed(1)} s, using ${credentialText(result.r.credential)}.`
-                        : `not connected. ${result.r.error ?? ''}`}
-                </p>
-            )}
-            <Note>A change applies to Jarvis's next request: its conversation starts afresh; the project is not touched.</Note>
         </>
     );
 }

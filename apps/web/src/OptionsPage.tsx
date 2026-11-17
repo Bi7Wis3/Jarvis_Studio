@@ -6,10 +6,11 @@ import { closeOptions, openOptions, saveOptions, useOptions } from './options';
 import { draftChanged, draftOf, draftPatch, resetPage, type Draft, type PageId } from './optionsDraft';
 import { DEFAULTS_TOOLS } from './optionsDefaults';
 import {
-    AiPage, DefaultsListPage, DefaultsToolPage, DisplayPage, GeneralPage, GridPage, RelationsPage, SketchPage, ToolbarsPage, UnitsPage,
+    DefaultsListPage, DefaultsToolPage, DisplayPage, GeneralPage, GridPage, RelationsPage, SketchPage, ToolbarsPage, UnitsPage,
     type PageProps,
 } from './optionsPages';
 import { LightingPage } from './optionsLighting';
+import { AiPage } from './optionsAi';
 import './options.css';
 
 interface TreeNode {

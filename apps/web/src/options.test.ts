@@ -4,13 +4,15 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, defaultSettings, LIGHTING_PRESETS, normaliseSettings, type StudioSettings } from '@jarvis/core/settings';
 import { angleText, formShownText, setShownPrecision, shownText } from './numberText';
 import {
-    confirmDeletes, loadOptions, openOptions, saveOptions, savedToolDefaults, toolDefaultNumber, useOptions, viewOf, withSavedDefaults,
+    confirmDeletes, loadOptions, openOptions, saveOptions, savedToolDefaults, toolDefaultNumber, useOptions, viewFromServer, viewOf,
+    withSavedDefaults,
 } from './options';
 import { changeDefault, checkDefaults, defaultsOf, DEFAULTS_TOOLS, defaultsValues, savedDefaults, shownDefaults } from './optionsDefaults';
 import { draftOf, draftPatch, resetPage } from './optionsDraft';
 import { applySettings, currentSketch, readSketchBlob, SKETCH_TOOL_DEFAULTS } from './optionsSync';
 import { OPTIONS_TREE, OptionsPanel } from './OptionsPage';
-import { AiPage } from './optionsPages';
+import { AiPage, SkillsList } from './optionsAi';
+import { buildersNote } from './Activity';
 import { LightingPage } from './optionsLighting';
 import { loadSolver } from './solver';
 import { easeOnce, lightDirection, pixelRatioRange, SMOOTH_TIME, transitionTimes } from './sceneLook';
@@ -340,6 +342,85 @@ describe('the Options page', () => {
         }
         // Nothing is picked yet: only the rows show, not their settings.
         expect(html).not.toContain('Cone angle');
+    });
+
+    it('offers the Claude aliases, Fable among them, until the model list has loaded', () => {
+        const saved = { ...viewOf(defaultSettings()), ai: { ...viewOf(defaultSettings()).ai, best: { model: 'fable', effort: 'high' as const } } };
+        const html = renderToStaticMarkup(createElement(AiPage, { draft: draftOf(saved), setDraft: () => {}, saved, page: 'ai', onPage: () => {} }));
+        for (const text of ['Sonnet (latest)', 'Opus (latest)', 'Haiku (latest)', 'Fable (latest)', 'Refresh list', 'Another model id']) {
+            expect(html).toContain(text);
+        }
+        // Fable is listed, so Best shows it picked rather than as a typed id.
+        expect(html).toMatch(/<option value="fable" selected="">Fable \(latest\)<\/option>/);
+    });
+
+    it('offers another provider: its service, base URL, kept key masked and the notes on tool calling', () => {
+        const base = viewOf(defaultSettings());
+        const saved = {
+            ...base,
+            ai: {
+                ...base.ai,
+                provider: 'openai-compatible' as const,
+                compatible: { preset: 'groq' as const, baseUrl: '', models: { groq: { fast: 'llama-x', best: '' } } },
+                compatibleKeys: { groq: '••••••••ABCD' },
+            },
+        };
+        const html = renderToStaticMarkup(createElement(AiPage, { draft: draftOf(saved), setDraft: () => {}, saved, page: 'ai', onPage: () => {} }));
+        for (const text of ['OpenAI', 'Google Gemini', 'Mistral', 'Groq', 'DeepSeek', 'xAI', 'OpenRouter', 'Ollama (on this computer)',
+            'LM Studio (on this computer)', 'Custom', 'https://api.groq.com/openai/v1', 'Key kept: ••••••••ABCD', 'Refresh list',
+            'Choose a model…', 'need tool-calling support', 'Quality varies']) {
+            expect(html).toContain(text);
+        }
+        expect(html).toMatch(/<input[^>]*readOnly[^>]*value="https:\/\/api.groq.com\/openai\/v1"|value="https:\/\/api.groq.com\/openai\/v1"[^>]*readOnly/i);
+        expect(html).toContain('type="password"');
+        // The Claude form is not shown meanwhile.
+        expect(html).not.toContain('An Anthropic API key');
+        const local = { ...saved, ai: { ...saved.ai, compatible: { ...saved.ai.compatible, preset: 'ollama' as const } } };
+        const localHtml = renderToStaticMarkup(createElement(AiPage, { draft: draftOf(local), setDraft: () => {}, saved: local, page: 'ai', onPage: () => {} }));
+        expect(localHtml).toContain('no key is needed');
+        expect(localHtml).not.toContain('type="password"');
+    });
+
+    it('sends typed service keys with the AI settings, forgets them on reset, and takes only masks from the server', () => {
+        const saved = viewOf(defaultSettings());
+        const draft = { ...draftOf(saved), compatibleKeys: { openai: 'sk-FAKE-typed-0000', groq: '' } };
+        expect(draftPatch(draft, saved).ai).toMatchObject({ compatibleKeys: { openai: 'sk-FAKE-typed-0000', groq: '' } });
+        expect(draftPatch(draftOf(saved), saved).ai).toBeUndefined();
+        expect(resetPage(draft, 'ai').compatibleKeys).toEqual({});
+        const view = viewFromServer({ ...defaultSettings(), ai: { ...DEFAULT_SETTINGS.ai, compatibleKeys: { openai: '••••••••0000', nowhere: 'x', groq: 7 } } });
+        expect(view.ai.compatibleKeys).toEqual({ openai: '••••••••0000' });
+        const custom = draftOf(saved);
+        custom.settings.ai = { ...custom.settings.ai, compatible: { preset: 'custom', baseUrl: 'localhost:8080/v1', models: {} } };
+        expect(() => draftPatch(custom, saved)).toThrow(/base URL must start with http/);
+    });
+
+    it('lists the skills with their descriptions and check boxes, and says what they do on each provider', () => {
+        const found = [
+            { id: 'jarvis:manage', name: 'manage', description: 'Split a large CAD job between part builders.', source: 'default' as const },
+            { id: 'own:gears', name: 'gears', description: 'Spur gears to a module.', source: 'own' as const },
+        ];
+        const claude = renderToStaticMarkup(createElement(SkillsList, { found, ai: DEFAULT_SETTINGS.ai, onChange: () => {} }));
+        for (const text of ['Skills', 'manage', 'Split a large CAD job between part builders.', 'gears (your own)', 'part builders on the Fast',
+            '.studio/skills']) {
+            expect(claude).toContain(text);
+        }
+        // Absent: every skill found is on.
+        expect(claude.match(/type="checkbox" checked=""/g)).toHaveLength(2);
+        const some = renderToStaticMarkup(createElement(SkillsList, { found, ai: { ...DEFAULT_SETTINGS.ai, skills: ['own:gears'] }, onChange: () => {} }));
+        expect(some.match(/type="checkbox" checked=""/g)).toHaveLength(1);
+        const other = renderToStaticMarkup(createElement(SkillsList, {
+            found, ai: { ...DEFAULT_SETTINGS.ai, provider: 'openai-compatible' }, onChange: () => {},
+        }));
+        expect(other).toContain('no part builders: the text of the skills that are on is given to the model as guidance');
+        expect(renderToStaticMarkup(createElement(SkillsList, { found: null, ai: DEFAULT_SETTINGS.ai, onChange: () => {} }))).toContain('Loading skills');
+    });
+
+    it('shows in the activity list how many part builders work on a request', () => {
+        const entry = { turn: 1, text: 'Build the drone', images: 0, at: Date.now(), state: 'running' as const, builders: 3 };
+        expect(buildersNote(entry)).toBe('with 3 part builders');
+        expect(buildersNote({ ...entry, builders: 1 })).toBe('with 1 part builder');
+        expect(buildersNote({ ...entry, builders: 0 })).toBeNull();
+        expect(buildersNote({ ...entry, state: 'done' })).toBeNull();
     });
 
     it('never shows the API key, only its mask', () => {
