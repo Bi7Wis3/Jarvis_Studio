@@ -226,6 +226,7 @@ Pick up to three references; each reference offers the constraint types that fit
 - Constraint types: Coincident | Parallel | Perpendicular | Project (point/vertex/origin/coordinate system onto a non-planar surface; Nearest location on surface | Along sketch normal) | Parallel to screen (at a vertex, parallel to current view) | Tangent (to cylindrical, conical, non-planar face; with a point) | At angle (through an edge/axis/sketch line at an angle to a plane or cylindrical face; Number of planes) | Offset distance (parallel to plane/face; Number of planes) | Flip Normal | Mid Plane (between two planar faces/planes).
 - Second Reference and Third Reference have the same choices. Set origin on curve is offered for curve-normal planes.
 - Typical combos (from the examples): three points; point + parallel plane; edge/curve + point perpendicular (normal to curve); two parallel planes + Mid Plane; plane + offset.
+- **Perpendicular to a curve with a point**: one reference is an edge or curve set to Perpendicular, the other a point or vertex (Coincident). The plane is square to the curve and passes through the point. **Set origin on curve** puts the plane's origin on the curve; cleared, the origin is at the point. (A point on the curve, such as its end, gives the same plane either way.) The page describes this only with a point: a curve alone is not said to make a plane.
 Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/HIDD_DVE_CREATE_PLANE.htm ; also Planes overview .../c_Planes_Overview.htm (not read in detail)
 
 ### Axis (reference geometry)
@@ -234,7 +235,9 @@ Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/hidd_dve_re
 
 ### Point (reference geometry)
 Methods: Arc Center | Center Of Face | Intersection (two edges/curves/sketch segments) | Projection (project one entity onto another) | On point | Along curve distance or multiple reference points (Distance | Percentage | Evenly Distribute, Number of reference points) | axis-plane / axis-surface / two-axis intersections.
-Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/hidd_dve_refpoint.htm
+- On curve ends: **On point** makes a point on a sketch point or on the end of a sketch section (the page names only these; Jarvis Studio also takes a model vertex and the start or end of a helix or spiral here). **Projection** can project the end points of curves and sketch segments (and vertices) onto a plane or face, along its normal. **Along curve distance or multiple reference point** works on edges, curves and sketch segments: Distance (the first point one spacing from the end point, not on it), Percentage (of the entity's length), Evenly Distribute, with Number of reference points; points are counted from the starting end point.
+- When items are selected, SolidWorks picks the matching method (a face selects Center of Face), and the method can be changed.
+Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/hidd_dve_refpoint.htm (read again 2026-11-17 for curve ends)
 
 ### Coordinate System
 - **Position**: Origin (vertex, point, midpoint or default origin); Define position with numeric values (X/Y/Z relative to the local origin).
@@ -455,7 +458,7 @@ Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/HIDD_DVE_SK
 | Equal Curvature | 2 splines | matching curvature radius and direction |
 | Symmetric | centerline + 2 points/lines/arcs/ellipses | mirror-equidistant |
 | Fix | any entity | size and location fixed (a fixed line's ends slide along its infinite line) |
-| Pierce | sketch point + axis/edge/line/spline | point where it pierces the plane |
+| Pierce | sketch point + axis/edge/line/spline | point where it pierces the plane (the sketch point is made coincident with where the axis, edge or curve passes through the sketch plane; used in sweeps with guide curves) |
 | Merge Points | 2 points/endpoints | one point |
 | Doubled Distance | centerline + entity | dimensioned at twice distance |
 | Equal Slots, Fix Slot | slots | as named |

@@ -55,3 +55,33 @@ export function checkHelixStep(where: string, f: Record<string, unknown>): void 
         throw new Error(`${where}: defined by ${String(f.definedBy)} needs ${missing.join(' and ')}`);
     }
 }
+
+/** A point on a helix or spiral step, for planes, axes and points made on it. */
+export const curvePointSchema = z.object({
+    curveRef: z.string().describe('Id of an earlier helix or spiral step (op helix)'),
+    at: z.union([z.enum(['start', 'end']), z.number().min(0).max(1)])
+        .describe('Its start, its end, or a fraction 0 to 1 of the way through its revolutions'),
+}).describe('A point on a helix or spiral step; it follows the curve when the curve changes');
+
+const curveRefSchema = z.object({ curveRef: z.string().describe('Id of an earlier helix or spiral step (op helix)') });
+
+/** The plane square to a helix or spiral (SolidWorks: Perpendicular to the curve, Coincident with a point). */
+export function curveNormalSchema<B extends ZodRawShape, P extends z.ZodTypeAny>(base: B, point: P) {
+    return z.object({
+        ...base,
+        kind: z.literal('curveNormal'),
+        curve: curveRefSchema,
+        point: point.describe('The point it passes through, e.g. { curveRef, at: "start" }; the plane is square to the curve where it passes nearest the point'),
+        originOnCurve: z.boolean().optional().describe('Set origin on curve: the origin on the curve instead of at the point'),
+    }).describe('Perpendicular to a helix or spiral step at a point: its normal along the curve, its u axis towards the curve\'s axis');
+}
+
+/** Point steps made on a helix or spiral: at its start or end (On point), or along it. */
+export const curvePointDefinitionSchemas = [
+    z.object({ kind: z.literal('onCurve'), curve: curvePointSchema }).describe('On a helix or spiral: its start, end or part way'),
+    z.object({
+        kind: z.literal('alongCurve'), curve: curveRefSchema, by: z.enum(['distance', 'percent']), amount: z.number().positive(),
+        index: z.number().int().min(1).describe('Which of the points spaced amount apart, from the start of the curve'),
+        reverse: z.boolean().optional().describe('From the end of the curve'),
+    }).describe('Along a helix or spiral by distance or percentage of its length'),
+] as const;

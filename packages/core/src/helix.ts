@@ -396,6 +396,32 @@ export function helixLength(s: HelixShape): number {
     return total;
 }
 
+/** Length from the start to revolution t, mm (as helixLength). */
+export function helixLengthTo(s: HelixShape, t: number): number {
+    let total = 0;
+    for (const p of s.pieces) {
+        const span = Math.min(p.t1, t) - p.t0;
+        if (span <= 0) {
+            break;
+        }
+        const n = Math.max(1, Math.ceil(span * 16));
+        const h = span / n;
+        for (let i = 0; i < n; i++) {
+            const mid = (i + 0.5) * h;
+            for (const [x, w] of GAUSS) {
+                total += (w * h * speed(s, p, mid + (x * h) / 2)) / 2;
+            }
+        }
+    }
+    return total;
+}
+
+/** |d point / dt| at revolution t. */
+export function helixSpeed(s: HelixShape, t: number): number {
+    const p = pieceAt(s, t);
+    return speed(s, p, t - p.t0);
+}
+
 /** Points along the curve for drawing: `perTurn` a revolution (fewer on very long curves), ends included. */
 export function helixPoints(s: HelixShape, perTurn = 72, most = 20000): Vec3[] {
     const count = Math.max(8, Math.min(most, Math.ceil(s.revolutions * perTurn)));

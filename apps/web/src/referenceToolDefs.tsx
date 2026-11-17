@@ -17,6 +17,7 @@ import {
 } from './referenceDefs';
 import type { Ctx, Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
 import { helixTool } from './helixToolDef';
+import { curveOptions } from './curvePicks';
 
 const opts = (...pairs: [string, string][]) => pairs.map(([value, label]) => ({ value, label }));
 
@@ -102,8 +103,8 @@ function planeSlotFields(k: number, steps: Feature[], stored: boolean): Field[] 
         key: `c${k}${cls}`, label: 'Constraint', kind: 'select', options: opts(...PLANE_CONSTRAINTS[cls]), section, show: is(cls),
     });
     return [
-        ...refBox(`r${k}`, 'Reference', section, always, steps, ALL_ENTITIES, ['plane', 'line', 'point'], planeAccept, k > 1),
-        constraint('plane'), constraint('line'), constraint('point'), constraint('cyl'),
+        ...refBox(`r${k}`, 'Reference', section, always, steps, ALL_ENTITIES, ['plane', 'line', 'point', 'curve'], planeAccept, k > 1),
+        constraint('plane'), constraint('line'), constraint('point'), constraint('cyl'), constraint('curve'),
         { key: `d${k}`, label: 'Distance', kind: 'number', unit: 'mm', min: 0, section, show: (v) => c(v, 'plane') === 'offset' },
         { key: `a${k}`, label: 'Angle', kind: 'number', unit: 'deg', section, show: (v) => c(v, 'plane') === 'angle' },
         { key: `f${k}`, label: 'Flip offset', kind: 'check', section, show: (v) => c(v, 'plane') === 'offset' || c(v, 'plane') === 'angle' },
@@ -133,6 +134,9 @@ const planeTool: ToolDef = {
             ...planeSlotFields(3, steps, stored),
             { key: 'nv', label: 'Normal', kind: 'vec', section: 'First reference', show: (v) => !!v.pn },
             { key: 'flipNormal', label: 'Flip normal', kind: 'check', section: 'Options' },
+            // SolidWorks' Set origin on curve, for a plane perpendicular to a curve through a point off it.
+            { key: 'originOnCurve', label: 'Set origin on curve', kind: 'check', section: 'Options',
+                show: (v) => [1, 2, 3].some((k) => slotClass(v as RefValues, k) === 'curve') },
         ];
     },
     defaults: (ctx) => {
@@ -268,6 +272,12 @@ const pointTool: ToolDef = {
     fields: (ctx) => {
         const is = (...k: string[]) => (v: Values) => k.includes(v.kind as string);
         const section = 'Selections';
+        // Helix and spiral steps before this one: their ends (On point) and the curves (Along curve), also from a list.
+        const ends = curveOptions(stepsBefore(ctx), true);
+        const curves = curveOptions(stepsBefore(ctx), false);
+        const choose = (key: string, kind: string, list: { value: string; label: string }[]): Field[] => (list.length ? [{
+            key: `${key}list`, label: 'Or choose', kind: 'select', options: [{ value: '', label: 'Picked in the view' }, ...list], section, show: is(kind),
+        }] : []);
         const box = (key: string, label: string, kind: string, entities: Field['entities']): Field => ({
             key, label, kind: 'pick', entities, section, show: is(kind), accept: pointAccept(key),
         });
@@ -277,9 +287,11 @@ const pointTool: ToolDef = {
             box('arc', 'Circular edge', 'arcCentre', ['edge', 'ref']),
             box('fc', 'Face', 'faceCentre', ['face', 'ref']),
             box('vx', 'Vertex', 'vertex', ['edge', 'vertex', 'ref']),
+            ...choose('vx', 'vertex', ends),
             box('e1', 'First edge', 'intersection', ['edge', 'ref']),
             box('e2', 'Second edge', 'intersection', ['edge', 'ref']),
             box('ed', 'Edge', 'along', ['edge', 'ref']),
+            ...choose('ed', 'along', curves),
             { key: 'by', label: 'Spacing', kind: 'select', options: opts(['distance', 'Distance'], ['percent', 'Percentage']), section, show: is('along') },
             { key: 'amount', label: 'Distance', kind: 'number', unit: 'mm', min: 0, section, show: (v) => v.kind === 'along' && v.by !== 'percent' },
             { key: 'amount', label: 'Percentage', kind: 'number', unit: '%', min: 0, section, show: (v) => v.kind === 'along' && v.by === 'percent' },
@@ -289,11 +301,12 @@ const pointTool: ToolDef = {
     },
     defaults: (ctx) => {
         const stored = edited(ctx, 'point');
-        return (stored?.op === 'point' ? pointValues(stored) : pointDefaults()) as Values;
+        return (stored?.op === 'point' ? pointValues(stored, stepsBefore(ctx)) : pointDefaults()) as Values;
     },
-    top: (api) => {
+    onChange: boxChange(),
+    top: (api, ctx) => {
         try {
-            pointPositions(api.values as RefValues);
+            pointPositions(api.values as RefValues, stepsBefore(ctx));
             return <p className="tb-note pm-status ok" role="status">Fully defined</p>;
         } catch (e) {
             return <p className="tb-note pm-status error" role="status">{e instanceof Error ? e.message : String(e)}</p>;
@@ -302,7 +315,7 @@ const pointTool: ToolDef = {
     extra: (api) => <PlaceOnClick api={api} />,
     apply: (v, ctx) => attempt(async () => {
         // A point taken from the model keeps how it was taken, so it follows the model; null drops an older one's.
-        const steps = pointSteps(v as RefValues, !!ctx.edit);
+        const steps = pointSteps(v as RefValues, !!ctx.edit, stepsBefore(ctx));
         return saveSteps(ctx, 'point', steps.map((s) => (ctx.edit && !s.definition ? { ...s, definition: null } : s)));
     }),
 };

@@ -1586,7 +1586,7 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
         // References taken from the model are found again on the body as it is here (suppressed too: later steps may use them).
         if (index >= start) {
             try {
-                const next = followStep(shape, feature);
+                const next = followStep(shape, feature, features.slice(0, index));
                 if (next !== feature) {
                     features[index] = next;
                     followed.set(index, next);

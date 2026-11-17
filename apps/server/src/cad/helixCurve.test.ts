@@ -223,3 +223,30 @@ describe('helix and spiral curves in the kernel', () => {
         expect(measureVolume(coil.shape!) / 1579.1362934014896).toBeCloseTo(1, 9);
     }, SLOW);
 });
+
+describe('a spring drawn on a plane perpendicular to its helix', () => {
+    // Circle sketch, helix, a plane Perpendicular to the helix and Coincident with its start, the wire sketched on it
+    // with its centre where the helix pierces the plane (the plane's origin), a sweep, and a point on the helix's end.
+    const flow = (pitch: number, radius: number): Feature[] => [
+        { id: 'ring', op: 'sketch', sketch: { plane: 'top', profiles: [{ kind: 'circle', center: [0, 0], radius }] } },
+        { id: 'coil', op: 'helix', sketchRef: 'ring', definedBy: 'pitchRevolution', pitch, revolutions: 6, clockwise: true },
+        { id: 'square', op: 'plane', definition: { kind: 'curveNormal', curve: { curveRef: 'coil' }, point: { curveRef: 'coil', at: 'start' } } },
+        { id: 'wire', op: 'sketch', sketch: { plane: { planeRef: 'square' }, profiles: [{ kind: 'circle', center: [0, 0], radius: 1 }] } },
+        { id: 'spring', op: 'sweep', mode: 'add', profile: { sketchRef: 'wire' }, path: { curveRef: 'coil' } },
+        { id: 'tip', op: 'point', position: [0, 0, 0], definition: { kind: 'onCurve', curve: { curveRef: 'coil', at: 'end' } } },
+    ];
+
+    it('is one valid solid of the wire area times the helix length, and still is after the pitch and diameter change', () => {
+        for (const [pitch, radius] of [[5, 10], [8, 14]]) {
+            const built = buildPartial({ shape: empty, features: flow(pitch, radius) }, DEFAULT_PRINT);
+            expect(built.error).toBeNull();
+            expect(built.shape!.solids.length).toBe(1);
+            expect(isValid(built.shape!)).toBe(true);
+            const length = 6 * Math.hypot(2 * Math.PI * radius, pitch);
+            expect(Math.abs(measureVolume(built.shape!) / (Math.PI * length) - 1), `pitch ${pitch}, radius ${radius}`).toBeLessThan(1e-3);
+            // The point on the helix's end is where the curve ends now.
+            const tip = built.followed?.tip;
+            expect(tip?.op === 'point' && tip.position.map((c) => Math.round(c * 1e9) / 1e9 + 0)).toEqual([radius, 6 * pitch, 0]);
+        }
+    }, SLOW);
+});

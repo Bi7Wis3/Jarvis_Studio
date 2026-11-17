@@ -13,6 +13,7 @@ import type {
 } from '@jarvis/core';
 import { followsModel, normalizePlane, pointOfDefinition } from '@jarvis/core/reference';
 import { distanceToShape, pickTolerance } from './refs.js';
+import { curvePointOfDefinition, isCurvePointDefinition } from '@jarvis/core/curveRefs';
 
 const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -520,6 +521,8 @@ function followPointStep(body: Body, d: PointDefinition, position: Vec3): { defi
             const definition = { ...d, edge: followEdgePick(body, d.edge, d.edge.shape?.type ?? null, 'the edge') };
             return { definition, position: pointOfDefinition(definition, position) };
         }
+        default:
+            return { definition: d, position };
     }
 }
 
@@ -529,7 +532,11 @@ function followPointStep(body: Body, d: PointDefinition, position: Vec3): { defi
  * a point's position) are where they are now. Steps without picks come back as they are. Throws an error naming
  * what is lost when a picked face, edge or vertex is no longer on the body.
  */
-export function followStep(shape: Shape3D | null, f: Feature): Feature {
+export function followStep(shape: Shape3D | null, f: Feature, before: Feature[] = []): Feature {
+    // A point made on a helix or spiral step goes where that curve is now (no body needed).
+    if (f.op === 'point' && f.definition && isCurvePointDefinition(f.definition)) {
+        return { ...f, position: curvePointOfDefinition(f.definition, before) };
+    }
     if (!followsModel(f)) {
         return f;
     }

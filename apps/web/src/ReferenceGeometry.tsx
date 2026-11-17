@@ -20,7 +20,7 @@ import { offerTarget } from './viewMenu';
 import { useToolSession } from './toolSession';
 import { usePickSession, type PickItem } from './pickField';
 import {
-    axisDefinition, linePickTarget, planeCount, planeDefinition, pointSteps, refItem, refPickPatch, stepItem, type RefValues,
+    axisDefinition, linePickTarget, planeCount, planeDefinition, pointSteps, refItem, refPickPatch, stepItem, stepsBefore, type RefValues,
 } from './referenceDefs';
 import { useTreePicks, viewPick } from './treeSelection';
 import { HelixCurves } from './HelixCurves';
@@ -335,13 +335,14 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
                 return [{ id: DRAFT, name: 'Preview', op: 'axis', definition: axisDefinition(v) }];
             }
             if (toolId === 'point') {
-                return pointSteps(v, !!editing).map(({ position }): Feature => ({ id: DRAFT, name: 'Preview', op: 'point', position }));
+                return pointSteps(v, !!editing, stepsBefore({ part, edit: editing ? { feature: { id: editing } as Feature } : null }))
+                    .map(({ position }): Feature => ({ id: DRAFT, name: 'Preview', op: 'point', position }));
             }
         } catch {
             return [];
         }
         return [];
-    }, [toolId, values, editing]);
+    }, [toolId, values, editing, part?.features]);
     // What the open form's boxes hold: steps to highlight, picks to mark.
     const boxItems = useMemo(() => Object.entries(values).flatMap(([key, value]) => (Array.isArray(value)
         ? (value as unknown[]).flatMap((item) => (typeof item === 'object' && item !== null && 'kind' in item ? [{ key, item: item as PickItem }] : []))
@@ -409,7 +410,7 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
                 ))}
                 {referenceForm && <PickMarks items={marks} size={size} />}
                 <SketchLinePicker part={part} />
-                <HelixCurves part={part} hidden={hiddenSet} chosen={chosen} editing={editing} />
+                <HelixCurves part={part} hidden={hiddenSet} chosen={chosen} editing={editing} size={size} />
             </group>
         </group>
     );

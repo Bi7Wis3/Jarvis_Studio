@@ -3,6 +3,7 @@
 import type { Feature, Sketch, SketchCurve, SketchGeometry, SketchPlane, SketchPoint } from '@jarvis/core';
 import { profilesToGeometry } from './sketchGeometry';
 import { planeFrame } from './sketchMath';
+import { helixSnapPoints } from './sketchHelixPierce';
 
 type V3 = [number, number, number];
 const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -74,6 +75,8 @@ export function otherSketches(features: Feature[], plane: SketchPlane, offset: n
         }
     });
     add(features, skip, '', null);
+    // The start and end of helix and spiral steps, to snap to.
+    points.push(...helixSnapPoints(features, here, skip));
     for (const o of others) {
         add(o.features, o.skip, o.prefix, o.place);
     }

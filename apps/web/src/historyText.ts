@@ -157,6 +157,10 @@ export function pointRefText(point: PointRef, part?: Part): string {
     if ('fixedPoint' in point) {
         return point.from === 'vertex' ? 'a picked vertex' : 'the centre of a picked circular edge';
     }
+    if ('curveRef' in point) {
+        const name = stepName(part, point.curveRef);
+        return typeof point.at === 'number' ? `${name} at ${mm(point.at * 100)}%` : `the ${point.at} of ${name}`;
+    }
     return stepName(part, point.pointRef);
 }
 
@@ -183,6 +187,9 @@ function axisIds(axis: AxisRef | Vec3 | RevolveAxis | undefined): string[] {
 }
 
 function pointIds(point: PointRef | undefined): string[] {
+    if (point && !Array.isArray(point) && 'curveRef' in point) {
+        return [point.curveRef];
+    }
     return point && !Array.isArray(point) && 'pointRef' in point ? [point.pointRef] : [];
 }
 
@@ -254,6 +261,15 @@ export function stepRefs(feature: Feature): string[] {
                 ids.push(...planeIds(d.base), ...pointIds(d.point));
             } else if (d.kind === 'normal') {
                 ids.push(...axisIds(d.axis), ...pointIds(d.point));
+            } else if (d.kind === 'curveNormal') {
+                ids.push(d.curve.curveRef, ...pointIds(d.point));
+            }
+            break;
+        }
+        case 'point': {
+            const d = feature.definition;
+            if (d?.kind === 'onCurve' || d?.kind === 'alongCurve') {
+                ids.push(d.curve.curveRef);
             }
             break;
         }
@@ -425,6 +441,8 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                     return `Through ${axisRefText(d.axis, part)} and ${pointRefText(d.point, part)}`;
                 case 'tangent':
                     return `Tangent to a picked cylinder Ø${mm(d.cylinder.radius * 2)}`;
+                case 'curveNormal':
+                    return `Perpendicular to ${stepName(part, d.curve.curveRef)} at ${pointRefText(d.point, part)}`;
             }
         }
         case 'axis': {
@@ -457,6 +475,10 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                     return `Where two picked edges meet, at ${at}`;
                 case 'along':
                     return `Along a picked edge, at ${at}`;
+                case 'onCurve':
+                    return `On ${pointRefText(feature.definition.curve, part)}, at ${at}`;
+                case 'alongCurve':
+                    return `Along ${stepName(part, feature.definition.curve.curveRef)}, at ${at}`;
                 default:
                     return `At ${at}`;
             }

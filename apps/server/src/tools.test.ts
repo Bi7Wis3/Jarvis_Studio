@@ -626,6 +626,25 @@ describe('reference geometry and instances', () => {
             .toThrow(/give exactly one of sketch or sketchRef/);
     });
 
+    it('takes planes and points made on a helix step, by its id', () => {
+        const ring = { plane: 'top', profiles: [{ kind: 'circle', center: [0, 0], radius: 8 }] };
+        const features = [
+            { op: 'sketch', id: 'ring', sketch: ring },
+            { op: 'helix', id: 'coil', sketchRef: 'ring', definedBy: 'pitchRevolution', pitch: 4, revolutions: 6 },
+            { op: 'plane', id: 'square', definition: { kind: 'curveNormal', curve: { curveRef: 'coil' }, point: { curveRef: 'coil', at: 'start' } } },
+            { op: 'point', id: 'tip', position: [8, 24, 0], definition: { kind: 'onCurve', curve: { curveRef: 'coil', at: 'end' } } },
+            { op: 'point', id: 'mid', position: [0, 0, 0], definition: { kind: 'alongCurve', curve: { curveRef: 'coil' }, by: 'percent', amount: 50, index: 1 } },
+            { op: 'plane', id: 'off', definition: { kind: 'curveNormal', curve: { curveRef: 'coil' }, point: { curveRef: 'coil', at: 0.25 }, originOnCurve: true } },
+        ];
+        const parsed = z.object(tool('features_add').schema).parse({ partId: 'body', features }) as { features: unknown[] };
+        expect(parsed.features.slice(2)).toEqual(features.slice(2));
+        body(parsed.features);
+        expect(store.get().parts[0].features?.map((f) => f.id)).toEqual(['ring', 'coil', 'square', 'tip', 'mid', 'off']);
+        expect(() => run('features_add', { partId: 'body', features: [
+            { op: 'plane', definition: { kind: 'curveNormal', curve: { curveRef: 'ring' }, point: [0, 0, 0] } },
+        ] })).toThrow(/helix "ring" is not an earlier helix step/);
+    });
+
     it('clears optional fields an update sets to null', () => {
         body([{ op: 'thread', id: 't', kind: 'external', diameter: 8, pitch: 1.25, length: 10, position: [0, 0, 0] }]);
         run('features_update', { partId: 'body', updates: [{ id: 't', at: [4, 0, 0], position: null, length: null, revolutions: 6 }] });

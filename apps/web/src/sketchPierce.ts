@@ -5,6 +5,7 @@ import { projectPoint, tidy, type P2, type PlaneFrame3, type Skipped } from '@ja
 import { profilesToGeometry } from './sketchGeometry';
 import { planeFrame } from './sketchMath';
 import { CURVE_NOUN } from './sketchCurves';
+import { helixPiercePoints } from './sketchHelixPierce';
 
 type V3 = [number, number, number];
 
@@ -24,6 +25,15 @@ export function pierceCurves(features: Feature[], here: PlaneFrame3, ids: string
         const [stepId, curveId] = ref.split('/');
         const index = features.findIndex((f) => f.id === stepId);
         const f = features[index];
+        // A helix or spiral step: every place it passes through the plane.
+        const onHelix = f?.op === 'helix' ? helixPiercePoints(features, stepId, here) : null;
+        if (onHelix) {
+            onHelix.forEach((p) => add(here.origin.map((o, i) => o + here.u[i] * p[0] + here.v[i] * p[1]) as V3));
+            if (!onHelix.length) {
+                skipped.push({ what: f.name ?? stepId, why: 'it does not pass through the sketch plane' });
+            }
+            continue;
+        }
         const sketch = f && 'sketch' in f ? (f as { sketch?: { plane: SketchPlane; offset?: number; geometry?: SketchGeometry; profiles: never[] } }).sketch : undefined;
         if (!sketch) {
             continue;

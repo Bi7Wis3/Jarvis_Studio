@@ -4,6 +4,7 @@ import type { CadActivity } from './cadActivity';
 import type { ImportedMates, ImportStep } from './imported';
 import type { AssemblyMates } from './mates/types';
 import type { HelixOptions } from './helix';
+import type { CurveNormalDefinition, CurvePointDefinition, CurvePointRef } from './curveRefs';
 
 export type Vec3 = [number, number, number];
 
@@ -125,7 +126,9 @@ export interface FixedPointRef {
 }
 
 /** A point in the part frame: coordinates, an earlier point step by id, or a point taken from the model. */
-export type PointRef = Vec3 | { pointRef: string } | FixedPointRef;
+export type PointRef = Vec3 | { pointRef: string } | FixedPointRef
+    /** A point on a helix or spiral step: its start, end or part way (curveRefs.ts). */
+    | CurvePointRef;
 
 /** A cylindrical face taken from the model: its axis and radius (with `pick`, as last found: it follows the model). */
 export interface FixedCylinder extends FixedLine {
@@ -144,7 +147,9 @@ export type PointDefinition =
     | { kind: 'faceCentre'; face: FacePickRef }
     | { kind: 'vertex'; vertex: ModelVertexPick }
     | { kind: 'intersection'; a: ModelEdgePick; b: ModelEdgePick }
-    | { kind: 'along'; edge: ModelEdgePick; by: 'distance' | 'percent'; amount: number; index: number; reverse?: boolean };
+    | { kind: 'along'; edge: ModelEdgePick; by: 'distance' | 'percent'; amount: number; index: number; reverse?: boolean }
+    /** On a helix or spiral step: its start or end, or along it (curveRefs.ts); worked out again at every rebuild. */
+    | CurvePointDefinition;
 
 /** `flipNormal` turns any plane's normal around (its u axis stays, so v turns too). */
 export type PlaneDefinition = (
@@ -173,6 +178,8 @@ export type PlaneDefinition = (
      * about the axis (`flip`: the tangent on the other side).
      */
     | { kind: 'tangent'; cylinder: FixedCylinder; point?: PointRef; plane?: PlaneRef; angle?: number; flip?: boolean }
+    /** Perpendicular to a helix or spiral step where it passes nearest a point (curveRefs.ts). */
+    | CurveNormalDefinition
 ) & { flipNormal?: boolean };
 
 export type AxisDefinition =

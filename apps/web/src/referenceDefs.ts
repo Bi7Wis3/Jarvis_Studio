@@ -9,7 +9,9 @@ import type {
     AxisDefinition, AxisRef, Feature, FixedCylinder, FixedPointRef, ModelEdgePick, ModelEdgeShape, ModelEntityPick, PlaneDefinition,
     PlaneRef, PointDefinition, PointRef, Vec3,
 } from '@jarvis/core';
-import { linesMeet, pointsAlong, resolveAxis, resolvePlane } from '@jarvis/core/reference';
+import { linesMeet, pointsAlong, resolveAxis, resolvePlane, resolvePoint } from '@jarvis/core/reference';
+import { curveOf, pointsAlongCurve } from '@jarvis/core/curveRefs';
+import { curveIdOf, curveItem, curveLabel, curveOptions, curvePointItem, curvePointOf, curvePointValue, isCurveItem, isCurvePointItem } from './curvePicks';
 import { valueText } from './numberText';
 import { pickItems, type PickItem } from './pickField';
 import type { ModelPick } from './pickRefs';
@@ -62,7 +64,7 @@ export function stepsBefore(ctx: { part: { features?: Feature[] } | null; edit: 
  * axis ('x' | 'y' | 'z'), the origin, typed coordinates ('xyz'), the u or v axis of the plane being turned, or a step
  * ('plane:<id>' | 'axis:<id>' | 'point:<id>').
  */
-export type RefKind = 'plane' | 'line' | 'point';
+export type RefKind = 'plane' | 'line' | 'point' | 'curve';
 
 /** In this app Y is up: Top is the XZ plane (normal +Y), Front XY (normal +Z), Right YZ (normal +X). */
 export const BASE_PLANES: [string, string][] = [['top', 'Top plane (XZ)'], ['front', 'Front plane (XY)'], ['right', 'Right plane (YZ)']];
@@ -71,6 +73,12 @@ const OWN_AXES: [string, string][] = [['u', 'Its horizontal axis (u)'], ['v', 'I
 
 /** What kind of reference a list value is. */
 export function refKind(ref: string): RefKind | null {
+    if (curvePointOf(ref)) {
+        return 'point';
+    }
+    if (curveIdOf(ref)) {
+        return 'curve';
+    }
     if (BASE_PLANES.some(([v]) => v === ref) || ref.startsWith('plane:')) {
         return 'plane';
     }
@@ -84,6 +92,10 @@ const stepName = (steps: Feature[], id: string): string => steps.find((f) => f.i
 
 /** A list value's label, e.g. "Top plane (XZ)" or a step's name. */
 export function refLabel(ref: string, steps: Feature[] = []): string {
+    const onCurve = curveLabel(ref, steps);
+    if (onCurve) {
+        return onCurve;
+    }
     const fixed = [...BASE_PLANES, ...BASE_AXES, ...OWN_AXES, ['origin', 'Origin'], ['xyz', 'Coordinates']].find(([v]) => v === ref);
     if (fixed) {
         return fixed[1];
@@ -102,12 +114,16 @@ export function refOptions(kinds: RefKind[], steps: Feature[], ownAxes = false):
         { value: '', label: 'Picked in the view' },
         ...(kinds.includes('plane') ? [...pairs(BASE_PLANES), ...of('plane')] : []),
         ...(kinds.includes('line') ? [...(ownAxes ? pairs(OWN_AXES) : []), ...pairs(BASE_AXES), ...of('axis')] : []),
-        ...(kinds.includes('point') ? [...pairs([['origin', 'Origin'], ['xyz', 'Coordinates']]), ...of('point')] : []),
+        ...(kinds.includes('point') ? [...pairs([['origin', 'Origin'], ['xyz', 'Coordinates']]), ...of('point'), ...curveOptions(steps, true)] : []),
+        ...(kinds.includes('curve') ? curveOptions(steps, false) : []),
     ];
 }
 
 /** The box item of a reference step clicked in the view. */
 export function stepItem(step: Pick<Feature, 'id' | 'name' | 'op'>): PickItem | null {
+    if (step.op === 'helix') {
+        return curveItem(step.id, [step as Feature]);
+    }
     return step.op === 'plane' || step.op === 'axis' || step.op === 'point'
         ? { kind: 'ref', ref: `${step.op}:${step.id}`, label: step.name ?? step.id } : null;
 }
@@ -244,6 +260,10 @@ const asAxis = (item: PickItem): AxisRef => {
 /** The item as a point: a vertex, a circle's centre, a point step, the origin, or the box's typed coordinates (`<key>p`). */
 export function asPoint(item: PickItem, v: RefValues, key: string): PointRef {
     if (item.kind === 'ref') {
+        const onCurve = curvePointOf(item.ref);
+        if (onCurve) {
+            return onCurve;
+        }
         if (item.ref.startsWith('point:')) {
             return { pointRef: item.ref.slice(6) };
         }
@@ -358,6 +378,9 @@ function pointItem(ref: PointRef, key: string, steps: Feature[]): RefValues {
     if ('fixedPoint' in ref) {
         return { [key]: [fixedPointItem(ref)], [`${key}list`]: '' };
     }
+    if ('curveRef' in ref) {
+        return { [key]: [curvePointItem(ref, steps)], [`${key}list`]: curvePointValue(ref) };
+    }
     return { [key]: [refItem(`point:${ref.pointRef}`, steps)], [`${key}list`]: `point:${ref.pointRef}` };
 }
 
@@ -398,9 +421,13 @@ export function boxListPatch(key: string, v: RefValues, steps: Feature[]): RefVa
 export const PLANE_BOXES = ['r1', 'r2', 'r3'];
 
 /** What a reference counts as in the Plane form (a circular edge is its plane, a cone its axis); null: unusable. */
-export type PlaneClass = 'plane' | 'line' | 'point' | 'cyl';
+export type PlaneClass = 'plane' | 'line' | 'point' | 'cyl' | 'curve';
 
 export function planeClass(item: PickItem): PlaneClass | null {
+    // A helix or spiral step; other curved edges have no plane square to them here yet.
+    if (isCurveItem(item)) {
+        return 'curve';
+    }
     switch (itemClass(item)) {
         case 'plane':
         case 'circle':
@@ -424,11 +451,12 @@ export const PLANE_CONSTRAINTS: Record<PlaneClass, [string, string][]> = {
     line: [['coincident', 'Coincident'], ['perpendicular', 'Perpendicular']],
     point: [['coincident', 'Coincident']],
     cyl: [['tangent', 'Tangent'], ['coincident', 'Coincident (through its axis)']],
+    curve: [['perpendicular', 'Perpendicular']],
 };
 
 /** Why a pick cannot be a plane reference, or null. */
 export function planeAccept(item: PickItem): string | null {
-    return planeClass(item) ? null : 'Pick a flat or cylindrical face, a straight or circular edge, a vertex or a reference.';
+    return planeClass(item) ? null : 'Pick a flat or cylindrical face, a straight or circular edge, a vertex, a helix or spiral, or a reference.';
 }
 
 /** The class of box k's reference, or null when empty or unusable. */
@@ -438,10 +466,10 @@ export function slotClass(v: RefValues, k: number): PlaneClass | null {
 }
 
 export function planeDefaults(): RefValues {
-    const v: RefValues = { ...emptyBoxes(PLANE_BOXES), flipNormal: false, pn: false, ...vecValues('nv', [0, 1, 0]), pnx: '', keepOff: false };
+    const v: RefValues = { ...emptyBoxes(PLANE_BOXES), flipNormal: false, pn: false, ...vecValues('nv', [0, 1, 0]), pnx: '', keepOff: false, originOnCurve: false };
     for (const k of [1, 2, 3]) {
         Object.assign(v, {
-            [`c${k}plane`]: 'offset', [`c${k}line`]: 'coincident', [`c${k}point`]: 'coincident', [`c${k}cyl`]: 'tangent',
+            [`c${k}plane`]: 'offset', [`c${k}line`]: 'coincident', [`c${k}point`]: 'coincident', [`c${k}cyl`]: 'tangent', [`c${k}curve`]: 'perpendicular',
             [`d${k}`]: '10', [`a${k}`]: '45', [`f${k}`]: false, [`n${k}`]: '1',
         });
     }
@@ -515,6 +543,17 @@ function planeOnly(v: RefValues, index: number): PlaneDefinition {
     const points = slots.filter((s) => s.cls === 'point');
     const tangent = slots.find((s) => s.cls === 'cyl' && s.c === 'tangent');
     const point = (s: Slot) => asPoint(s.item, v, `r${s.k}`);
+    const curve = slots.find((s) => s.cls === 'curve');
+    if (curve) {
+        // Perpendicular to a helix or spiral, through a point (SolidWorks needs the point too).
+        over(2);
+        const through = slots.find((s) => s !== curve);
+        if (!through || through.cls !== 'point') {
+            throw new Error('Perpendicular to a curve: pick a point for the plane to pass through, such as the curve\'s start or end.');
+        }
+        const id = curveIdOf((curve.item as Extract<PickItem, { kind: 'ref' }>).ref)!;
+        return { kind: 'curveNormal', curve: { curveRef: id }, point: point(through), ...(v.originOnCurve ? { originOnCurve: true } : {}) };
+    }
 
     if (tangent) {
         const cyl = cylinderOf(tangent.item);
@@ -738,6 +777,11 @@ export function planeValues(d: PlaneDefinition, steps: Feature[] = []): RefValue
             set(1, lineItem(d.axis, steps), 'coincident');
             setPoint(2, d.point);
             break;
+        case 'curveNormal':
+            set(1, curveItem(d.curve.curveRef, steps), 'perpendicular');
+            setPoint(2, d.point);
+            v.originOnCurve = !!d.originOnCurve;
+            break;
         case 'tangent': {
             const { point, direction, radius } = d.cylinder;
             const p = d.point && Array.isArray(d.point) ? d.point : null;
@@ -799,6 +843,9 @@ export function planeAutoPatch(key: string, v: RefValues): RefValues {
             if (plane && loosePlane) {
                 patch[`c${plane.j}plane`] = 'angle';
             }
+            break;
+        case 'curve':
+            patch[`c${k}curve`] = 'perpendicular';
             break;
         case 'cyl':
             patch[`c${k}cyl`] = 'tangent';
@@ -947,19 +994,19 @@ export function pointAccept(box: string): (item: PickItem) => string | null {
             case 'fc':
                 return item.kind === 'face' ? null : 'Pick a face.';
             case 'vx':
-                return item.kind === 'vertex' ? null : 'Pick a vertex: click an edge at its end.';
+                return item.kind === 'vertex' || isCurvePointItem(item) ? null : 'Pick a vertex (click an edge at its end) or the start or end of a helix.';
             case 'e1':
             case 'e2':
                 return c === 'line' && item.kind === 'edge' ? null : 'Pick a straight edge.';
             default:
-                return item.kind === 'edge' && (c === 'line' || c === 'circle') ? null : 'Pick a straight or circular edge.';
+                return (item.kind === 'edge' && (c === 'line' || c === 'circle')) || isCurveItem(item) ? null : 'Pick a straight or circular edge, or a helix or spiral.';
         }
     };
 }
 
 export function pointDefaults(position: Vec3 = [0, 0, 0]): RefValues {
     return {
-        kind: 'xyz', ...vecValues('pos', position), arc: [], fc: [], vx: [], e1: [], e2: [], ed: [],
+        kind: 'xyz', ...vecValues('pos', position), arc: [], fc: [], vx: [], e1: [], e2: [], ed: [], vxlist: '', edlist: '',
         by: 'distance', amount: '10', count: '1', reverse: false, index: '1',
     };
 }
@@ -968,7 +1015,7 @@ export function pointDefaults(position: Vec3 = [0, 0, 0]): RefValues {
  * Form values of a stored point step: one taken from the model reopens as it was made (its picks as the kernel last
  * found them); coordinates, and older steps kept by value, as coordinates.
  */
-export function pointValues(step: Extract<Feature, { op: 'point' }>): RefValues {
+export function pointValues(step: Extract<Feature, { op: 'point' }>, steps: Feature[] = []): RefValues {
     const v = pointDefaults(step.position);
     const d = step.definition;
     const p = step.position;
@@ -988,6 +1035,12 @@ export function pointValues(step: Extract<Feature, { op: 'point' }>): RefValues 
             return {
                 ...v, kind: 'along', ed: [edgeItem(d.edge, edgeGeom(d.edge))], by: d.by, amount: fmt(d.amount), reverse: !!d.reverse, index: String(d.index),
             };
+        case 'onCurve':
+            return { ...v, kind: 'vertex', vx: [curvePointItem(d.curve, steps)], vxlist: curvePointValue(d.curve) };
+        case 'alongCurve':
+            return {
+                ...v, kind: 'along', ed: [curveItem(d.curve.curveRef, steps)], edlist: `curve:${d.curve.curveRef}`, by: d.by, amount: fmt(d.amount), reverse: !!d.reverse, index: String(d.index),
+            };
         default:
             return v;
     }
@@ -1003,7 +1056,7 @@ function boxGeom(v: RefValues, key: string, what: string): ModelPick['geom'] {
 }
 
 /** The positions the Point form makes (several for Along curve with a number of points). */
-export function pointPositions(v: RefValues): Vec3[] {
+export function pointPositions(v: RefValues, steps: Feature[] = []): Vec3[] {
     switch (v.kind) {
         case 'xyz':
             return [vec(v, 'pos', 'Point')];
@@ -1023,6 +1076,10 @@ export function pointPositions(v: RefValues): Vec3[] {
         }
         case 'vertex': {
             const item = pickItems(v.vx)[0];
+            const onCurve = item?.kind === 'ref' ? curvePointOf(item.ref) : null;
+            if (onCurve) {
+                return [resolvePoint(onCurve, steps, 'point')];
+            }
             if (!item || item.kind !== 'vertex') {
                 throw new Error('Pick a vertex.');
             }
@@ -1037,7 +1094,7 @@ export function pointPositions(v: RefValues): Vec3[] {
             return [linesMeet(a.a, unit(sub(a.b, a.a)), b.a, unit(sub(b.b, b.a)))];
         }
         case 'along':
-            return alongPositions(v);
+            return alongPositions(v, steps);
         default:
             throw new Error('Pick how the point is defined.');
     }
@@ -1047,8 +1104,10 @@ export function pointPositions(v: RefValues): Vec3[] {
  * Points along a straight or circular edge from its start (Reverse: from its end), spaced by a distance or a
  * percentage of its length; the first is one spacing from the end, as in SolidWorks.
  */
-function alongPositions(v: RefValues): Vec3[] {
-    const g = boxGeom(v, 'ed', 'a straight or circular edge');
+function alongPositions(v: RefValues, steps: Feature[]): Vec3[] {
+    const picked = pickItems(v.ed)[0];
+    const curve = picked?.kind === 'ref' ? curveIdOf(picked.ref) : null;
+    const g = curve ? null : boxGeom(v, 'ed', 'a straight or circular edge');
     const count = Math.round(num(v, 'count', 'Number of points'));
     if (count < 1 || count > 100) {
         throw new Error('Number of points must be 1 to 100.');
@@ -1056,6 +1115,9 @@ function alongPositions(v: RefValues): Vec3[] {
     const amount = num(v, 'amount', v.by === 'percent' ? 'Percentage' : 'Distance');
     if (!(amount > 0)) {
         throw new Error(`${v.by === 'percent' ? 'Percentage' : 'Distance'} must be greater than 0.`);
+    }
+    if (curve) {
+        return pointsAlongCurve(curveOf(curve, steps), v.by === 'percent' ? 'percent' : 'distance', amount, count, !!v.reverse, fmt);
     }
     const shape = shapeOf(g);
     if (!shape) {
@@ -1068,10 +1130,10 @@ function alongPositions(v: RefValues): Vec3[] {
  * The point steps the Point form makes: each position, and for one taken from the model how it was taken (the kernel
  * finds it again at every rebuild). `editing`: one step; Along curve keeps the edited point's place in its row.
  */
-export function pointSteps(v: RefValues, editing = false): { position: Vec3; definition?: PointDefinition }[] {
+export function pointSteps(v: RefValues, editing = false, before: Feature[] = []): { position: Vec3; definition?: PointDefinition }[] {
     const along = v.kind === 'along';
     const index = editing && along ? Math.max(1, Math.round(Number(v.index) || 1)) : 1;
-    const positions = pointPositions(editing ? { ...v, count: String(index) } : v);
+    const positions = pointPositions(editing ? { ...v, count: String(index) } : v, before);
     const made = editing ? positions.slice(-1) : positions;
     const steps = (definition: (i: number) => PointDefinition | null) => made.map((position, i) => {
         const d = definition(i);
@@ -1096,6 +1158,11 @@ export function pointSteps(v: RefValues, editing = false): { position: Vec3; def
             return steps(() => (pick && 'face' in pick ? { kind: 'faceCentre', face: pick.face } : null));
         }
         case 'vertex': {
+            const found = item('vx');
+            const onCurve = found?.kind === 'ref' ? curvePointOf(found.ref) : null;
+            if (onCurve) {
+                return steps(() => ({ kind: 'onCurve', curve: onCurve }));
+            }
             const pick = pickIn('vx');
             return steps(() => (pick && 'vertex' in pick ? { kind: 'vertex', vertex: pick } : null));
         }
@@ -1107,6 +1174,13 @@ export function pointSteps(v: RefValues, editing = false): { position: Vec3; def
             const edge = edgeIn('ed');
             const by = v.by === 'percent' ? 'percent' : 'distance';
             const amount = num(v, 'amount', by === 'percent' ? 'Percentage' : 'Distance');
+            const found = item('ed');
+            const curve = found?.kind === 'ref' ? curveIdOf(found.ref) : null;
+            if (curve) {
+                return steps((i) => ({
+                    kind: 'alongCurve', curve: { curveRef: curve }, by, amount, index: editing ? index : i + 1, ...(v.reverse ? { reverse: true } : {}),
+                }));
+            }
             return steps((i) => (edge?.shape
                 ? { kind: 'along', edge, by, amount, index: editing ? index : i + 1, ...(v.reverse ? { reverse: true } : {}) } : null));
         }

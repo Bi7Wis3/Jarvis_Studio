@@ -7,7 +7,7 @@ import { slug, type ProjectStore } from './store.js';
 import { folderTools } from './folders.js';
 import { componentFolderTools } from './componentFolders.js';
 import { importStepSchema } from './import/schema.js';
-import { checkHelixStep, helixStepSchema } from './helixSchema.js';
+import { checkHelixStep, curveNormalSchema, curvePointDefinitionSchemas, curvePointSchema, helixStepSchema } from './helixSchema.js';
 
 export interface StudioTool {
     name: string;
@@ -97,7 +97,7 @@ const followedPoint = z.object({ fixedPoint: vec3, from: z.enum(['vertex', 'cent
     .describe('A vertex or the centre of a circular edge, following the model');
 const refPlane = z.union([followedPlane, planeRef]);
 const refAxis = z.union([followedAxis, axisRef]);
-const refPoint = z.union([followedPoint, pointRef]);
+const refPoint = z.union([followedPoint, curvePointSchema, pointRef]);
 const pointDefinition = z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('arcCentre'), edge: edgePick }),
     z.object({ kind: z.literal('faceCentre'), face: facePick }),
@@ -108,6 +108,7 @@ const pointDefinition = z.discriminatedUnion('kind', [
         index: z.number().int().min(1).describe('Which of the points spaced amount apart, from the start of edge.shape'),
         reverse: z.boolean().optional().describe('From the end of edge.shape'),
     }),
+    ...curvePointDefinitionSchemas,
 ]).describe('How the point was taken from the model; it is found again at every rebuild and position is where it was last found');
 const sketchLineAxis = z.object({ line: z.string() }).describe('A line or centreline of the sketch, by curve id (sketch geometry)');
 const sketchProfile = z.discriminatedUnion('kind', [
@@ -428,6 +429,7 @@ const feature = z.discriminatedUnion('op', [
                 angle: z.number().optional(),
                 flip: z.boolean().optional().describe('The other of the two tangent planes'),
             }).describe('Tangent to a cylinder'),
+            curveNormalSchema(flipNormal, refPoint),
         ]),
     }).describe('Construction plane; sketches and other steps use it with { planeRef: id }'),
     z.object({

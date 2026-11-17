@@ -5,6 +5,7 @@ import type {
     AxisRef, CustomSketchPlane, Feature, ModelEdgeShape, PlaneDefinition, PlaneRef, PointDefinition, PointRef, RevolveAxis, Sketch, SketchPlane,
     Vec3,
 } from './index';
+import { curveNormalPlane, curvePoint, curvePointOfDefinition, isCurvePointDefinition } from './curveRefs';
 
 const add = (a: Vec3, b: Vec3): Vec3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -162,6 +163,8 @@ export function planeOfDefinition(d: PlaneDefinition, before: Feature[], where =
         }
         case 'tangent':
             return tangentPlane(d, before, where);
+        case 'curveNormal':
+            return curveNormalPlane(d, before, where, resolvePoint);
     }
 }
 
@@ -279,9 +282,16 @@ export function resolvePoint(ref: PointRef, features: Feature[], where = 'point'
     if ('fixedPoint' in ref) {
         return ref.fixedPoint;
     }
+    if ('curveRef' in ref) {
+        return curvePoint(ref, features, where);
+    }
     const step = earlier(features, ref.pointRef, 'point', where);
     if (step.op !== 'point') {
         throw new Error(`${where}: "${ref.pointRef}" is not a point`);
+    }
+    // A point made on a curve goes where the curve is now (its position is only where it was last worked out).
+    if (step.definition && isCurvePointDefinition(step.definition)) {
+        return curvePointOfDefinition(step.definition, features.slice(0, features.indexOf(step)), where);
     }
     return step.position;
 }

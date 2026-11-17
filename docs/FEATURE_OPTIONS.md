@@ -211,13 +211,21 @@ Reference geometry
   the faces that met there meet now) and the plane is drawn where the kernel puts it. A reference that can no longer
   be found is an error naming the plane and what it lost (dangling). Older steps kept by value stay so (the form says
   so; pick again to make them follow).
+- [x] Plane perpendicular to a helix or spiral step with a point (its start or end, a point part way, a vertex or a
+  point off it): square to the curve where it passes nearest the point; Set origin on curve; its X towards the
+  curve's axis, so a profile sketched on it is not twisted against the sweep. Picked in the view (the curve, and the
+  small points at its ends) or from the lists; stored by the curve step's id, so it follows the curve when it changes.
 - [ ] Plane, still open: following a face that moved sideways or turned, or a hole that moved (now an error: pick it
-  again); project; parallel to screen; set origin on curve; tangent to cones and other curved faces.
+  again); project; parallel to screen; perpendicular to other curved model edges and sketch curves (the kernel does
+  not hand them to the form yet); tangent to cones and other curved faces. Perpendicular to a curve with no point:
+  the help does not describe it, so it is not offered.
 - [x] Axis: one line/edge/axis, two planes, two points/vertices, cylindrical/conical face, point and face/plane,
   sketch line; references taken from the model follow it as for Plane.
 - [x] Point: coordinates (placed by a click in the view, dragged by its arrows), arc centre, centre of face, on
   point, intersection of two straight edges, along a straight or circular edge by distance or percentage (count);
   those taken from the model follow it as for Plane, and reopen as they were made.
+- [x] Point on a helix or spiral step: On point at its start or end, Along curve by distance or percentage (count,
+  from either end); worked out from the curve at every rebuild, so it follows the curve.
 - [ ] Point, still open: projection; evenly distributed.
 - [ ] Coordinate system: origin, X/Y/Z directions from points, edges or faces, reverse axes, numeric position and
   rotation.
@@ -284,11 +292,14 @@ Reference geometry
   Dimension, relation and Select tools and are snapped to; a click only selects one (the sketch keeps it, drawn
   quietly, only when a relation or dimension uses it); right-click or the Modify toolbar: Convert entities (locked)
   and Copy as sketch entities (plain, free to edit), for several edges or a face's loops at once; Intersection
-  curve, Silhouette entities, Pierce point; offset, mirror and pattern direction from model edges. Every edge comes
+  curve, Silhouette entities, Pierce point (also of a helix or spiral step: a click on the curve or its chip in the
+  form; a selected point goes to the nearest crossing); offset, mirror and pattern direction from model edges. The
+  start and end of helix and spiral steps are snapped to. Every edge comes
   in as the simplest exact entity: a spline edge (a loft makes every edge one) that is straight or round within
   0.000001 mm is a line, circle or arc, or the exact ellipse of a circle seen at a tilt; consecutive pieces of one
   line or circle join. All by value: what is taken from the model is locked where it was and does not follow later
-  changes to it.
+  changes to it. Except: a point pierced onto a helix in a sketch on a plane made square to that helix at a point of it
+  is tied to the sketch's origin (where the helix passes through), so it follows the helix.
 - [x] Dimensions and relations: driven dimensions; arc length, three-point angle, line midpoint, doubled distance,
   arc conditions; horizontal, vertical and ordinate dimensions; path length (driving or driven); angular running
   dimensions; ordinate rows (Break alignment, drag the zero, along an edge); Add relations form;

@@ -27,7 +27,8 @@
     "./cadActivity": "./src/cadActivity.ts",
     "./imported": "./src/imported.ts",
     "./mates": "./src/mates/index.ts",
-    "./helix": "./src/helix.ts"
+    "./helix": "./src/helix.ts",
+    "./curveRefs": "./src/curveRefs.ts"
   },
   "dependencies": {
     "three": "^0.187.0"

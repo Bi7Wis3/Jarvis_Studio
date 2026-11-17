@@ -18,6 +18,7 @@ import { setModelPicking } from './sketchModelPick';
 import { useStudio } from './state';
 import { hiddenStepsNow } from './stepVisibility';
 import { pierceCurves } from './sketchPierce';
+import { HelixPierceChips, pierceHelixPoint } from './sketchHelixPierce';
 
 type Mode = 'convert' | 'section' | 'silhouette' | 'pierce';
 
@@ -296,6 +297,7 @@ function PiercePanel() {
                 Click model edges or curves of other sketches that pass through the sketch plane. A point is made where each one
                 pierces it{selected.length === 1 ? ', or the selected point is moved there' : ' (select one sketch point first to move it there instead)'}.
             </p>
+            <HelixPierceChips features={context} />
             <div className="sk-list">
                 {picks.map((p) => (
                     <div key={pickKey(p)} className="sk-row">
@@ -347,7 +349,12 @@ function addPierce(): Result {
     const s = useSketcher.getState();
     const selected = s.selection.filter((x) => x.type === 'point').map((x) => x.id);
     let g = s.geometry;
-    if (selected.length === 1 && points.length === 1) {
+    // A helix picked: the selected point goes to its nearest crossing (tied to the origin on a plane made on that helix).
+    const target = modelTarget(s);
+    const onHelix = target ? pierceHelixPoint(g, selected, useSketchModel.getState().sketchPicks, s.context, target.frame, s.plane, s.offset) : null;
+    if (onHelix) {
+        g = onHelix;
+    } else if (selected.length === 1 && points.length === 1) {
         const id = selected[0];
         g = { ...g, points: g.points.map((p) => (p.id === id ? { ...p, u: points[0][0], v: points[0][1] } : p)) };
         const used = new Set(g.constraints.map((c) => c.id));
