@@ -26,6 +26,7 @@ import { Ears } from './stt.js';
 import { callTool, createTools } from './tools.js';
 import { Voice } from './tts.js';
 import { registerImportRoutes } from './import/routes.js';
+import { MateService, mateTools, registerMateRoutes } from './mates.js';
 import { registerFileRoutes, rememberImportFolder } from './fileRoutes.js';
 
 const PORT = Number(process.env.PORT ?? 4720);
@@ -120,7 +121,10 @@ const tools = [
         meshes,
         kernel,
     }),
+    ...mateTools(store, kernel),
 ];
+// Mates are solved again when the parts they join change behind them (a part's model, an undo).
+const mateService = new MateService(store, kernel);
 
 const info = (): ServerMessage => ({
     type: 'info',
@@ -207,6 +211,7 @@ meshes.update(store.get());
 
 store.subscribe((project) => {
     broadcast({ type: 'state', project });
+    mateService.check();
     meshes.update(project);
     cad.refresh();
     broadcastCatalog();
@@ -489,6 +494,7 @@ app.get('/api/health', async () => ({
 registerMcpHttp(app, tools);
 registerSettingsRoutes(app, settings);
 registerImportRoutes(app, store, kernel, { importedPath: (path) => rememberImportFolder(settings, path) });
+registerMateRoutes(app, store, kernel);
 registerFileRoutes(app, settings);
 
 await app.listen({ host: '127.0.0.1', port: PORT });

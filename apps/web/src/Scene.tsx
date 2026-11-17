@@ -36,6 +36,9 @@ import { useOptions } from './options';
 import { GhostPart } from './previewGhost';
 import { faceMaterial, styleLook, useDisplayStyle } from './displayStyle';
 import { ModelLines } from './modelLines';
+import { useMatePicks } from './mates/matePicks';
+import { setMatePickCopy } from './mates/mateState';
+import { ComponentDrag } from './mates/ComponentDrag';
 
 export { anim };
 
@@ -460,12 +463,14 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
         }
     }, [still]);
     const modelPicked = useSketchModel((s) => s.picks);
+    // The Mate form picks on any component in the assembly; the tree's selected mates are lit (mates/matePicks.ts).
+    const matePicks = useMatePicks(part.id, kernel);
     const pickable = (useStudio((s) => s.workspace === 'part' && s.mode === 'select' && s.activePart === part.id && !s.placingDecal)
-        || (sketching && !!sketchPicks)) && !dimmed && !!kernel;
+        || (sketching && !!sketchPicks) || !!matePicks?.allow.length) && !dimmed && !!kernel;
     const viewportHeight = useThree((s) => s.size.height);
     const allPicked = useStudio((s) => s.picked);
     // An open form with selection boxes takes the clicks on this part instead of the plain pick list.
-    const boxes = usePartPicks(part.id, kernel);
+    const boxes = usePartPicks(part.id, kernel) ?? matePicks;
     const [hoverPick, setHoverPick] = useState<Entity | null>(null);
     const hoverRef = useRef<Entity | null>(null);
     const setHover = (entity: Entity | null) => {
@@ -596,6 +601,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                 if (entity && boxes?.allow.length) {
                     const n = e.face?.normal;
                     const local = e.object.worldToLocal(e.point.clone());
+                    setMatePickCopy(e.object.userData.copy);
                     boxes.click(entity, [local.x, local.y, local.z], n ? [n.x, n.y, n.z] : undefined, edgeReach(e, viewportHeight));
                 } else if (entity) {
                     pickEntity({ partId: part.id, ...entity }, e.shiftKey);
@@ -620,7 +626,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                         rotation={rotation}
                         castShadow={!sketching && look.faces === 'shaded'}
                         receiveShadow
-                        userData={{ partId: part.id }}
+                        userData={{ partId: part.id, copy: i }}
                         {...handlers}
                     >
                         {look.faces === 'shaded' && <PartDecals part={part} />}
@@ -660,7 +666,7 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
                             color={selected ? SELECT_COLOR : undefined} edgeColor={edgeLook.edgeColor} edgeOpacity={edgeLook.edgeOpacity}
                             hovered={!!highlight} position={part.position} rotation={rotation} />
                     )}
-                    {pickable && (
+                    {(pickable || !!matePicks) && (
                         <group position={part.position} rotation={rotation}>
                             <PickOverlay faces={pickedOverlay.faces} edges={pickedOverlay.edges} strong />
                             <PickOverlay faces={hoverOverlay.faces} edges={hoverOverlay.edges} strong={false} />
@@ -1130,6 +1136,7 @@ export function Scene({ project }: { project: Project }) {
             />
 
             <Manipulators offsets={offsets} />
+            <ComponentDrag />
 
             {display.groundShadow && (
                 <ContactShadows position={[0, -0.5, 0]} scale={900} far={400} blur={2.4} opacity={display.groundShadowOpacity} resolution={1024} frames={plain ? 0 : Infinity} />

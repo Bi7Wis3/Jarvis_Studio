@@ -20,6 +20,7 @@ import { drawCommandEntries } from './sketchDrawCommands';
 import { splineMenuEntries } from './sketchSplineForms';
 import { pieceMenuEntries, trimMenuEntry } from './sketchPiecesMenu';
 import type { ModelMenu } from './sketchModelSelect';
+import { componentMateMenu } from './mates/MatesTree';
 
 // ---- What was clicked -------------------------------------------------------------------------------------------
 
@@ -400,6 +401,8 @@ export function componentMenu(part: Part, c: MenuContext, a: MenuActions, list: 
         SEP,
         toolEntry(a, 'move', select),
         toolEntry(a, 'rotate', select),
+        // Fix or Float, Mate, View mates (mates/MatesTree.tsx).
+        ...(c.workspace === 'assembly' ? componentMateMenu(part) : []),
         toolEntry(a, 'mirror-copy', select),
         toolEntry(a, 'material', select),
         toolEntry(a, 'picture', select),

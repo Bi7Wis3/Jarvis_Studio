@@ -350,8 +350,20 @@ Reference geometry
   Ctrl+drag copies).
 - [ ] Mirror copy that stays linked to its source (editable as a mirror); mirror components with opposite-hand
   option.
-- [ ] Mates, standard: coincident, parallel, perpendicular, tangent, concentric (lock rotation), lock, distance,
-  angle; mate alignment aligned / anti-aligned; multiple mate mode.
+- [x] Mates, standard: coincident, parallel, perpendicular, tangent, concentric (lock rotation), lock, distance,
+  angle; mate alignment aligned / anti-aligned; multiple mate mode. Done: every pair of the Standard Mates by Entity
+  table except Surface and Extrusion faces; faces, edges and vertices (found again after the part's edits), base planes,
+  axes, origins, plane/axis/point steps, sketch points and lines (sketch entities by the assistant only), the assembly's
+  own planes and origin; Flip dimension; Center/Min/Max ends for cylinders and spheres; Align axes between origins;
+  Multiple mate mode with Create multi-mate folder; Add to new folder; Use for positioning only; see-through preview;
+  Edit mate. Not yet: misaligned concentric, Link dimensions, angle Reference entity, Make first selection transparent.
+- [x] Mates folder and component Mates folders: mate icons by type, red error and yellow warning marks with What's
+  wrong, folders (add, rename, delete, drag mates in and out), Suppress, Delete, Rename, Lock concentric rotation;
+  component prefixes (f) (-) (+) (?); Fix / Float (first part fixed by default); selecting a mate lights its faces and
+  edges. Not yet: Group Mates, Auto Repair, Replace Mate Entities, View Mates window, Force Mate.
+- [x] Moving components with mates: drag a component in the view (it moves within its remaining freedom, the solver
+  running every frame, mated floating parts following; fixed and fully defined parts do not move), Move and Rotate
+  keep the mates. Not yet: right-drag to rotate, Move Component's Along Entity / By Delta XYZ, collision detection.
 - [ ] Mates, advanced: profile center, symmetric, width, path, linear/linear coupler, limit (distance, angle).
 - [ ] Mates, mechanical: cam, slot, hinge, gear, rack pinion, screw, universal joint.
 - [ ] Component patterns (linear, circular, curve driven, sketch driven, pattern driven, chain).
@@ -392,9 +404,12 @@ Reference geometry
   and points (by value). From the first feature that cannot be rebuilt, or that rebuilds to a volume other than
   SolidWorks' (measured after every feature), the part continues from SolidWorks' body read from the SLDPRT (an
   Imported step that replaces the body). The result is checked against SolidWorks' volume and box. Assemblies: one part
-  per component, placed by its transform, repeated parts as instances, subassemblies flattened, mates kept raw with
-  the project. Not yet: thin features, ribs, variable/face/full round fillets, vertex chamfers, up to body, starts from
-  a surface, pattern of bodies, 3D sketches, sketch text, pipe tap and slot holes, guide curves, mates themselves.
+  per component, placed by its transform, repeated parts as instances, subassemblies flattened, components fixed or
+  floating as in SolidWorks (all fixed when the export does not say), the standard mates as studio mates (faces,
+  edges, vertices, datum planes, axes and origins, checked against the rebuilt parts); other mates, and those whose
+  entities are not found, kept raw with the project and listed in the report. Not yet: thin features, ribs,
+  variable/face/full round fillets, vertex chamfers, up to body, starts from a surface, pattern of bodies, 3D sketches,
+  sketch text, pipe tap and slot holes, guide curves, advanced and mechanical mates, mates to cones and spheres.
 - [~] File browser (the studio's own, in the Import form; as SolidWorks' Open dialog): Places (Home, Desktop,
   Documents, Downloads, pinned folders, the last 10 folders imported from, kept in the settings), breadcrumb path, a
   virtual list (folders first, natural order), filter by name, Quick filter buttons per type in any combination, Show

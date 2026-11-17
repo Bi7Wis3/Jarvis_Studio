@@ -42,7 +42,7 @@ export interface KernelActivity {
 type JobRequest = WorkerRequest extends infer R ? R extends WorkerRequest ? Omit<R, 'id'> : never : never;
 
 const KIND: Record<WorkerRequest['type'], KernelJobKind> = {
-    mesh: 'mesh', change: 'preview', step: 'export', freecad: 'export', props: 'props', project: 'query', import: 'import',
+    mesh: 'mesh', change: 'preview', step: 'export', freecad: 'export', props: 'props', project: 'query', import: 'import', entities: 'query',
 };
 
 /** What a job is, from its request and the part it was asked for (a whole Part when the caller had one). */

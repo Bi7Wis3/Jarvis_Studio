@@ -119,6 +119,9 @@ export function closeOptions(): void {
 /** Ask before deleting projects, parts and history steps (General > Confirmations). */
 export const confirmDeletes = (): boolean => optionsNow().general.confirmDelete;
 
+/** A component dragged in the assembly moves within its mates' freedom (General > Assemblies). */
+export const movesComponentsByDragging = (): boolean => optionsNow().general.moveComponentsByDragging !== false;
+
 /** The saved defaults of a tool's new forms (Defaults), by field key. */
 export function savedToolDefaults(toolId: string): Record<string, ToolDefaultValue> {
     return optionsNow().defaults[toolId] ?? {};

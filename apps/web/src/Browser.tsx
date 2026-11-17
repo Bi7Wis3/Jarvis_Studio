@@ -12,6 +12,7 @@ import { componentMenu, type PartListActions } from './contextMenus';
 import { appActions, duplicatePart, editPattern, insertInstance, menuContext, removePattern, usePartRequest } from './viewMenu';
 import './browser.css';
 import { usePartRebuilding } from './kernelActivity';
+import { AssemblyReferences, ComponentBranch, ComponentPrefix, MatesFolder } from './mates/MatesTree';
 
 const PANEL_INSET = 274;
 
@@ -214,6 +215,7 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
             </div>
             <div className="br-list">
                 {parts.length === 0 && <p className="br-empty">No parts yet. Ask Jarvis or use the toolbar to add one.</p>}
+                {parts.length > 0 && <AssemblyReferences />}
                 {groups.filter((g) => g.parts.length > 0).map((group) => (
                     <section key={group.id} className="br-group">
 {groups.length > 1 && (
@@ -232,10 +234,8 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
                             <ul>
                                 {group.parts.map((design) => {
                                     const instances = instancesOf(design.id);
-                                    // What sits under a part: its pattern, then the other places it is used.
-                                    if (!design.repeat && instances.length === 0) {
-                                        return row(design, design, false);
-                                    }
+                                    // What sits under a part: its pattern, its mates, origin and planes (mates/MatesTree.tsx),
+                                    // then the other places it is used, each with its own.
                                     const open = expanded.has(design.id);
                                     return (
                                         <li key={design.id} className="br-instances">
@@ -243,8 +243,10 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
                                             {open && (
                                                 <ul>
                                                     {design.repeat && patternRow(design)}
+                                                    <ComponentBranch part={design} />
                                                     {instances.flatMap((inst) => [
-                                                        row(inst, design, true),
+                                                        row(inst, design, true, expanded.has(inst.id)),
+                                                        ...(expanded.has(inst.id) ? [<ComponentBranch key={`${inst.id}:branch`} part={inst} />] : []),
                                                         ...(inst.repeat ? [patternRow(inst)] : []),
                                                     ])}
                                                 </ul>
@@ -256,6 +258,7 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
                         )}
                     </section>
                 ))}
+                {parts.length > 0 && <MatesFolder />}
             </div>
             {menu && <ContextMenu {...menu} onClose={() => setMenu(null)} />}
         </>
@@ -357,13 +360,14 @@ function ComponentRow(props: {
                     className="br-caret"
                     onClick={(e) => { e.stopPropagation(); onToggle?.(); }}
                     onDoubleClick={(e) => e.stopPropagation()}
-                    title={open ? 'Hide its pattern and instances' : 'Show its pattern and instances'}
+                    title={open ? 'Collapse' : 'Show what is under it: its mates, origin and planes, pattern and instances'}
                     aria-label={open ? 'Collapse' : 'Expand'}
                 >
                     {open ? '▾' : '▸'}
                 </button>
             )}
             <span className="br-swatch" style={{ background: part.material.color }} />
+            <ComponentPrefix partId={part.id} />
             <span className="br-text one-line">
                 {renaming ? (
                     <InlineInput

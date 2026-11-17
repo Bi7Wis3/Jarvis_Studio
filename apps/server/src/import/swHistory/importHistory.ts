@@ -19,8 +19,9 @@ import type { ImportReport, ImportRequest } from '../project.js';
 import { parseSwDocument, SW_HISTORY_SUFFIX, type SwBox, type SwComponent, type SwDocument, type SwMass } from './format.js';
 import { mapPart, type MappedPart, type Skipped } from './features.js';
 import { clean, MM, mm, rigidOf, type Convention } from './math.js';
+import { importMates } from './swMates.js';
 
-type Kernel = Pick<CadKernel, 'properties' | 'importFile'>;
+type Kernel = Pick<CadKernel, 'properties' | 'importFile' | 'entities'>;
 
 const DEFAULT_COLOR = '#9aa3b5';
 /** Volumes agree when within this share of SolidWorks' (0.001 %). */
@@ -488,8 +489,9 @@ async function importAssembly(store: ProjectStore, kernel: Kernel, doc: SwDocume
                 delete part.features;
             }
         }
-        draft.importedMates = [...(draft.importedMates ?? []), mates];
     }, { undoable: false });
+    // The mates as studio mates where they convert (the rest kept as written), the components fixed as in SolidWorks.
+    const mateLines = await importMates(store, kernel, mates, new Map(placed.map((p) => [p.component.name, p.component.fixed])));
 
     // Check: every component's volume, and the box of all of them, against SolidWorks' assembly.
     let total = 0;
@@ -522,8 +524,9 @@ async function importAssembly(store: ProjectStore, kernel: Kernel, doc: SwDocume
         mateTypes.set(t, (mateTypes.get(t) ?? 0) + 1);
     }
     if (doc.mates?.length) {
-        lines.push(`${plural(doc.mates.length, 'mate')} kept with the project for when the studio has mates (${[...mateTypes.entries()].map(([t, n]) => `${n} ${t}`).join(', ')}); the parts are fixed where SolidWorks placed them.`);
+        lines.push(`${plural(doc.mates.length, 'mate')} in SolidWorks (${[...mateTypes.entries()].map(([t, n]) => `${n} ${t}`).join(', ')}).`);
     }
+    lines.push(...mateLines);
     for (const [key, design] of designs) {
         if (!design.built) continue;
         const name = design.built.name;

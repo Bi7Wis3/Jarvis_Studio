@@ -54,7 +54,7 @@ const xyz = (p: Pnt): Vec3 => [p.X(), p.Y(), p.Z()];
 
 // ---- The body's faces and edges as geometry ----------------------------------------------------------------
 
-type FaceGeom =
+export type FaceGeom =
     | { type: 'plane'; face: Face; normal: Vec3; point: Vec3 }
     | { type: 'cylinder'; face: Face; point: Vec3; direction: Vec3; radius: number }
     | { type: 'cone'; face: Face; point: Vec3; direction: Vec3 }
@@ -122,7 +122,7 @@ function faceGeom(face: Face): FaceGeom {
 }
 
 /** The body at one step, its faces and edges read once. */
-class Body {
+export class Body {
     readonly tolerance: number;
     private faceList: FaceGeom[] | null = null;
     private edgeList: Edge[] | null = null;
@@ -199,7 +199,7 @@ function faceAtPick(body: Body, pick: FacePickRef, candidates: FaceGeom[]): Face
  * the line through the pick along its normal meets (moved along its normal), the nearest; a cylinder or cone about
  * the same axis as `hint` (a cylinder of the nearest radius).
  */
-function findFace(body: Body, pick: FacePickRef, kind: FaceKind | null, hint: FaceHint = {}): FaceGeom | null {
+export function findFace(body: Body, pick: FacePickRef, kind: FaceKind | null, hint: FaceHint = {}): FaceGeom | null {
     const all = body.faces.filter((g) => (kind ? g.type === kind : true));
     const on = faceAtPick(body, pick, all);
     if (on) {
@@ -266,7 +266,7 @@ const edgeMiddle = (s: ModelEdgeShape): Vec3 => (s.type === 'line' ? scale(add(s
  * The edge a pick refers to on the body now: the one at the pick point, else one where the faces that met there meet
  * now (the nearest to where it was). Returns its shape turned to run as the picked one did.
  */
-function findEdge(body: Body, pick: ModelEdgePick, kind: 'line' | 'circle' | null): ModelEdgeShape | null {
+export function findEdge(body: Body, pick: ModelEdgePick, kind: 'line' | 'circle' | null): ModelEdgeShape | null {
     const was = pick.shape;
     const tol = body.tolerance;
     const shaped = (edge: Edge) => ({ edge, shape: edgeShape(edge) });
@@ -338,7 +338,7 @@ function vertexPoints(shape: { wrapped: unknown }): Vec3[] {
 }
 
 /** The vertex a pick refers to on the body now: the one at the pick, else where the faces that met there meet now. */
-function findVertex(body: Body, pick: ModelVertexPick): Vec3 | null {
+export function findVertex(body: Body, pick: ModelVertexPick): Vec3 | null {
     const all = vertexPoints(body.shape);
     const nearest = all.reduce<Vec3 | null>((best, p) => (!best || dist(p, pick.vertex) < dist(best, pick.vertex) ? p : best), null);
     if (nearest && dist(nearest, pick.vertex) <= body.tolerance) {

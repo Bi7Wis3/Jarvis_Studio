@@ -2,6 +2,7 @@
 
 import type { CadActivity } from './cadActivity';
 import type { ImportedMates, ImportStep } from './imported';
+import type { AssemblyMates } from './mates/types';
 
 export type Vec3 = [number, number, number];
 
@@ -1070,6 +1071,8 @@ export interface Project {
     print?: PrintSettings;
     /** Mates of imported SolidWorks assemblies, kept as exported until the studio has mates. */
     importedMates?: ImportedMates[];
+    /** Mates between the parts, their folders and the fixed parts (@jarvis/core/mates). */
+    assembly?: AssemblyMates;
 }
 
 /** Real geometry from the CAD kernel: mesh key per part (null while building) and build errors. */

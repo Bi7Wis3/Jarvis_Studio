@@ -63,6 +63,8 @@ import { primitiveEditor, primitiveFeatureTools } from './primitiveToolDefs';
 import { hiddenStepsNow } from './stepVisibility';
 import { displayStyleTools } from './displayStyleTools';
 import { importTool } from './importTool';
+import { mateTool } from './mates/MateForm';
+import { matedUpdates } from './mates/mateAnalysis';
 
 export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
@@ -2163,7 +2165,8 @@ const transformTools: ToolDef[] = [
             { key: 'step', label: 'Nudge step', kind: 'number', unit: 'mm', min: 0 },
         ],
         defaults: ({ part }) => ({ ...vecValues('pos', part?.position ?? [0, 0, 0]), step: '10' }),
-        apply: (v, { part }) => attempt(async () => runTool('parts_update', { updates: [{ id: part!.id, position: vec(v, 'pos', 'Position') }] })),
+        // With mates the part goes as far as they let it, the parts mated to it following (mates/mateAnalysis.ts).
+        apply: (v, { part }) => attempt(async () => runTool('parts_update', { updates: matedUpdates(part!.id, { position: vec(v, 'pos', 'Position') }) })),
         extra: (api, { part }) => (
             <div className="tb-nudges">
                 {[0, 1, 2].map((axis) => (
@@ -2176,7 +2179,7 @@ const transformTools: ToolDef[] = [
                                     const position = vec(api.values, 'pos', 'Position');
                                     position[axis] += sign * num(api.values, 'step', 'Nudge step', { positive: true });
                                     api.set(vecValues('pos', position));
-                                    return runTool('parts_update', { updates: [{ id: part!.id, position }] });
+                                    return runTool('parts_update', { updates: matedUpdates(part!.id, { position }) });
                                 }), false)}
                             >
                                 {sign < 0 ? '−' : '+'}{'XYZ'[axis]}
@@ -2197,7 +2200,7 @@ const transformTools: ToolDef[] = [
         width: 300,
         fields: () => [{ key: 'rot', label: 'Rotation', kind: 'vec', unit: 'deg' }],
         defaults: ({ part }) => vecValues('rot', part?.rotation ?? [0, 0, 0]),
-        apply: (v, { part }) => attempt(async () => runTool('parts_update', { updates: [{ id: part!.id, rotation: vec(v, 'rot', 'Rotation') }] })),
+        apply: (v, { part }) => attempt(async () => runTool('parts_update', { updates: matedUpdates(part!.id, { rotation: vec(v, 'rot', 'Rotation') }) })),
         extra: (api) => (
             <div className="tb-nudges">
                 {[0, 1, 2].map((axis) => (
@@ -2644,6 +2647,7 @@ export const SKETCH_GROUPS: ToolGroup[] = [
 
 export const ASSEMBLY_GROUPS: ToolGroup[] = [
     { id: 'insert', label: 'Insert', icon: 'box', collapse: 3, tools: [fastener, newPartTool] },
+    { id: 'mates', label: 'Mates', icon: 'mate', tools: [mateTool] },
     { id: 'transform', label: 'Transform', icon: 'move', collapse: 4, tools: transformTools },
     { id: 'pattern', label: 'Pattern', icon: 'pattern', tools: [patternTool, explodeTool] },
     { id: 'material', label: 'Material', icon: 'material', tools: [materialTool, pictureTool] },

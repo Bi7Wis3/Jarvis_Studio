@@ -202,11 +202,23 @@ describe('import into the project (CAD kernel)', () => {
         expect(parts[1].position).toEqual([100, 0, 0]);
         expect(parts[1].rotation[1]).toBeCloseTo(90, 9);
         expect(parts[2].position).toEqual([0, 5, 0]);
+        expect(parts[1].position).toEqual([100, 0, 0]);
+        // The standard mates arrive as studio mates; the gear mate stays as SolidWorks wrote it.
+        const assembly = store.get().assembly!;
+        expect(assembly.mates.map((m) => [m.name, m.type, m.alignment, m.value])).toEqual([
+            ['Coincident1', 'coincident', 'antiAligned', undefined], ['Parallel1', 'parallel', 'aligned', undefined], ['Distance1', 'distance', 'antiAligned', 5],
+        ]);
+        expect(assembly.mates[0].refs.map((r) => r.part)).toEqual([parts[0].id, parts[2].id]);
+        expect(assembly.mates[0].refs[0].found).toMatchObject({ type: 'plane', normal: [0, 1, 0] });
+        expect(assembly.fixed).toEqual([parts[0].id, parts[2].id]);
         expect(store.get().importedMates?.[0]).toMatchObject({ assembly: 'stand.SLDASM', components: { 'plate-1': parts[0].id, 'tube-1': parts[2].id } });
-        expect(store.get().importedMates?.[0].mates).toEqual(assemblyDoc().mates);
+        expect(store.get().importedMates?.[0].mates).toEqual([assemblyDoc().mates![3]]);
         expect(report.text).toMatch(/3 components as 2 parts and 1 instance,/);
         expect(report.text).toMatch(/Total volume matches SolidWorks to 0.001 %/);
-        expect(report.text).toMatch(/1 mate kept with the project/);
+        expect(report.text).toMatch(/4 mates in SolidWorks/);
+        expect(report.text).toMatch(/3 mates brought in as studio mates \(Coincident1: coincident, Parallel1: parallel, Distance1: distance\); they hold as SolidWorks placed the parts\./);
+        expect(report.text).toMatch(/1 mate kept as SolidWorks wrote them, not yet studio mates: GearMate1 \(not a standard mate the studio has yet\)\./);
+        expect(report.text).toMatch(/Fixed as in SolidWorks: plate-1, tube-1; floating: plate-2\./);
         expect(existsSync(join(folder, 'stand.jarvis-sw.json'))).toBe(true);
     }, SLOW);
 });

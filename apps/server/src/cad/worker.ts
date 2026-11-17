@@ -18,6 +18,7 @@ import { startProgress, type WorkerProgress } from './progress.js';
 import { runImport, type ImportJob, type ImportJobResult } from '../import/job.js';
 import { withGraphics } from '../import/graphics.js';
 import { interimMesh } from './interimMesh.js';
+import { mateEntities, type MateEntityAnswer, type ModelMatePick } from './mateEntities.js';
 
 export type WorkerRequest =
     /** `interim`: send a coarse mesh first when this one will take a while (interimMesh.ts). */
@@ -28,7 +29,9 @@ export type WorkerRequest =
     | { id: number; type: 'props'; part: PartSpec; print: PrintSettings; context?: CombineContext }
     | { id: number; type: 'project'; part: PartSpec; print: PrintSettings; context?: CombineContext; frame: PlaneFrame3; query: ModelQuery }
     | { id: number; type: 'freecad'; project: Project; partIds: string[] }
-    | { id: number; type: 'import'; job: ImportJob };
+    | { id: number; type: 'import'; job: ImportJob }
+    /** The geometry of entities picked for mates (mateEntities.ts). */
+    | { id: number; type: 'entities'; part: PartSpec; print: PrintSettings; context?: CombineContext; picks: ModelMatePick[] };
 
 export type WorkerResponse =
     | { type: 'ready' }
@@ -42,6 +45,7 @@ export type WorkerResponse =
     | { id: number; ok: true; model: ModelSketch }
     | { id: number; ok: true; freecad: FreecadExport }
     | { id: number; ok: true; imported: ImportJobResult }
+    | { id: number; ok: true; entities: MateEntityAnswer[] }
     | { id: number; ok: false; error: string; partial?: MeshData }
     /** Before the answer to a mesh job: a coarse mesh of the same solid to show meanwhile. */
     | { id: number; interim: MeshData };
@@ -188,6 +192,9 @@ async function handle(request: WorkerRequest): Promise<void> {
             port!.postMessage({ id: request.id, ok: true, model } satisfies WorkerResponse);
         } else if (request.type === 'freecad') {
             port!.postMessage({ id: request.id, ok: true, freecad: freecadMacro(request.project, request.partIds) } satisfies WorkerResponse);
+        } else if (request.type === 'entities') {
+            const built = build(request.part, request.print, request.context);
+            port!.postMessage({ id: request.id, ok: true, entities: mateEntities(built.shape, request.picks) } satisfies WorkerResponse);
         } else if (request.type === 'import') {
             port!.postMessage({ id: request.id, ok: true, imported: await runImport(request.job) } satisfies WorkerResponse);
         } else {

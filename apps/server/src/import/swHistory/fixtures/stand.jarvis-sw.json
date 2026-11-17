@@ -165,6 +165,124 @@
     }
    ],
    "errors": []
+  },
+  {
+   "name": "Parallel1",
+   "featureType": "MateParallel",
+   "suppressed": false,
+   "type": 3,
+   "alignment": 0,
+   "flipped": false,
+   "entities": [
+    {
+     "referenceType": 2,
+     "component": "plate-1",
+     "params": [
+      0,
+      0.005,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "referenceType": 2,
+     "component": "plate-2",
+     "params": [
+      0.1,
+      0.005,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+     ]
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "Distance1",
+   "featureType": "MateDistanceDim",
+   "suppressed": false,
+   "type": 5,
+   "alignment": 1,
+   "flipped": false,
+   "value": 0.005,
+   "entities": [
+    {
+     "referenceType": 2,
+     "component": "plate-1",
+     "params": [
+      0,
+      0.005,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0
+     ]
+    },
+    {
+     "referenceType": 2,
+     "component": "plate-2",
+     "params": [
+      0.1,
+      0,
+      0,
+      0,
+      -1,
+      0,
+      0,
+      0
+     ]
+    }
+   ],
+   "errors": []
+  },
+  {
+   "name": "GearMate1",
+   "featureType": "MateGear",
+   "suppressed": false,
+   "type": 10,
+   "alignment": 2,
+   "flipped": false,
+   "entities": [
+    {
+     "referenceType": 2,
+     "component": "plate-1",
+     "params": [
+      0.02,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0.003,
+      0
+     ]
+    },
+    {
+     "referenceType": 2,
+     "component": "tube-1",
+     "params": [
+      0,
+      0.005,
+      0,
+      0,
+      1,
+      0,
+      0.01,
+      0
+     ]
+    }
+   ],
+   "errors": []
   }
  ],
  "log": [

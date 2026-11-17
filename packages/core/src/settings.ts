@@ -45,6 +45,11 @@ export interface AiSettingsView extends AiSettings {
 export interface GeneralSettings {
     /** Ask before deleting a project, a part or a history step. */
     confirmDelete: boolean;
+    /**
+     * Assemblies: a component dragged in the view moves within its freedom (SolidWorks' System Options > Assemblies >
+     * Move components by dragging, on by default). Off: only Move and Rotate move components. Absent (older settings): on.
+     */
+    moveComponentsByDragging?: boolean;
 }
 
 /** What every light but the ambient one has (SolidWorks' Directional, Point and Spot Light PropertyManagers). */
@@ -319,7 +324,7 @@ export const lightCount = (l: Pick<LightingSettings, 'directional' | 'point' | '
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 export const DEFAULT_SETTINGS: StudioSettings = {
-    general: { confirmDelete: true },
+    general: { confirmDelete: true, moveComponentsByDragging: true },
     sketch: {},
     defaults: {},
     units: { lengthDecimals: 4, angleDecimals: 4, angleUnit: 'deg', formDecimals: null },
@@ -579,7 +584,10 @@ export function normaliseSettings(raw: unknown, base: StudioSettings = DEFAULT_S
     const ai = obj(r.ai);
     const d = base;
     return {
-        general: { confirmDelete: bool(general.confirmDelete, d.general.confirmDelete) },
+        general: {
+            confirmDelete: bool(general.confirmDelete, d.general.confirmDelete),
+            moveComponentsByDragging: bool(general.moveComponentsByDragging, d.general.moveComponentsByDragging ?? true),
+        },
         sketch: plainData(r.sketch),
         defaults: toolDefaults(r.defaults),
         units: {

@@ -24,7 +24,8 @@
     "./settings": "./src/settings.ts",
     "./folders": "./src/folders.ts",
     "./cadActivity": "./src/cadActivity.ts",
-    "./imported": "./src/imported.ts"
+    "./imported": "./src/imported.ts",
+    "./mates": "./src/mates/index.ts"
   },
   "dependencies": {
     "three": "^0.187.0"

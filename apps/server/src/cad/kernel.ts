@@ -14,6 +14,7 @@ import type { FreecadExport } from '../export/freecadMacro.js';
 import type { ChangeRange } from './change.js';
 import { jobLabel, KernelTracker, type KernelActivity, type KernelJobLabel } from './activity.js';
 import type { ImportJob, ImportJobResult } from '../import/job.js';
+import type { MateEntityAnswer, ModelMatePick } from './mateEntities.js';
 
 export { meshKey } from './key.js';
 export { combineContext, type CombineContext, type CombinePart } from './context.js';
@@ -97,7 +98,8 @@ type JobRequest = Omit<Extract<WorkerRequest, { type: 'mesh' }>, 'id'> | Omit<Ex
     | Omit<Extract<WorkerRequest, { type: 'change' }>, 'id'>
     | Omit<Extract<WorkerRequest, { type: 'props' }>, 'id'> | Omit<Extract<WorkerRequest, { type: 'project' }>, 'id'>
     | Omit<Extract<WorkerRequest, { type: 'freecad' }>, 'id'>
-    | Omit<Extract<WorkerRequest, { type: 'import' }>, 'id'>;
+    | Omit<Extract<WorkerRequest, { type: 'import' }>, 'id'>
+    | Omit<Extract<WorkerRequest, { type: 'entities' }>, 'id'>;
 
 interface Job {
     request: JobRequest;
@@ -142,6 +144,7 @@ export class CadKernel {
     private readonly cacheSize: number;
     private readonly cache = new Map<string, CacheEntry>();
     private readonly projections = new Map<string, Promise<ModelSketch>>();
+    private readonly entityCache = new Map<string, Promise<MateEntityAnswer[]>>();
     private worker: Worker | null = null;
     private ready = false;
     private closed = false;
@@ -250,6 +253,25 @@ export class CadKernel {
         return this.run({ type: 'props', part: { shape: part.shape, features: part.features }, print, context }, part) as Promise<PropsResult>;
     }
 
+    /**
+     * The geometry of faces, edges and vertices picked for mates on a part's body (mateEntities.ts), each found again as
+     * feature picks are. Cached by the part's mesh key and the picks.
+     */
+    entities(part: Pick<Part, 'shape' | 'features'>, print: PrintSettings, picks: ModelMatePick[], context?: CombineContext): Promise<MateEntityAnswer[]> {
+        const key = `entities ${meshKey(part, print, context)} ${JSON.stringify(picks)}`;
+        const hit = this.entityCache.get(key);
+        if (hit) {
+            return hit;
+        }
+        const promise = this.run({ type: 'entities', part: { shape: part.shape, features: part.features }, print, context, picks }, part) as Promise<MateEntityAnswer[]>;
+        promise.catch(() => this.entityCache.delete(key));
+        this.entityCache.set(key, promise);
+        while (this.entityCache.size > 500) {
+            this.entityCache.delete(this.entityCache.keys().next().value as string);
+        }
+        return promise;
+    }
+
     /** Reads a CAD file (STEP, STL...) and stores its bodies as assets, in the worker; see import/job.ts. */
     importFile(job: ImportJob): Promise<ImportJobResult> {
         return this.run({ type: 'import', job }) as Promise<ImportJobResult>;
@@ -348,7 +370,8 @@ export class CadKernel {
         if (message.ok) {
             current.job.resolve('change' in message ? { mesh: message.mesh, change: message.change, changeMs: message.changeMs }
                 : 'mesh' in message ? message.mesh : 'props' in message ? message.props : 'model' in message ? message.model
-                : 'freecad' in message ? message.freecad : 'imported' in message ? message.imported : message.step);
+                : 'freecad' in message ? message.freecad : 'imported' in message ? message.imported
+                    : 'entities' in message ? message.entities : message.step);
         } else {
             current.job.reject(new CadBuildError(message.error, message.partial));
         }

@@ -142,6 +142,17 @@ export function GeneralPage({ draft, setDraft }: PageProps) {
                     onChange={(confirmDelete) => setDraft(withCategory(draft, 'general', { ...general, confirmDelete }))}
                 />
             </Section>
+            <Section title="Assemblies">
+                <Check
+                    label="Move components by dragging"
+                    value={general.moveComponentsByDragging !== false}
+                    onChange={(moveComponentsByDragging) => setDraft(withCategory(draft, 'general', { ...general, moveComponentsByDragging }))}
+                />
+                <Note>
+                    A component dragged in the view moves within the freedom its mates leave. Off: a drag on a component turns the view,
+                    and only Move and Rotate move components.
+                </Note>
+            </Section>
             <Section title="Saving">
                 <Note>Every change is saved to the project file at once, so there is no auto-save interval to set.</Note>
                 <Note>These settings are kept on this computer, in the studio's data folder, and apply to every project.</Note>
