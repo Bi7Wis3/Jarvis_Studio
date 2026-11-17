@@ -17,6 +17,7 @@ import { modelSketchRequest } from './modelSketch.js';
 import { createHostTools } from './hostTools.js';
 import { MeshService } from './meshes.js';
 import { registerMcpHttp } from './mcpHttp.js';
+import { guardHost } from './hostGuard.js';
 import { EXPORTS_DIR } from './paths.js';
 import { PreviewRejected, runPreview } from './preview.js';
 import { ProjectStore, slug } from './store.js';
@@ -220,6 +221,8 @@ store.subscribe((project) => {
 });
 
 const app = Fastify();
+// Only requests addressed to this machine (hostGuard.ts: no DNS rebinding into the API or the MCP tools).
+guardHost(app);
 await app.register(websocket);
 
 app.get('/ws', { websocket: true }, (socket) => {
