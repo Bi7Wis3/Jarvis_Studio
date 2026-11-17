@@ -1,0 +1,51 @@
+/* The assembly tree's components in their folders (ComponentTree.tsx): one indent column (16px) per folder level, the
+   part tree's insertion marks, and the folder rows. */
+
+.ct-tree,
+.ct-tree ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.ct-tree:focus {
+    outline: none;
+}
+
+.ct-tree .br-row.component {
+    padding-left: calc(18px + var(--ct-depth, 0) * 16px);
+}
+
+.ct-tree .br-row.component.nested {
+    padding-left: calc(34px + var(--ct-depth, 0) * 16px);
+}
+
+.ct-tree .br-row.ct-folder .ft-name {
+    margin-left: 0;
+}
+
+.ct-tree .br-row.ct-folder.hidden .br-text,
+.ct-tree .br-row.ct-folder.hidden svg {
+    opacity: 0.4;
+}
+
+.ct-tree .br-row.ct-folder .br-actions button:disabled {
+    opacity: 0.35;
+}
+
+.ct-tree .dragged {
+    opacity: 0.4;
+}
+
+.ct-tree .drop-before {
+    box-shadow: inset 0 2px 0 var(--accent-2);
+}
+
+.ct-tree .drop-after {
+    box-shadow: inset 0 -2px 0 var(--accent-2);
+}
+
+.ct-tree .br-row.drop-into {
+    background: rgba(53, 224, 255, 0.24);
+    box-shadow: inset 0 0 0 2px var(--accent-2);
+}

@@ -1,4 +1,5 @@
-import { rmSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -13,6 +14,7 @@ const dir = await vi.hoisted(async () => {
 
 import { ProjectStore } from './store.js';
 import { createTools, sceneDigest, type StudioTool } from './tools.js';
+import { fixedParts } from '@jarvis/core/mates';
 
 const steel = { color: '#c9d1d9', metalness: 1, roughness: 0.3 };
 
@@ -664,5 +666,112 @@ describe('reference geometry and instances', () => {
         expect(copies).toHaveLength(2);
         expect(() => run('features_add', { partId: 'body-2', features: [{ op: 'fillet', radius: 1 }] })).toThrow(/instance/);
         expect(() => run('parts_remove', { ids: ['body'] })).toThrow(/Still instanced/);
+    });
+});
+
+describe('assembly tree: order and folders', () => {
+    const order = () => store.get().parts.map((p) => p.id);
+    const tree = () => JSON.parse(run('component_folders_get'));
+
+    beforeEach(() => {
+        run('parts_add', { parts: [box('Base'), box('Wheel'), box('Pin'), box('Cap')] });
+        run('parts_instance', { partId: 'wheel', instances: [{ position: [50, 0, 0] }] });
+    });
+
+    it('reorders components, an instance going with its design, each move one undo step', () => {
+        expect(order()).toEqual(['base', 'wheel', 'pin', 'cap', 'wheel-2']);
+        expect(run('parts_reorder', { ids: ['cap'], before: 'wheel' })).toBe('Moved.');
+        expect(order()).toEqual(['base', 'cap', 'wheel', 'pin', 'wheel-2']);
+        expect(run('parts_reorder', { ids: ['wheel'], at: 'end' })).toBe('Moved.');
+        expect(order()).toEqual(['base', 'cap', 'pin', 'wheel', 'wheel-2']);
+        // A move that changes nothing is not an undo step.
+        expect(run('parts_reorder', { ids: ['wheel'], at: 'end' })).toBe('Nothing moved.');
+        run('undo');
+        expect(order()).toEqual(['base', 'cap', 'wheel', 'pin', 'wheel-2']);
+        run('undo');
+        expect(order()).toEqual(['base', 'wheel', 'pin', 'cap', 'wheel-2']);
+        // A whole new order, as features_reorder takes it.
+        expect(run('parts_reorder', { ids: ['pin', 'base', 'wheel', 'cap'] })).toBe('Reordered.');
+        expect(order()).toEqual(['pin', 'base', 'wheel', 'cap', 'wheel-2']);
+        expect(() => run('parts_reorder', { ids: ['wheel-2'], before: 'base' })).toThrow(/instance of wheel/);
+        expect(() => run('parts_reorder', { ids: ['base'] })).toThrow(/To move only some/);
+    });
+
+    it('never changes which part is fixed', () => {
+        const fixed = () => [...fixedParts(store.get().parts, store.get().assembly)];
+        expect(fixed()).toEqual(['base']);
+        run('parts_reorder', { ids: ['cap'], into: null, at: 'start' } as never);
+        expect(order()[0]).toBe('cap');
+        expect(fixed()).toEqual(['base']);
+        expect(store.get().assembly?.fixed).toEqual(['base']);
+        run('undo');
+        expect(store.get().assembly).toBeUndefined();
+        // Fixed and floated by hand: the list is kept as it is.
+        store.mutate((draft) => {
+            draft.assembly = { mates: [], fixed: ['pin'] };
+        });
+        run('parts_reorder', { ids: ['base'], at: 'end' });
+        expect(fixed()).toEqual(['pin']);
+    });
+
+    it('groups components in folders, nested, and a deleted folder leaves them where they are', () => {
+        expect(run('component_folders_add', { items: ['cap', 'wheel'] })).toBe('Added folder "Folder1" (id folder_folder1) to the assembly tree.');
+        expect(order()).toEqual(['base', 'wheel', 'cap', 'pin', 'wheel-2']);
+        expect(tree()).toEqual([
+            { part: 'base', name: 'Base' },
+            { folder: 'folder_folder1', name: 'Folder1', items: [{ part: 'wheel', name: 'Wheel', instances: ['wheel-2'] }, { part: 'cap', name: 'Cap' }] },
+            { part: 'pin', name: 'Pin' },
+        ]);
+        run('component_folders_add', { name: 'Outer', items: ['pin', 'folder_folder1'] });
+        run('parts_reorder', { ids: ['base'], into: 'folder_folder1', at: 'start' });
+        run('component_folders_rename', { id: 'folder_outer', name: 'Drive' });
+        expect(tree()).toEqual([{
+            folder: 'folder_outer', name: 'Drive', items: [
+                { folder: 'folder_folder1', name: 'Folder1', items: [
+                    { part: 'base', name: 'Base' }, { part: 'wheel', name: 'Wheel', instances: ['wheel-2'] }, { part: 'cap', name: 'Cap' },
+                ] },
+                { part: 'pin', name: 'Pin' },
+            ],
+        }]);
+        // Out of the folders again, and a folder that cannot go into itself.
+        run('parts_reorder', { ids: ['pin'], at: 'start' });
+        expect(tree()[0]).toEqual({ part: 'pin', name: 'Pin' });
+        expect(() => run('parts_reorder', { ids: ['folder_outer'], into: 'folder_folder1' })).toThrow(/itself/);
+        const before = order();
+        expect(run('component_folders_remove', { ids: ['folder_outer'] })).toBe('Removed 1 folder(s); the components stay where they were.');
+        expect(order()).toEqual(before);
+        expect(tree().map((r: { part?: string; folder?: string }) => r.part ?? r.folder)).toEqual(['pin', 'folder_folder1']);
+        run('undo');
+        expect(tree()[1].name).toBe('Drive');
+        expect(() => run('component_folders_rename', { id: 'nope', name: 'X' })).toThrow(/No folder/);
+    });
+
+    it('lets deleted parts leave their folder, which stays', () => {
+        run('component_folders_add', { name: 'Drive', items: ['wheel', 'pin'] });
+        run('parts_remove', { ids: ['wheel', 'wheel-2'] });
+        expect(store.get().componentFolders).toEqual([{ id: 'folder_drive', name: 'Drive', items: ['pin'] }]);
+        run('parts_remove', { ids: ['pin'] });
+        expect(tree()).toEqual([{ part: 'base', name: 'Base' }, { folder: 'folder_drive', name: 'Drive', items: [] }, { part: 'cap', name: 'Cap' }]);
+        // A new part goes in at the end, outside the folders.
+        run('parts_add', { parts: [box('Nut')] });
+        expect(tree().at(-1)).toEqual({ part: 'nut', name: 'Nut' });
+    });
+
+    it('repairs the folders of a project read from disk', () => {
+        const project = {
+            name: 'Folders on disk',
+            parts: store.get().parts,
+            view: store.get().view,
+            componentFolders: [
+                { id: 'folder_a', name: 'A', items: ['wheel', 'gone', 'wheel', 'pin'] },
+                { id: 'folder_b', name: 'B', items: ['pin', 'cap'] },
+            ],
+        };
+        writeFileSync(join(dir, 'folders-on-disk.json'), JSON.stringify(project));
+        expect(store.open('Folders on disk')).toBe(true);
+        expect(store.get().componentFolders).toEqual([
+            { id: 'folder_a', name: 'A', items: ['wheel', 'pin'] },
+            { id: 'folder_b', name: 'B', items: ['cap'] },
+        ]);
     });
 });

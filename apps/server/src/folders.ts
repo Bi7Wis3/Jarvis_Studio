@@ -17,7 +17,7 @@ const placeFields = {
     at: z.enum(['start', 'end']).optional(),
 };
 
-function placeOf(args: { before?: string; after?: string; into?: string; at?: 'start' | 'end' }): TreePlace | undefined {
+export function placeOf(args: { before?: string; after?: string; into?: string; at?: 'start' | 'end' }): TreePlace | undefined {
     if (args.before) {
         return { before: args.before };
     }

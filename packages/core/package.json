@@ -23,6 +23,7 @@
     "./visibility": "./src/visibility.ts",
     "./settings": "./src/settings.ts",
     "./folders": "./src/folders.ts",
+    "./componentFolders": "./src/componentFolders.ts",
     "./cadActivity": "./src/cadActivity.ts",
     "./imported": "./src/imported.ts",
     "./mates": "./src/mates/index.ts",

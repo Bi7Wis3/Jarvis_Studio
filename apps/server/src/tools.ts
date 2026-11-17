@@ -5,6 +5,7 @@ import {
 import { hideConsumed } from '@jarvis/core/visibility';
 import { slug, type ProjectStore } from './store.js';
 import { folderTools } from './folders.js';
+import { componentFolderTools } from './componentFolders.js';
 import { importStepSchema } from './import/schema.js';
 import { checkHelixStep, helixStepSchema } from './helixSchema.js';
 
@@ -1225,5 +1226,6 @@ export function createTools(store: ProjectStore): StudioTool[] {
             run: () => (store.redo() ? 'Redone.' : 'Nothing to redo.'),
         },
         ...folderTools(store),
+        ...componentFolderTools(store),
     ];
 }

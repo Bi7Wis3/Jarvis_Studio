@@ -368,6 +368,18 @@ Reference geometry
   wrong, folders (add, rename, delete, drag mates in and out), Suppress, Delete, Rename, Lock concentric rotation;
   component prefixes (f) (-) (+) (?); Fix / Float (first part fixed by default); selecting a mate lights its faces and
   edges. Not yet: Group Mates, Auto Repair, Replace Mate Entities, View Mates window, Force Mate.
+- [x] Assembly tree order and folders of components (E6c): drag one component or a Ctrl / Shift selection (non-sequential
+  allowed) to reorder (the parts' order, also the BOM order) or into, out of and between folders, with the part tree's
+  insertion marks; a design's instances and pattern move with it; Planes and origin stay first and Mates last; the
+  fixed part never changes with the order; Add to new folder (one item or a selection anywhere in the tree), Create
+  new folder (above an item, or at the end from the assembly name's menu), sub-folders, folders dragged into folders,
+  rename (two slow clicks, F2, Rename tree item), Expand all / Collapse all / Expand item / Collapse item, the
+  folder's eye and Hide / Show components on everything inside, Delete folder (components stay), (+) / (-) / (f)
+  prefixes, selecting a folder lights its parts in the view, a part picked in the view opens its folders (a closed
+  one is highlighted); saved, undoable, repaired on load, deleted parts leave their folders; assistant tools
+  parts_reorder, component_folders_add / _rename / _remove / _get. Not there: subassemblies (assemblies are flat),
+  Suppress on a folder (components cannot be suppressed), icons for suppressed items, folders from SolidWorks
+  imports (the exporter does not write them).
 - [x] Moving components with mates: drag a component in the view (it moves within its remaining freedom, the solver
   running every frame, mated floating parts following; fixed and fully defined parts do not move), Move and Rotate
   keep the mates. Not yet: right-drag to rotate, Move Component's Along Entity / By Delta XYZ, collision detection.
@@ -562,6 +574,7 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
   inside a folder (shown open), filter finds steps inside folders and folders by name, saved and undoable, assistant
   tools folders_add / folders_rename / folders_remove / features_move. Not yet: highlighting a folder's solid
   features in the view (the kernel's mesh does not say which step made which face; sketches and reference
-  geometry highlight), the (-) mark for missing references (the tree has no such check yet), assembly folders.
+  geometry highlight), the (-) mark for missing references (the tree has no such check yet). Assembly folders: see
+  Parts and assembly.
 - [ ] Values and equations: "=" in any number field to type an expression with units and variables, global
   variables, equations folder, linked values, configurations (design table) per feature value.

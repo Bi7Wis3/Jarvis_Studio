@@ -203,7 +203,7 @@ export function normalizeFolders(stepIds: readonly string[], folders: readonly F
 }
 
 /** Folder nodes of a layout by id. */
-function folderNodes(items: readonly LayoutItem[], out = new Map<string, LayoutFolder>()): Map<string, LayoutFolder> {
+export function folderNodes(items: readonly LayoutItem[], out = new Map<string, LayoutFolder>()): Map<string, LayoutFolder> {
     for (const item of items) {
         if (item.kind === 'folder') {
             out.set(item.id, item);
@@ -225,7 +225,7 @@ function parents(items: LayoutItem[], parent: LayoutFolder | null = null, out = 
 }
 
 /** Longest common subsequence of two id lists (common start and end trimmed first, as most edits are local). */
-function commonSubsequence(a: readonly string[], b: readonly string[]): string[] {
+export function commonSubsequence(a: readonly string[], b: readonly string[]): string[] {
     let start = 0;
     while (start < a.length && start < b.length && a[start] === b[start]) {
         start++;
@@ -524,7 +524,7 @@ function change(features: readonly Feature[], root: LayoutItem[]): TreeChange {
 }
 
 /** Takes the item with `id` (a step or folder) out of the layout; null when there is none. */
-function take(root: LayoutItem[], id: string): LayoutItem | null {
+export function take(root: LayoutItem[], id: string): LayoutItem | null {
     for (let i = 0; i < root.length; i++) {
         const item = root[i];
         if (item.id === id) {
@@ -542,7 +542,7 @@ function take(root: LayoutItem[], id: string): LayoutItem | null {
 }
 
 /** The list that holds the item with `id` and its index there. */
-function locate(root: LayoutItem[], id: string): { list: LayoutItem[]; index: number } | null {
+export function locate(root: LayoutItem[], id: string): { list: LayoutItem[]; index: number } | null {
     const index = root.findIndex((item) => item.id === id);
     if (index >= 0) {
         return { list: root, index };
@@ -558,7 +558,8 @@ function locate(root: LayoutItem[], id: string): { list: LayoutItem[]; index: nu
     return null;
 }
 
-function slot(root: LayoutItem[], place: TreePlace): { list: LayoutItem[]; index: number } {
+/** The list and index a place stands for. */
+export function slot(root: LayoutItem[], place: TreePlace): { list: LayoutItem[]; index: number } {
     if ('before' in place || 'after' in place) {
         const id = 'before' in place ? place.before : place.after;
         const found = locate(root, id);
@@ -578,7 +579,7 @@ function slot(root: LayoutItem[], place: TreePlace): { list: LayoutItem[]; index
 }
 
 /** Steps and folders of `ids` in tree order, leaving out those inside another of them; throws on an unknown id. */
-function pickItems(root: LayoutItem[], ids: readonly string[]): LayoutItem[] {
+export function pickItems(root: LayoutItem[], ids: readonly string[]): LayoutItem[] {
     const wanted = new Set(ids);
     const found = new Set<string>();
     const out: LayoutItem[] = [];
@@ -623,7 +624,7 @@ export function moveItems(features: readonly Feature[], folders: readonly Featur
 }
 
 /** A free folder id from a name ("Folder3" gives folder3), not used by a step or folder. */
-export function folderId(name: string, features: readonly Feature[], folders: readonly FeatureFolder[] | undefined): string {
+export function folderId(name: string, features: readonly Pick<Feature, 'id'>[], folders: readonly FeatureFolder[] | undefined): string {
     const used = new Set([...features.map((f) => f.id), ...(folders ?? []).map((f) => f.id)]);
     const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'folder';
     return uniqueId(base, used);

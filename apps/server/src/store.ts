@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { join } from 'node:path';
 import { DEFAULT_VIEW, type Project, type ProjectEntry } from '@jarvis/core';
 import { fitProjectFolders, repairProjectFolders } from '@jarvis/core/folders';
+import { fitComponentFolders, repairComponentFolders } from '@jarvis/core/componentFolders';
 import { fitAssembly, repairAssembly } from '@jarvis/core/mates';
 import { PROJECTS_DIR } from './paths.js';
 import { demoProject } from './seed.js';
@@ -60,6 +61,8 @@ export class ProjectStore {
         fitProjectFolders(this.project, draft);
         // Mates of deleted parts go with them.
         fitAssembly(this.project, draft);
+        // The assembly tree's folders follow parts deleted, added or moved (@jarvis/core/componentFolders).
+        fitComponentFolders(this.project, draft);
         if ((options.undoable ?? true) && !this.memory) {
             this.undoStack.push(before);
             if (this.undoStack.length > MAX_UNDO) {
@@ -203,6 +206,7 @@ export class ProjectStore {
         project.view = { ...DEFAULT_VIEW, ...project.view };
         repairProjectFolders(project);
         repairAssembly(project);
+        repairComponentFolders(project);
         return project;
     }
 

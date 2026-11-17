@@ -1080,6 +1080,8 @@ export interface Project {
     importedMates?: ImportedMates[];
     /** Mates between the parts, their folders and the fixed parts (@jarvis/core/mates). */
     assembly?: AssemblyMates;
+    /** Folders of the assembly tree, nested ones too (componentFolders.ts). They group components only. */
+    componentFolders?: FeatureFolder[];
 }
 
 /** Real geometry from the CAD kernel: mesh key per part (null while building) and build errors. */

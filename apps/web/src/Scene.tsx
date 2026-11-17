@@ -39,6 +39,7 @@ import { ModelLines } from './modelLines';
 import { useMatePicks } from './mates/matePicks';
 import { setMatePickCopy } from './mates/mateState';
 import { ComponentDrag } from './mates/ComponentDrag';
+import { useComponentPicked } from './componentPicks';
 
 export { anim };
 
@@ -447,7 +448,9 @@ function PartMesh({ part, offset, dimmed }: { part: Part; offset: Vec3; dimmed: 
     const geometry = bodyDisplay.surface ?? kernel?.surface ?? preview;
     const instances = useMemo(() => instanceTransforms(part), [JSON.stringify(part.repeat)]);
     // The part workspace shows only the part being edited at full strength, so it needs no selection glow.
-    const selected = useStudio((s) => s.selected === part.id && s.workspace !== 'part');
+    // A folder or several components selected in the assembly tree are lit too (componentPicks.ts).
+    const treePicked = useComponentPicked(part.id);
+    const selected = useStudio((s) => s.selected === part.id && s.workspace !== 'part') || treePicked;
     const look = styleLook(useDisplayStyle(), { sketching, dimmed });
     const [hovered, setHovered] = useState(false);
     // Face and edge picking: the active part in the part workspace, in plain select mode (sketching and decal

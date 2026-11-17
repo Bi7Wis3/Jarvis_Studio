@@ -380,8 +380,19 @@ useStudio.subscribe((s, prev) => {
     }
 });
 
+const selectWatchers = new Set<(id: string | null) => void>();
+
+/** Calls `watch` on every select(), also when the part stays the same (a click on empty space). Returns the unsubscribe. */
+export function onSelect(watch: (id: string | null) => void): () => void {
+    selectWatchers.add(watch);
+    return () => {
+        selectWatchers.delete(watch);
+    };
+}
+
 export function select(id: string | null): void {
     useStudio.setState({ selected: id });
+    selectWatchers.forEach((watch) => watch(id));
 }
 
 /** Frames the whole view again, re-applying the stored camera angles. */

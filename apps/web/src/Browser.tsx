@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
-import { effectivePart, type Part } from '@jarvis/core';
+import { effectivePart, type FeatureFolder, type Part } from '@jarvis/core';
 import { labelInsets } from './Labels';
 import { ContextMenu, InlineInput, showError, tool, type MenuEntry } from './menus';
 import { runTool, select, setHidden, setWorkspace, useStudio } from './state';
@@ -13,6 +13,7 @@ import { appActions, duplicatePart, editPattern, insertInstance, menuContext, re
 import './browser.css';
 import { usePartRebuilding } from './kernelActivity';
 import { AssemblyReferences, ComponentBranch, ComponentPrefix, MatesFolder } from './mates/MatesTree';
+import { ComponentTree, componentTreeMenu, type DesignRowProps } from './ComponentTree';
 
 const PANEL_INSET = 274;
 
@@ -63,7 +64,7 @@ export function Browser() {
                 <Hideable hidden={editingFeature}>
                     {part
                         ? <PartHistory key={part.id} part={part} parts={history.parts} onMinimise={() => setOpen(false)} />
-                        : <Components name={history.name} parts={history.parts} onMinimise={() => setOpen(false)} />}
+                        : <Components name={history.name} parts={history.parts} folders={history.componentFolders} onMinimise={() => setOpen(false)} />}
                 </Hideable>
             )}
         </nav>
@@ -102,8 +103,8 @@ function Hideable({ hidden, children }: { hidden: boolean; children: ReactNode }
 // ---- Assembly workspace: the components list -----------------------------------------------------------
 
 /** The assembly: its name at the top (as a feature tree shows the document's name), then its parts by name. */
-function Components(props: { name: string; parts: Part[]; onMinimise: () => void }) {
-    const { name, parts, onMinimise } = props;
+function Components(props: { name: string; parts: Part[]; folders: FeatureFolder[] | undefined; onMinimise: () => void }) {
+    const { name, parts, folders, onMinimise } = props;
     const [collapsed, setCollapsed] = useState<Set<string>>(
         () => new Set(load(`${STORAGE_KEY}.collapsed`, '').split(',').filter(Boolean)),
     );
@@ -178,8 +179,8 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
         }
         return next;
     });
-    /** A part's row; `open` (when it has things under it) adds the expander. */
-    const row = (part: Part, design: Part, nested: boolean, open?: boolean) => {
+    /** A part's row; `open` (when it has things under it) adds the expander; `extra` is what the tree adds to a design's. */
+    const row = (part: Part, design: Part, nested: boolean, open?: boolean, extra?: DesignRowProps) => {
         const all = part.id === design.id ? [design, ...instancesOf(design.id)] : [part];
         return (
             <ComponentRow
@@ -193,7 +194,8 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
                 deleteIds={all.map((p) => p.id)}
                 onRenamed={() => setRenaming(null)}
                 onConfirmed={() => setConfirming(null)}
-                onMenu={(event) => setMenu(menuAt(event, partMenu(part)))}
+                onMenu={(event) => setMenu(menuAt(event, extra ? extra.menu(partMenu(part)) : partMenu(part)))}
+                extra={extra}
             />
         );
     };
@@ -208,15 +210,15 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
 
     return (
         <>
-            <div className="br-head">
+            <div className="br-head" onContextMenu={(e) => setMenu(menuAt(e, componentTreeMenu(folders)))}>
                 <span className="br-title br-doc" title={`${name}: the assembly and its parts`}>{name}</span>
                 <span className="br-count">{parts.length}</span>
                 <button type="button" className="br-min" onClick={onMinimise} title="Minimise" aria-label="Minimise panel">–</button>
             </div>
-            <div className="br-list">
+            <div className="br-list" onContextMenu={(e) => e.target === e.currentTarget && setMenu(menuAt(e, componentTreeMenu(folders)))}>
                 {parts.length === 0 && <p className="br-empty">No parts yet. Ask Jarvis or use the toolbar to add one.</p>}
                 {parts.length > 0 && <AssemblyReferences />}
-                {groups.filter((g) => g.parts.length > 0).map((group) => (
+                {groups.filter((g) => g.parts.length > 0 || folders?.length).map((group) => (
                     <section key={group.id} className="br-group">
 {groups.length > 1 && (
                                                     <button
@@ -231,30 +233,29 @@ function Components(props: { name: string; parts: Part[]; onMinimise: () => void
                             </button>
                         )}
                         {!collapsed.has(group.id) && (
-                            <ul>
-                                {group.parts.map((design) => {
-                                    const instances = instancesOf(design.id);
-                                    // What sits under a part: its pattern, its mates, origin and planes (mates/MatesTree.tsx),
-                                    // then the other places it is used, each with its own.
-                                    const open = expanded.has(design.id);
-                                    return (
-                                        <li key={design.id} className="br-instances">
-                                            <ul>{row(design, design, false, open)}</ul>
-                                            {open && (
-                                                <ul>
-                                                    {design.repeat && patternRow(design)}
-                                                    <ComponentBranch part={design} />
-                                                    {instances.flatMap((inst) => [
-                                                        row(inst, design, true, expanded.has(inst.id)),
-                                                        ...(expanded.has(inst.id) ? [<ComponentBranch key={`${inst.id}:branch`} part={inst} />] : []),
-                                                        ...(inst.repeat ? [patternRow(inst)] : []),
-                                                    ])}
-                                                </ul>
-                                            )}
-                                        </li>
-                                    );
-                                })}
-                            </ul>
+                            // The designs in their order and folders, dragged to reorder (ComponentTree.tsx).
+                            <ComponentTree parts={parts} folders={folders} renameComponent={setRenaming} renderDesign={(design, extra) => {
+                                const instances = instancesOf(design.id);
+                                // What sits under a part: its pattern, its mates, origin and planes (mates/MatesTree.tsx),
+                                // then the other places it is used, each with its own.
+                                const open = expanded.has(design.id);
+                                return (
+                                    <>
+                                        <ul>{row(design, design, false, open, extra)}</ul>
+                                        {open && (
+                                            <ul>
+                                                {design.repeat && patternRow(design)}
+                                                <ComponentBranch part={design} />
+                                                {instances.flatMap((inst) => [
+                                                    row(inst, design, true, expanded.has(inst.id)),
+                                                    ...(expanded.has(inst.id) ? [<ComponentBranch key={`${inst.id}:branch`} part={inst} />] : []),
+                                                    ...(inst.repeat ? [patternRow(inst)] : []),
+                                                ])}
+                                            </ul>
+                                        )}
+                                    </>
+                                );
+                            }} />
                         )}
                     </section>
                 ))}
@@ -311,8 +312,10 @@ function ComponentRow(props: {
     onRenamed: () => void;
     onConfirmed: () => void;
     onMenu: (event: MouseEvent) => void;
+    /** A design's row in the tree: selection with Ctrl and Shift, dragging (ComponentTree.tsx). */
+    extra?: DesignRowProps;
 }) {
-    const { part, nested, open, onToggle, renaming, confirming, deleteIds, onRenamed, onConfirmed, onMenu } = props;
+    const { part, nested, open, onToggle, renaming, confirming, deleteIds, onRenamed, onConfirmed, onMenu, extra } = props;
     const selected = useStudio((s) => s.selected === part.id);
     const hidden = useStudio((s) => s.history?.view.hidden?.includes(part.id) ?? false);
     const focused = useStudio((s) => s.history?.view.focus === part.id);
@@ -347,8 +350,11 @@ function ComponentRow(props: {
     const features = part.features?.length ?? 0;
     return (
         <li
-            className={`br-row component ${nested ? 'nested' : ''} ${selected ? 'current' : ''} ${focused ? 'focused' : ''} ${hidden ? 'hidden' : ''}`}
-            onClick={() => select(selected ? null : part.id)}
+            className={`br-row component ${nested ? 'nested' : ''} ${selected ? 'current' : ''} ${focused ? 'focused' : ''} ${hidden ? 'hidden' : ''} ${extra?.className ?? ''}`}
+            onClick={extra?.onClick ?? (() => select(selected ? null : part.id))}
+            draggable={!!extra?.draggable && !renaming}
+            onDragStart={extra?.onDragStart}
+            onDragEnd={extra?.onDragEnd}
             onDoubleClick={() => setWorkspace('part', part.id, 'isolated')}
             onContextMenu={onMenu}
             title={`${part.description ?? part.name}${features ? ` · ${features} feature${features === 1 ? '' : 's'}` : ''}`
