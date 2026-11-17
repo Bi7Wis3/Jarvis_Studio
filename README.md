@@ -4,6 +4,10 @@ A local, single-user parametric CAD app with an AI assistant, Jarvis. The aim is
 with CAM later. It runs on your own machine: a web UI, a Node server and the OpenCascade kernel. There is no cloud
 storage or computation.
 
+The project is inspired by Iron Man: Tony Stark's build tools, where he designs his suits by talking to J.A.R.V.I.S.
+and shaping the parts in front of him. Jarvis Studio aims for the same way of working on real parts: you talk, Jarvis
+builds and changes the model, and you refine it with full CAD tools.
+
 ![Jarvis Studio with an assembly open](image.png)
 
 Design notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The order of work is in
