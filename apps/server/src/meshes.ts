@@ -181,7 +181,12 @@ export class MeshService {
         // Drafts first, for every part, then the real meshes. A build still queued when the model is edited again is
         // dropped (see CadKernel.mesh).
         const drafts = pending.map(({ part, context, key }) => {
-            const draft = draftPart(part, [print, context ?? null], this.built.get(part.id));
+            // The threads as the tool form previewed them when that mesh is there (shown at once), else drawn as hidden
+            // threads are (quick, and clean: quick ridges stand buried in a hole's uncut wall).
+            const settings = [print, context ?? null];
+            const previewed = draftPart(part, settings, this.built.get(part.id), 'ridges');
+            const draft = previewed && this.meshes.has(this.key(previewed, print, context)) ? previewed
+                : draftPart(part, settings, this.built.get(part.id));
             if (draft) {
                 void this.draft(key, draft, print, context);
             }

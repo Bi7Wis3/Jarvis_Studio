@@ -6,6 +6,7 @@
 import { measureShapeVolumeProperties, type Shape3D, type Solid } from 'replicad';
 import type { Vec3 } from '@jarvis/core';
 import type { BodyInfo } from '@jarvis/core/visibility';
+import { MESH_TOLERANCES, type MeshQuality } from './meshQuality.js';
 import { MINOR_DEPTH, type ThreadGhost } from './thread.js';
 
 export type BodyRecord = BodyInfo;
@@ -282,17 +283,42 @@ export function markSegments(mark: ThreadMark): number[] {
 }
 
 /**
+ * A hole's mesh is flat facets inside its round wall, by up to r (1 - cos(a / 2)) for the display quality's angular
+ * tolerance a: a helix drawn just off the true wall would sit behind them and show only in pieces. In a hole the helix
+ * is moved that much further in; on a shaft the facets are inside it anyway.
+ */
+function spiralSink(ghost: ThreadGhost, mark: ThreadMark, quality: MeshQuality): (p: Vec3) => Vec3 {
+    if (!(ghost.spec.rBase > ghost.spec.rCrest)) {
+        return (p) => p;
+    }
+    const half = MESH_TOLERANCES[quality].angular / 2;
+    const { origin: o, axis: a } = mark;
+    return (p) => {
+        const q: Vec3 = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+        const s = q[0] * a[0] + q[1] * a[1] + q[2] * a[2];
+        const radial: Vec3 = [q[0] - s * a[0], q[1] - s * a[1], q[2] - s * a[2]];
+        const r = Math.hypot(...radial);
+        if (r < 1e-9) {
+            return p;
+        }
+        const k = (r - r * (1 - Math.cos(half))) / r;
+        return [o[0] + s * a[0] + radial[0] * k, o[1] + s * a[1] + radial[1] * k, o[2] + s * a[2] + radial[2] * k];
+    };
+}
+
+/**
  * The marks of the cosmetic threads among `ghosts`, as line segments with the body each lies on: the helix a thread
  * step draws on its hole's or shaft's surface (see ThreadGhost.spiral), else circles and lines where it runs.
  */
-export function cosmeticMarks(shape: Shape3D | null, ghosts: ThreadGhost[]): { lines: Float32Array; body: Uint32Array } | null {
+export function cosmeticMarks(shape: Shape3D | null, ghosts: ThreadGhost[], quality: MeshQuality = 'normal'): { lines: Float32Array; body: Uint32Array } | null {
     const marks: ThreadMark[] = [];
     const spirals: { mark: ThreadMark; segments: number[] }[] = [];
     const seen = new Set<string>();
     for (const ghost of ghosts.filter(isCosmetic)) {
         const mark = threadMark(ghost);
         if (ghost.spiral) {
-            const segments = ghost.spiral.flatMap((line) => line.slice(1).flatMap((p, i) => [...line[i], ...p]));
+            const sink = spiralSink(ghost, mark, quality);
+            const segments = ghost.spiral.flatMap((line) => line.slice(1).flatMap((p, i) => [...sink(line[i]), ...sink(p)]));
             if (segments.length) {
                 spirals.push({ mark, segments });
             }

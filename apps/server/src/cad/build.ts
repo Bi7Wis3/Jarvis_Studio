@@ -1772,6 +1772,6 @@ export function meshSolid(shape: Shape3D, quality: MeshQuality = 'normal'): Mesh
     const ghosts = all.filter((g) => !isCosmetic(g));
     const mesh = ghosts.length ? mergeMeshes([meshWithOpenCascade(shape, quality), ...ghosts.map((g) => ghostMesh(g, angular))])
         : meshWithOpenCascade(shape, quality);
-    const marks = cosmeticMarks(shape, all);
+    const marks = cosmeticMarks(shape, all, quality);
     return marks ? { ...mesh, cosmetic: marks.lines, cosmeticBody: marks.body } : mesh;
 }

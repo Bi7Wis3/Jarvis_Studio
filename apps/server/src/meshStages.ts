@@ -1,6 +1,7 @@
 // Pictures shown while a part's real mesh is still being made (MeshService.update). When a modelled thread has to be
-// built again (it takes many seconds), a draft comes first: the part with the threads from the edited step on shown as
-// their quick ridges, as a tool preview shows them. And when the real mesh itself takes a while, a coarse mesh of the
+// built again (it takes many seconds, minutes on a large part), a draft comes first: the part with the threads from
+// the edited step on drawn as hidden threads are, a helix on the hole's or shaft's surface. (Their quick ridges, as a
+// tool preview shows them, stood buried in a hole's uncut wall, so only bits of them showed at its mouth.) And when the real mesh itself takes a while, a coarse mesh of the
 // same solid comes before it. Each picture replaces only a lesser one of the same real mesh, never the other way round.
 
 import type { Feature, Part } from '@jarvis/core';
@@ -23,11 +24,12 @@ export function builtSpec(part: Pick<Part, 'shape' | 'features'>, settings: unkn
 }
 
 /**
- * The part as its draft is built: every thread from the first step that differs from `built` on is shown as its
- * ridges, which takes a moment. Null when no modelled thread has to be built again (a thread before the change comes
+ * The part as its draft is built: every thread from the first step that differs from `built` on is drawn as a hidden
+ * thread (its helix on the surface), which takes a moment; or with `style` 'ridges' as a tool form previews it. Null when no modelled thread has to be built again (a thread before the change comes
  * from the kernel's cache, and a cosmetic one is quick anyway).
  */
-export function draftPart<P extends Pick<Part, 'shape' | 'features'>>(part: P, settings: unknown, built: BuiltSpec | undefined): P | null {
+export function draftPart<P extends Pick<Part, 'shape' | 'features'>>(part: P, settings: unknown, built: BuiltSpec | undefined,
+    style: 'hidden' | 'ridges' = 'hidden'): P | null {
     const now = builtSpec(part, settings);
     const features = part.features ?? [];
     let first = !built || built.base !== now.base ? 0 : now.steps.findIndex((step, i) => built.steps[i] !== step);
@@ -38,8 +40,10 @@ export function draftPart<P extends Pick<Part, 'shape' | 'features'>>(part: P, s
     if (!features.some((f, i) => i >= first && slow(f))) {
         return null;
     }
-    // As preview.ts's quickThreads marks them, so a draft the form's preview made already is found by its key.
-    return { ...part, features: features.map((f, i) => (i >= first && f.op === 'thread' && !f.suppressed ? { ...f, preview: true } : f)) };
+    // 'ridges' is the part as a tool form previews it (preview.ts's quickThreads): its mesh, made while typing, is found
+    // by its key, so on OK it shows at once.
+    const mark = style === 'ridges' ? { preview: true } : { cosmetic: true };
+    return { ...part, features: features.map((f, i) => (i >= first && f.op === 'thread' && !f.suppressed ? { ...f, ...mark } : f)) };
 }
 
 const LIMIT = 200;

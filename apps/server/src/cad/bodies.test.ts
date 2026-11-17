@@ -4,6 +4,9 @@ import { DEFAULT_PRINT, type Feature, type Vec3 } from '@jarvis/core';
 import { viewPart } from '@jarvis/core/visibility';
 import { buildPartial, initOC, meshSolid } from './build.js';
 import type { MeshData } from './kernel.js';
+import { cosmeticMarks, markCosmetic } from './bodies.js';
+import { MESH_TOLERANCES } from './meshQuality.js';
+import type { ThreadGhost } from './thread.js';
 
 const SLOW = 300_000;
 
@@ -85,6 +88,9 @@ describe('solid bodies', () => {
     }, SLOW);
 });
 
+/** How far in a hole's helix is drawn at the normal display quality, as a factor of its radius (bodies.ts). */
+const SINK = Math.cos(MESH_TOLERANCES.normal.angular / 2);
+
 describe('a thread hidden in the view', () => {
     // A block 20 x 20 x 20 with an 8 mm hole along -X from x = 10, threaded M10 x 1.5 for 12 mm.
     const drilled: Feature[] = [{ id: 'h', op: 'hole', spec: { kind: 'plain', diameter: 8 }, position: [10, 0, 0], direction: [-1, 0, 0] }];
@@ -101,12 +107,12 @@ describe('a thread hidden in the view', () => {
         expect(shown.bodies).toEqual([{ key: 'base', by: 't' }]);
         const mesh = meshSolid(shown.shape!);
         expect(mesh.triFace.length).toBe(meshSolid(plain.shape!).triFace.length);
-        // One helix on the hole's own surface (lifted 0.02 mm into the hole) from its mouth (x = 10) for the 12 mm
-        // of the thread, a turn per 1.5 mm, all of it one line.
+        // One helix on the hole's own surface (lifted 0.02 mm into the hole, and further in by how far the normal
+        // quality's facets come in) from its mouth (x = 10) for the 12 mm of the thread, a turn per 1.5 mm, all one line.
         const lines = mesh.cosmetic!;
         expect(lines.length).toBeGreaterThan(0);
         expect(mesh.cosmeticBody).toHaveLength(lines.length / 6);
-        const radius = (8 + DEFAULT_PRINT.holeTolerance) / 2 - 0.02;
+        const radius = ((8 + DEFAULT_PRINT.holeTolerance) / 2 - 0.02) * SINK;
         for (let i = 0; i < lines.length; i += 3) {
             expect(Math.hypot(lines[i + 1], lines[i + 2])).toBeCloseTo(radius, 4);
         }
@@ -138,11 +144,11 @@ describe('a thread hidden in the view', () => {
         let far = Infinity;
         for (let i = 0; i < lines.length; i += 3) {
             const [x, y, z] = [lines[i], lines[i + 1], lines[i + 2]];
-            expect(Math.abs(Math.hypot(y, z) - (radius - 0.02))).toBeLessThan(1e-4);
+            expect(Math.abs(Math.hypot(y, z) - (radius - 0.02) * SINK)).toBeLessThan(1e-4);
             expect(x).toBeGreaterThan(-10 - 1e-6);
             expect(x).toBeLessThan(10 + 1e-6);
             // On the hole's surface (the point taken out to it), on the part's side of the slanted face.
-            past = Math.max(past, (y * radius) / (radius - 0.02) - x);
+            past = Math.max(past, (y * radius) / ((radius - 0.02) * SINK) - x);
             far = Math.min(far, x);
         }
         expect(past).toBeLessThan(8 + 1e-3);
@@ -150,4 +156,28 @@ describe('a thread hidden in the view', () => {
         // It runs on into the last turn before the far face (x = -10), below the slant, where the hole's wall does.
         expect(far).toBeLessThan(-8.5);
     }, SLOW);
+});
+
+describe('hidden thread marks against the mesh', () => {
+    // A ghost with one turn of helix at radius 2 about the Y axis, in a hole (base outside the crest) or on a shaft.
+    const ghost = (hole: boolean): ThreadGhost => ({
+        spec: { pitch: 1, rBase: hole ? 2.5 : 1.5, rCrest: hole ? 2 : 2, wBase: 0.8, wCrest: 0.1, y0: 0, height: 4 },
+        origin: [0, 0, 0], axis: [0, 1, 0], angle: 0,
+        spiral: [Array.from({ length: 9 }, (_, i) => [2 * Math.cos(i * Math.PI / 4), i / 8, -2 * Math.sin(i * Math.PI / 4)] as Vec3)],
+    });
+    const radii = (lines: Float32Array): number[] => Array.from({ length: lines.length / 3 }, (_, i) => Math.hypot(lines[3 * i], lines[3 * i + 2]));
+
+    it('sinks a hole\'s helix behind the facets of the display quality, and leaves a shaft\'s as it is', () => {
+        for (const quality of ['coarse', 'normal', 'fine'] as const) {
+            const hole = ghost(true);
+            markCosmetic([hole]);
+            const r = radii(cosmeticMarks(null, [hole], quality)!.lines);
+            // The facets of a radius 2 hole come in by up to 2 (1 - cos(a / 2)); the helix sits that much further in.
+            const depth = 2 * (1 - Math.cos(MESH_TOLERANCES[quality].angular / 2));
+            r.forEach((x) => expect(x).toBeCloseTo(2 - depth, 6));
+            const shaft = ghost(false);
+            markCosmetic([shaft]);
+            radii(cosmeticMarks(null, [shaft], quality)!.lines).forEach((x) => expect(x).toBeCloseTo(2, 6));
+        }
+    });
 });

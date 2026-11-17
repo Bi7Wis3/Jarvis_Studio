@@ -373,7 +373,7 @@ export class ChangeWatch implements StepWatch {
             rest.forEach((f) => f.delete());
             const angular = toleranceFor(0, quality).angularTolerance;
             meshes.push(...this.ghosts.filter((g) => !isCosmetic(g)).map((g) => ghostMesh(g, angular)));
-            const marks = cosmeticMarks(part, this.ghosts);
+            const marks = cosmeticMarks(part, this.ghosts, quality);
             if (marks) {
                 meshes.push({
                     positions: new Float32Array(0), normals: new Float32Array(0), indices: new Uint32Array(0), triFace: new Uint32Array(0),

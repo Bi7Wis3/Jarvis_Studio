@@ -66,15 +66,15 @@ describe('meshes shown while a part builds', () => {
         expect(shown.filter((k) => k === keyOf(features, 'coarse'))).toHaveLength(1);
     });
 
-    it('shows a draft with quick threads first when a modelled thread is built again, then the real part', async () => {
+    it('shows a draft with the threads drawn as hidden ones first when a modelled thread is built again, then the real part', async () => {
         const { kernel, shown, service } = setup();
         const before = [hole, thread];
         service.update(project(before));
-        // Nothing was built yet: a draft (the thread as its ridges) goes first, and no coarse mesh with it.
+        // Nothing was built yet: a draft (the thread as its helix on the surface) goes first, and no coarse mesh with it.
         expect(kernel.jobs).toHaveLength(2);
         const [draft, full] = kernel.jobs;
-        expect(draft.features.find((f) => f.op === 'thread')).toMatchObject({ preview: true });
-        expect(full.features.find((f) => f.op === 'thread')).not.toHaveProperty('preview');
+        expect(draft.features.find((f) => f.op === 'thread')).toMatchObject({ cosmetic: true });
+        expect(full.features.find((f) => f.op === 'thread')).not.toHaveProperty('cosmetic');
         expect(full.options.interim).toBeUndefined();
         draft.resolve(mesh());
         await tick();
@@ -148,13 +148,13 @@ describe('draftPart', () => {
     const part = project([hole, thread, fillet(1)]).parts[0];
 
     it('marks the threads from the first changed step on, and only when one is modelled', () => {
-        expect(draftPart(part, settings, undefined)?.features?.[1]).toMatchObject({ preview: true });
+        expect(draftPart(part, settings, undefined)?.features?.[1]).toMatchObject({ cosmetic: true });
         const built = builtSpec(part, settings);
         expect(draftPart(part, settings, built)).toBeNull();
         const later = { ...part, features: [hole, thread, fillet(2)] };
         expect(draftPart(later, settings, built)).toBeNull();
         const earlier = { ...part, features: [{ ...hole, position: [10, 1, 0] } as Feature, thread, fillet(1)] };
-        expect(draftPart(earlier, settings, built)?.features?.[1]).toMatchObject({ preview: true });
+        expect(draftPart(earlier, settings, built)?.features?.[1]).toMatchObject({ cosmetic: true });
         const cosmetic = { ...earlier, features: [earlier.features[0], { ...thread, cosmetic: true } as Feature, fillet(1)] };
         expect(draftPart(cosmetic, settings, built)).toBeNull();
         // A renamed step changes nothing.
@@ -168,7 +168,7 @@ describe('draftPart', () => {
         const old = before.parts[0];
         const edited = after.parts[0];
         const previewed = meshKey(quickThreads(edited, old), DEFAULT_PRINT);
-        const draft = draftPart(edited, settings, builtSpec(old, settings))!;
+        const draft = draftPart(edited, settings, builtSpec(old, settings), 'ridges')!;
         expect(meshKey(draft, DEFAULT_PRINT)).toBe(previewed);
     });
 });
