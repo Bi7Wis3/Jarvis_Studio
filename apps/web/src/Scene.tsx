@@ -954,12 +954,11 @@ function Pivot({ project, offsets }: { project: Project; offsets: Record<string,
             const onSketch = mode === 'sketch' && !under() ? sketchPlaneAt(event.clientX, event.clientY) : null;
             if (onSketch && onSketch.distanceTo(camera.position) < 4 * controls.distance) {
                 point = onSketch;
-            } else if (workspace === 'part') {
-                // Editing a part: turn about the spot on it under the pointer; off the part, about its middle
-                // (not its origin, which can be far from what is on screen).
-                point = under()?.point ?? (pivotPart ? boundsAt(p, o, pivotPart.id)?.center ?? partCentre(pivotPart, o[pivotPart.id]) : null);
             } else {
-                point = pivotPart ? partCentre(pivotPart, o[pivotPart.id]) : null;
+                // Turn about the spot on the model under the pointer; off it, about the middle of the part being edited
+                // (or picked in the assembly), not its origin, which can be far from what is on screen. The same in
+                // the assembly as in a part, as the owner asked.
+                point = under()?.point ?? (pivotPart ? boundsAt(p, o, pivotPart.id)?.center ?? partCentre(pivotPart, o[pivotPart.id]) : null);
             }
             if (!point) {
                 const hit = under();
