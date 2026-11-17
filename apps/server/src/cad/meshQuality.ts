@@ -8,7 +8,8 @@ export type { MeshQuality } from '@jarvis/core/settings';
 
 /** Linear deflection: `relative` of the solid's diagonal, kept between `min` and `max` mm; angular deflection in radians. */
 export const MESH_TOLERANCES: Record<MeshQuality, { relative: number; min: number; max: number; angular: number }> = {
-    coarse: { relative: 0.001, min: 0.05, max: 1, angular: 0.5 },
+    // 0.3 rad, not 0.5: at 29 degrees a triangle on a lofted face bent so far that each showed its own shading patch.
+    coarse: { relative: 0.001, min: 0.05, max: 1, angular: 0.3 },
     normal: { relative: 0.0002, min: 0.01, max: 0.2, angular: 0.2 },
     fine: { relative: 0.00005, min: 0.0025, max: 0.05, angular: 0.1 },
 };
