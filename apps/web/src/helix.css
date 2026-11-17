@@ -1,0 +1,67 @@
+/* Helix/Spiral form (helixToolDef.tsx): the variable pitch table. */
+
+.hx-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    table-layout: fixed;
+}
+
+.hx-table th {
+    padding: 2px 2px 4px;
+    color: var(--muted);
+    font-weight: 600;
+    text-align: left;
+}
+
+.hx-table th:first-child {
+    width: 22px;
+}
+
+.hx-table th:last-child {
+    width: 20px;
+}
+
+.hx-table td {
+    padding: 1px 2px;
+}
+
+.hx-table input {
+    width: 100%;
+    min-width: 0;
+    padding: 3px 4px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--text);
+    font: inherit;
+}
+
+/* Values worked out from the others are shown, not typed (SolidWorks shows them in grey). */
+.hx-table input:read-only {
+    border-color: transparent;
+    background: none;
+    color: var(--muted);
+}
+
+.hx-table .hx-n {
+    color: var(--muted);
+    text-align: right;
+}
+
+.br .hx-table button,
+.br .hx-add {
+    padding: 0 4px;
+    color: var(--muted);
+}
+
+.br .hx-table button:hover,
+.br .hx-add:hover {
+    color: var(--text);
+}
+
+.br .hx-add {
+    align-self: flex-start;
+    margin-top: 4px;
+    font-size: 11.5px;
+}

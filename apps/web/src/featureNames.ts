@@ -25,6 +25,8 @@ export function featureBaseName(feature: Nameable): string {
             return feature.kind === 'circular' ? 'CirPattern' : 'LPattern';
         case 'add':
             return 'Boss';
+        case 'helix':
+            return 'Helix/Spiral';
         default:
             return feature.op[0].toUpperCase() + feature.op.slice(1);
     }

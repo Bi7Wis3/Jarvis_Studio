@@ -446,7 +446,7 @@ function setFolders(part: Part, folders: FeatureFolder[] | undefined): void {
 
 // ---- Steps and what they build on ----
 
-const REF_KEYS = ['sketchRef', 'planeRef', 'axisRef', 'pointRef'];
+const REF_KEYS = ['sketchRef', 'planeRef', 'axisRef', 'pointRef', 'curveRef'];
 
 /** Ids of the steps a step refers to: sketches, planes, axes and points by reference, and repeated steps. */
 export function stepDeps(feature: Feature): string[] {

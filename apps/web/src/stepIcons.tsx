@@ -3,6 +3,7 @@
 
 import type { ReactNode } from 'react';
 import { Icon } from './icons';
+import { HELIX_STEP_ICON } from './helixIcons';
 
 const BOSS = '#6fd58a';
 const CUT = '#ff7b6e';
@@ -207,6 +208,7 @@ const ICONS: Record<string, { color: string; body: ReactNode }> = {
         ),
     },
     plane: { color: REF, body: <path d="M2 18l6-10h14l-6 10z" {...FILL} /> },
+    helix: HELIX_STEP_ICON,
     axis: {
         color: REF,
         body: (

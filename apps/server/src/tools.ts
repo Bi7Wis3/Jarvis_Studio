@@ -6,6 +6,7 @@ import { hideConsumed } from '@jarvis/core/visibility';
 import { slug, type ProjectStore } from './store.js';
 import { folderTools } from './folders.js';
 import { importStepSchema } from './import/schema.js';
+import { checkHelixStep, helixStepSchema } from './helixSchema.js';
 
 export interface StudioTool {
     name: string;
@@ -451,8 +452,8 @@ const feature = z.discriminatedUnion('op', [
         regions: regionPicks.describe('Areas of the profile sketch to sweep (one area; holes in it are kept)'),
         orientation: z.enum(['followPath', 'keepNormal']).optional()
             .describe('followPath (default): the profile turns with the path; keepNormal: it stays parallel to its plane'),
+        // The sketch source (all optional) goes last: a union keeps the first option that fits, with unknown keys dropped.
         path: z.union([
-            z.object(sketchSource).describe('The open chain (sketch.open) or single closed profile of another sketch'),
             z.object({
                 helix: z.object({
                     axis: axisRef,
@@ -463,10 +464,12 @@ const feature = z.discriminatedUnion('op', [
                     taper: z.number().optional().describe('Degrees; 0 cylindrical'),
                 }),
             }),
+            z.object({ curveRef: z.string().describe('Id of an earlier helix or spiral step (op helix): springs, coils') }),
+            z.object(sketchSource).describe('The open chain (sketch.open) or single closed profile of another sketch'),
         ]),
         twist: z.number().optional().describe('Degrees of twist along a straight path'),
         mode: z.enum(['add', 'cut']),
-    }).describe('Sweep a profile along a path or helix: tubes, rails, handles, springs, coils, spiral grooves'),
+    }).describe('Sweep a profile along a path, a helix step or a helix: tubes, rails, handles, springs, coils, spiral grooves'),
     z.object({
         ...featureBase,
         op: z.literal('pattern'),
@@ -530,6 +533,7 @@ const feature = z.discriminatedUnion('op', [
         position: vec3.optional().describe('Without at: thread base on the +Y axis through this point'),
     }),
     importStepSchema,
+    helixStepSchema(featureBase, sketchSource),
 ]);
 
 /**
@@ -560,6 +564,9 @@ export function checkHistory(part: Pick<Part, 'id' | 'features'>): void {
             if (typeof o.pointRef === 'string') {
                 expect(where, o.pointRef, 'point');
             }
+            if (typeof o.curveRef === 'string') {
+                expect(where, o.curveRef, 'helix');
+            }
             Object.values(o).forEach((v) => scan(where, v));
         }
     };
@@ -580,9 +587,12 @@ export function checkHistory(part: Pick<Part, 'id' | 'features'>): void {
             } else if (f.diameter === undefined) {
                 throw new Error(`${where}: give a profile or a diameter (circular profile)`);
             }
-            if (!('helix' in f.path)) {
+            if (!('helix' in f.path) && !('curveRef' in f.path)) {
                 source(`${where} path`, f.path);
             }
+        } else if (f.op === 'helix') {
+            source(where, f);
+            checkHelixStep(where, f as unknown as Record<string, unknown>);
         } else if (f.op === 'pattern') {
             for (const id of f.features) {
                 if (!seen.has(id)) {

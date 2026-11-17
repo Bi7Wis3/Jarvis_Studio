@@ -241,8 +241,21 @@ Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/hidd_dve_re
 - **Orientation**: X axis, Y axis, Z axis each from a direction reference (vertex/point = toward it; linear edge/sketch line = parallel; non-linear edge or sketch entity = toward the picked spot; planar face = face normal); Reverse Axis Direction; Define rotation with numeric values (X/Y/Z rotation angles, applied in X then Y then Z order; at least one value needed).
 Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/HIDD_DVE_COORD_SYS.htm
 
+### Helix and Spiral (Curves)
+Opened from a sketch that holds a circle (select the sketch, then Helix and Spiral on the Curves toolbar, or Insert > Curve > Helix/Spiral). The circle's diameter is the start diameter of the helix or spiral; the circle's centre and the sketch normal give its axis. The curve is a feature of its own in the FeatureManager, with the circle's sketch absorbed under it, and is used as the path or a guide curve of a sweep, or a guide curve of a loft (example uses on the overview page: threads on a bottle neck, a spiral spring).
+- **Defined By**: Pitch and Revolution (pitch and revolutions given) | Height and Revolution (height and revolutions) | Height and Pitch (height and pitch) | Spiral (a flat spiral, by pitch and revolutions).
+- **Parameters** (which are offered follows Defined By):
+  - Constant pitch | Variable pitch (helix only). Variable pitch fills a table of region parameters, one row per region: revolutions (Rev), height (H), diameter (Dia) and pitch (P). Cells that are not inputs for the chosen Defined By are worked out and shown in grey.
+  - Height (helix only). Pitch: for a helix the distance between turns, for a spiral the radial distance between turns. Revolutions: the number of turns.
+  - Reverse direction: a helix runs backwards from where it starts (to the other side of the sketch plane); a spiral turns inward.
+  - Start angle: where on the sketched circle the first turn starts.
+  - Clockwise | Counterclockwise: the turning direction.
+- **Taper Helix** (constant pitch helix only): Taper Angle; Taper outward (widens instead of narrowing).
+Sources: https://help.solidworks.com/2024/English/SolidWorks/sldworks/HIDD_DVE_HELIX.htm (PropertyManager) ; https://help.solidworks.com/2024/english/SolidWorks/sldworks/t_Helix_or_Spiral_-_Creating.htm (creating: sketch a circle, select the sketch, the circle's diameter sets the start diameter) ; https://help.solidworks.com/2024/english/SolidWorks/sldworks/c_Helix_and_Spiral.htm (uses as sweep path and guide curve).
+Not verified (the pages do not say; Jarvis Studio's choices are in brackets): the default of Clockwise or Counterclockwise [the form opens on Clockwise]; the view the turning direction is judged from [looking at the sketch, its normal towards the viewer]; where Start angle is measured from [the sketch's horizontal axis, counterclockwise]; how pitch and diameter change between table rows [the pitch changes evenly with the revolutions, so a row's height is the last row's plus the mean pitch times the revolutions between them; the diameter passes smoothly through the rows without going beyond them]; the first table row [at revolution 0 and height 0, the circle's diameter, only its pitch typed].
+
 ### Curves
-- **Helix/Spiral** (start from a sketch with a circle): Defined By = Pitch and Revolution | Height and Revolution | Height and Pitch | Spiral. Parameters: Constant pitch | Variable pitch (region table: Rev, H, Dia, P), Height, Pitch, Revolutions, Reverse direction (helix backwards or inward spiral), Start angle, Clockwise | Counterclockwise, Taper Helix with Taper Angle and Taper outward (constant pitch only). Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/HIDD_DVE_HELIX.htm
+- **Helix/Spiral**: see Helix and Spiral above.
 - **Projected Curve**: Projection Type = Sketch on faces (Sketch to Project, Projection Faces, Direction of Projection, Reverse projection, Bi-directional) | Sketch on sketch (intersection of two sketches on crossing planes). Source: https://help.solidworks.com/2024/English/SolidWorks/sldworks/r_projected_curves_pm.htm
 - **Composite Curve**: join sketches, edges and curves into one curve (Entities to Join list). Source: .../HIDD_DVE_COMPOSITE_CURVE.htm
 - **Curve Through XYZ Points**: table of X, Y, Z per point (point order = connection order), can load .sldcrv or .txt files. Source: .../HIDD_CURVE_IN_FILE.htm

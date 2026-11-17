@@ -48,7 +48,7 @@ Revolve / revolved cut
 - [x] Selected contours. [ ] Drag handle for the angle.
 
 Sweep / swept cut
-- [x] Profile and path sketches, helix path, twist.
+- [x] Profile and path sketches, helix path, a helix or spiral step as the path, twist.
 - [ ] Circular profile by diameter (no profile sketch), path from sketch, curve or model edges, bidirectional.
 - [ ] Guide curves (order, merge smooth faces, show sections).
 - [ ] Profile orientation: follow path, keep normal constant. Profile twist: none, minimum twist, follow first
@@ -217,9 +217,16 @@ Reference geometry
 - [ ] Point, still open: projection; evenly distributed.
 - [ ] Coordinate system: origin, X/Y/Z directions from points, edges or faces, reverse axes, numeric position and
   rotation.
-- [ ] Curves: helix/spiral as its own step (defined by pitch/revolution, height/revolution, height/pitch, spiral;
-  variable pitch, taper, start angle, direction), projected (sketch on faces or sketch on sketch), composite,
-  through XYZ points, through reference points (closed), split line (projection, silhouette, intersection).
+- [x] Curves: helix/spiral as its own step (Helix and spiral in the reference geometry group) from a sketch holding one
+  circle, its sketch nested under it in the tree: defined by pitch and revolution, height and revolution, height and
+  pitch, spiral; constant or variable pitch (the region table: pitch, revolutions, height, diameter, the worked-out
+  cells shown); reverse direction (inward spiral); start angle; clockwise or counterclockwise; taper helix with angle
+  and taper outward. Exact to 1e-8 mm (B-spline edges, about one a turn), drawn and picked in the view, a see-through
+  preview while the form is open; a sweep path (the profile keeps its angle to the axis, so long springs do not
+  twist). Left out: as a guide curve of a sweep or loft (the app has no guide curves yet); drag handles in the view
+  (the help names none). Not in the FreeCAD export (the step is left out, sweeps along it are carried as solids).
+- [ ] Curves, still open: projected (sketch on faces or sketch on sketch), composite, through XYZ points, through
+  reference points (closed), split line (projection, silhouette, intersection).
 
 ## Sketch
 

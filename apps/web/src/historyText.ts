@@ -5,6 +5,7 @@ import type {
 } from '@jarvis/core';
 import { valueText } from './numberText';
 import { importSummary } from './importText';
+import { helixSummary } from '@jarvis/core/helix';
 
 /** Number in mm without trailing zeros: 4, 2.5, 0.25. */
 export function mm(value: number): string {
@@ -45,10 +46,11 @@ const OPS: Record<Feature['op'], string> = {
     split: 'Split',
     draft: 'Draft',
     import: 'Imported',
+    helix: 'Helix/Spiral',
 };
 
 /** Construction steps: they build nothing, other steps use them by id. */
-export const REFERENCE_OPS: ReadonlySet<Feature['op']> = new Set(['plane', 'axis', 'point']);
+export const REFERENCE_OPS: ReadonlySet<Feature['op']> = new Set(['plane', 'axis', 'point', 'helix']);
 
 const EDGES: Record<EdgeSelect, string> = {
     all: 'all edges',
@@ -211,7 +213,11 @@ export function stepRefs(feature: Feature): string[] {
             if (feature.profile) {
                 ids.push(...sourceIds(feature.profile));
             }
-            ids.push(...('helix' in feature.path ? axisIds(feature.path.helix.axis) : sourceIds(feature.path)));
+            ids.push(...('helix' in feature.path ? axisIds(feature.path.helix.axis)
+                : 'curveRef' in feature.path ? [feature.path.curveRef] : sourceIds(feature.path)));
+            break;
+        case 'helix':
+            ids.push(...sourceIds(feature));
             break;
         case 'pattern':
             ids.push(...feature.features);
@@ -461,7 +467,8 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
                 const h = feature.path.helix;
                 return `Coil · ${mm(h.turns)} turns · pitch ${mm(h.pitch)} · ${mode}`;
             }
-            const path = feature.path.sketchRef ? stepName(part, feature.path.sketchRef) : 'a path';
+            const pathRef = 'curveRef' in feature.path ? feature.path.curveRef : feature.path.sketchRef;
+            const path = pathRef ? stepName(part, pathRef) : 'a path';
             return [
                 `Sweep${feature.profile ? '' : ` ⌀${mm(feature.diameter ?? 0)}`} · along ${path}`,
                 ...(feature.twist ? [`twist ${mm(feature.twist)}°`] : []),
@@ -504,6 +511,8 @@ export function featureSummary(feature: Feature, part?: Part, parts?: Part[]): s
             ].join(' · ');
         case 'import':
             return importSummary(feature);
+        case 'helix':
+            return `${helixSummary(feature)}${feature.sketchRef ? ` · ${sourceText(feature, part)}` : ''}`;
     }
 }
 
@@ -534,11 +543,13 @@ export function sketchEdits(feature: Feature): { label: string; id: string }[] {
             return feature.sections.flatMap((s, i) => (s.sketchRef ? [{ label: `Edit section ${i + 1} sketch`, id: s.sketchRef }] : []));
         case 'sweep': {
             const edits = feature.profile?.sketchRef ? [{ label: 'Edit profile sketch', id: feature.profile.sketchRef }] : [];
-            if (!('helix' in feature.path) && feature.path.sketchRef) {
+            if (!('helix' in feature.path) && !('curveRef' in feature.path) && feature.path.sketchRef) {
                 edits.push({ label: 'Edit path sketch', id: feature.path.sketchRef });
             }
             return edits;
         }
+        case 'helix':
+            return [{ label: 'Edit sketch', id: feature.sketchRef ?? feature.id }];
         default:
             return [];
     }

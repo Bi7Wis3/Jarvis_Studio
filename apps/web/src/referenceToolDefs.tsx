@@ -16,6 +16,7 @@ import {
     type RefValues,
 } from './referenceDefs';
 import type { Ctx, Field, PopupApi, Result, ToolDef, Values } from './toolDefs';
+import { helixTool } from './helixToolDef';
 
 const opts = (...pairs: [string, string][]) => pairs.map(([value, label]) => ({ value, label }));
 
@@ -306,7 +307,7 @@ const pointTool: ToolDef = {
     }),
 };
 
-export const referenceTools: ToolDef[] = [planeTool, axisTool, pointTool];
+export const referenceTools: ToolDef[] = [planeTool, axisTool, pointTool, helixTool];
 
 /** The editor of a reference step, if it is one. */
 export function referenceEditor(feature: Feature | null): ToolDef | null {

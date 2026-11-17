@@ -25,7 +25,8 @@
     "./folders": "./src/folders.ts",
     "./cadActivity": "./src/cadActivity.ts",
     "./imported": "./src/imported.ts",
-    "./mates": "./src/mates/index.ts"
+    "./mates": "./src/mates/index.ts",
+    "./helix": "./src/helix.ts"
   },
   "dependencies": {
     "three": "^0.187.0"

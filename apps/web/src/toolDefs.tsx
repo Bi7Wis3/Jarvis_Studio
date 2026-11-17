@@ -65,6 +65,7 @@ import { displayStyleTools } from './displayStyleTools';
 import { importTool } from './importTool';
 import { mateTool } from './mates/MateForm';
 import { matedUpdates } from './mates/mateAnalysis';
+import { curveStep, curveSteps, newestPath, sweepPathValue } from './helixForm';
 
 export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
@@ -1277,6 +1278,9 @@ const sweepTool: ToolDef = {
     fields: (ctx) => {
         const steps = sketchSteps(ctx.part).map((f) => ({ value: f.id, label: f.name ?? f.id }));
         const none = [{ value: '', label: 'None' }];
+        // Helix and spiral steps are paths too; a twist is only for a straight path.
+        const curves = curveSteps(ctx.part).map((f) => ({ value: f.id, label: f.name ?? f.id }));
+        const straightOnly = (v: Values) => !curves.some((c) => c.value === v.path);
         return [
             { key: 'profileType', label: 'Profile', kind: 'select', options: opts(['sketch', 'Sketch profile'], ['circular', 'Circular profile']),
                 section: 'Profile and path' },
@@ -1284,13 +1288,13 @@ const sweepTool: ToolDef = {
                 show: (v) => v.profileType === 'sketch' },
             { key: 'diameter', label: 'Diameter', kind: 'number', unit: 'mm', min: 0, step: 0.5, section: 'Profile and path',
                 show: (v) => v.profileType === 'circular' },
-            { key: 'path', label: 'Path sketch', kind: 'select', options: [...none, ...steps], section: 'Profile and path' },
+            { key: 'path', label: 'Path', kind: 'select', options: [...none, ...steps, ...curves], section: 'Profile and path' },
             { key: 'orientation', label: 'Orientation', kind: 'select', section: 'Options',
                 options: opts(['followPath', 'Follow path'], ['keepNormal', 'Keep normal constant']) },
-            { key: 'twist', label: 'Profile twist', kind: 'select', section: 'Options', show: (v) => v.orientation !== 'keepNormal',
+            { key: 'twist', label: 'Profile twist', kind: 'select', section: 'Options', show: (v) => v.orientation !== 'keepNormal' && straightOnly(v),
                 options: opts(['none', 'None'], ['angle', 'Specify twist angle']) },
             { key: 'twistAngle', label: 'Twist angle', kind: 'number', unit: 'deg', section: 'Options',
-                show: (v) => v.orientation !== 'keepNormal' && v.twist === 'angle' },
+                show: (v) => v.orientation !== 'keepNormal' && v.twist === 'angle' && straightOnly(v) },
             { key: 'mode', label: 'Result', kind: 'select', options: opts(['add', 'Join (boss)'], ['cut', 'Cut']), section: 'Result' },
         ];
     },
@@ -1299,7 +1303,7 @@ const sweepTool: ToolDef = {
         if (f) {
             return {
                 profileType: f.profile ? 'sketch' : 'circular', sketch: f.profile?.sketchRef ?? '', kept: f.profile?.sketchRef ?? '',
-                diameter: fmt(f.diameter ?? 5), path: 'helix' in f.path ? '' : f.path.sketchRef ?? '',
+                diameter: fmt(f.diameter ?? 5), path: sweepPathValue(f.path),
                 orientation: f.orientation ?? 'followPath', twist: f.twist ? 'angle' : 'none', twistAngle: fmt(f.twist ?? 90), mode: f.mode,
             };
         }
@@ -1307,7 +1311,7 @@ const sweepTool: ToolDef = {
         const path = [...steps].reverse().find((f) => sweepRole(f) === 'path');
         const profile = [...steps].reverse().find((f) => sweepRole(f) === 'profile');
         return {
-            profileType: 'sketch', sketch: profile?.id ?? '', kept: profile?.id ?? '', diameter: '5', path: path?.id ?? '',
+            profileType: 'sketch', sketch: profile?.id ?? '', kept: profile?.id ?? '', diameter: '5', path: newestPath(ctx.part, path?.id),
             orientation: 'followPath', twist: 'none', twistAngle: '90', mode: 'add',
         };
     },
@@ -1323,7 +1327,7 @@ const sweepTool: ToolDef = {
     top: () => (
         <p className="tb-note">
             The profile is a closed sketch (or a circle); the path is a sketch of one open chain of lines and arcs, starting
-            at the profile. Pick them in the lists or click them in the view.
+            at the profile, or a helix or spiral. Pick them in the lists or click them in the view.
         </p>
     ),
     extra: (api, ctx) => {
@@ -1341,12 +1345,13 @@ const sweepTool: ToolDef = {
     },
     apply: (v, ctx) => attempt(async () => {
         const steps = sketchSteps(ctx.part);
+        const curve = curveStep(ctx.part, v.path);
         const path = steps.find((f) => f.id === v.path);
-        if (!path) {
-            throw new Error('Pick the path sketch.');
+        if (!path && !curve) {
+            throw new Error('Pick the path: a sketch, or a helix or spiral.');
         }
-        const chains = path.sketch.open?.length ?? 0;
-        if (chains > 1 || (chains === 0 && path.sketch.profiles.length !== 1) || (chains === 1 && path.sketch.profiles.length)) {
+        const chains = path?.sketch.open?.length ?? 0;
+        if (path && (chains > 1 || (chains === 0 && path.sketch.profiles.length !== 1) || (chains === 1 && path.sketch.profiles.length))) {
             throw new Error(`${path.name ?? path.id} is not a path: it needs one connected open chain of lines and arcs (or one closed profile)`
                 + `${chains === 0 && path.sketch.geometry ? '. A sketch saved before open chains were kept: open it and exit it again' : ''}.`);
         }
@@ -1355,18 +1360,19 @@ const sweepTool: ToolDef = {
         if (!circular && !profile) {
             throw new Error('Pick the profile sketch, or use a circular profile.');
         }
-        if (profile && profile.id === path.id) {
+        if (profile && profile.id === path?.id) {
             throw new Error('The profile and the path must be different sketches.');
         }
         const keepNormal = v.orientation === 'keepNormal';
-        const twist = !keepNormal && v.twist === 'angle' ? num(v, 'twistAngle', 'Twist angle') : 0;
+        const twist = !keepNormal && !curve && v.twist === 'angle' ? num(v, 'twistAngle', 'Twist angle') : 0;
         const regions = circular ? [] : useRegionPick.getState().picked;
-        const pathName = path.name?.split(' · ')[0] ?? path.id;
+        const along = (curve ?? path)!;
+        const pathName = along.name?.split(' · ')[0] ?? along.id;
         const feature: Record<string, unknown> = {
             op: 'sweep',
             name: `Sweep ${circular ? `⌀${v.diameter} ` : ''}along ${pathName}`,
             ...(circular ? { diameter: num(v, 'diameter', 'Diameter', { positive: true }) } : { profile: { sketchRef: profile!.id } }),
-            path: { sketchRef: path.id },
+            path: curve ? { curveRef: curve.id } : { sketchRef: path!.id },
             mode: v.mode,
             ...(keepNormal ? { orientation: 'keepNormal' } : {}),
             ...(twist ? { twist } : {}),
@@ -2692,7 +2698,8 @@ export function editorFor(part: Part, feature: Feature | null): ToolDef | 'sketc
     if (feature?.op === 'sweep') {
         // The form edits sweeps of sketch steps; coils (helix paths) and inline sketches are Jarvis's.
         const path = 'helix' in feature.path ? null : feature.path;
-        return path?.sketchRef && (!feature.profile || feature.profile.sketchRef) ? sweepTool : noEditTool;
+        const stepPath = path && ('curveRef' in path || path.sketchRef);
+        return stepPath && (!feature.profile || feature.profile.sketchRef) ? sweepTool : noEditTool;
     }
     if (feature ? feature.op === 'extrude' || feature.op === 'revolve' || feature.op === 'sketch' : part.shape.kind === 'sketch') {
         return 'sketch';

@@ -23,6 +23,7 @@ import {
     axisDefinition, linePickTarget, planeCount, planeDefinition, pointSteps, refItem, refPickPatch, stepItem, type RefValues,
 } from './referenceDefs';
 import { useTreePicks, viewPick } from './treeSelection';
+import { HelixCurves } from './HelixCurves';
 
 /** Sends a clicked reference to the open form's active box, if that box takes references; true when it did. */
 function pickIntoBox(partId: string, item: PickItem | null): boolean {
@@ -408,6 +409,7 @@ export function ReferenceGeometry({ part, offset }: { part: Part | null; offset:
                 ))}
                 {referenceForm && <PickMarks items={marks} size={size} />}
                 <SketchLinePicker part={part} />
+                <HelixCurves part={part} hidden={hiddenSet} chosen={chosen} editing={editing} />
             </group>
         </group>
     );

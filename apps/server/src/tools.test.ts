@@ -595,6 +595,35 @@ describe('reference geometry and instances', () => {
             .toThrow(/give a profile or a diameter/);
     });
 
+    it('takes helix steps on a circle sketch and sweeps along them by curveRef', () => {
+        const ring = { plane: 'top', profiles: [{ kind: 'circle', center: [0, 0], radius: 8 }] };
+        const wire = { plane: 'front', profiles: [{ kind: 'circle', center: [8, 0], radius: 1 }] };
+        const features = [
+            { op: 'sketch', id: 'ring', sketch: ring },
+            { op: 'helix', id: 'coil', sketchRef: 'ring', definedBy: 'pitchRevolution', pitch: 4, revolutions: 6, clockwise: false },
+            { op: 'sketch', id: 'wire', sketch: wire },
+            { op: 'sweep', id: 'spring', mode: 'add', profile: { sketchRef: 'wire' }, path: { curveRef: 'coil' } },
+        ];
+        // As a call arrives (checked against the schema): the curve path and an inline helix keep their keys.
+        const schema = z.object(tool('features_add').schema);
+        const parsed = schema.parse({ partId: 'body', features: [...features, { op: 'sweep', mode: 'add', diameter: 1, path: { helix: { axis: 'y', pitch: 3, turns: 2 } } }] }) as { features: unknown[] };
+        expect(parsed.features[3]).toMatchObject({ path: { curveRef: 'coil' } });
+        expect(parsed.features[4]).toMatchObject({ path: { helix: { pitch: 3, turns: 2 } } });
+        expect(parsed.features[1]).toMatchObject({ definedBy: 'pitchRevolution', pitch: 4, revolutions: 6 });
+        body(parsed.features);
+        expect(store.get().parts[0].features?.map((f) => f.op)).toEqual(['sketch', 'helix', 'sketch', 'sweep', 'sweep']);
+        // A variable pitch table, then an edit back to constant pitch.
+        run('features_update', { partId: 'body', updates: [{ id: 'coil', pitch: null, revolutions: null, variablePitch: [{ pitch: 1 }, { pitch: 4, revolutions: 3 }] }] });
+        expect(store.get().parts[0].features?.[1]).toMatchObject({ variablePitch: [{ pitch: 1 }, { pitch: 4, revolutions: 3 }] });
+        expect(() => run('features_update', { partId: 'body', updates: [{ id: 'coil', variablePitch: null }] }))
+            .toThrow(/defined by pitchRevolution needs pitch and revolutions/);
+        // The path must be an earlier helix step, and the helix's sketch an earlier sketch.
+        expect(() => run('features_add', { partId: 'body', features: [{ op: 'sweep', mode: 'add', diameter: 1, path: { curveRef: 'wire' } }] }))
+            .toThrow(/helix "wire" is not an earlier helix step/);
+        expect(() => run('features_add', { partId: 'body', features: [{ op: 'helix', definedBy: 'spiral', pitch: 1, revolutions: 2 }] }))
+            .toThrow(/give exactly one of sketch or sketchRef/);
+    });
+
     it('clears optional fields an update sets to null', () => {
         body([{ op: 'thread', id: 't', kind: 'external', diameter: 8, pitch: 1.25, length: 10, position: [0, 0, 0] }]);
         run('features_update', { partId: 'body', updates: [{ id: 't', at: [4, 0, 0], position: null, length: null, revolutions: 6 }] });

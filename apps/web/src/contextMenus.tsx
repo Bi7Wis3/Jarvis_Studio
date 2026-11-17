@@ -291,7 +291,7 @@ export function sketchMenu(t: Extract<ViewTarget, { kind: 'sketch' }>, c: MenuCo
 
 // ---- Reference planes, axes and points ---------------------------------------------------------------------------
 
-const REF_ICONS: Partial<Record<Feature['op'], string>> = { plane: 'ref-plane', axis: 'ref-axis', point: 'ref-point' };
+const REF_ICONS: Partial<Record<Feature['op'], string>> = { plane: 'ref-plane', axis: 'ref-axis', point: 'ref-point', helix: 'helix' };
 
 /** The entries for a reference step, shared by the view and the feature tree (`inTree`: less what the tree has). */
 export function referenceStepEntries(part: Part, featureId: string, c: MenuContext, a: MenuActions, inTree = false): MenuEntry[] {

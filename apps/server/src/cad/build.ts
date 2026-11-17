@@ -43,6 +43,7 @@ import {
 import { applyImport } from '../import/apply.js';
 import { bodyOrdinalsOf } from '../import/topology.js';
 import { meshApart, meshFaces, quickDiagonal } from './incrementalMesh.js';
+import { curvePath, helixStepShape, sweepAlongCurve } from './helixCurve.js';
 
 type P2 = [number, number];
 
@@ -1055,9 +1056,15 @@ function sweepTool(f: Extract<Feature, { op: 'sweep' }>, state: BuildState, inde
     if (helix && f.twist) {
         throw new Error('twist is not supported along a helix');
     }
+    // A helix or spiral step (helixCurve.ts).
+    const curve = 'curveRef' in f.path ? curvePath(f.path.curveRef, before(state, index), state.sketches) : null;
+    if (curve && f.twist) {
+        throw new Error('twist is not supported along a helix or spiral');
+    }
     const drawn = f.profile ? sweepProfile(resolveSketch(f.profile, state, index), f.regions) : null;
     // An open path is used from its end nearer the profile.
-    const path = helix ? null : pathWire(resolveSketch(f.path as { sketch?: Sketch; sketchRef?: string }, state, index), drawn?.centre);
+    const path = helix ? null : curve ? { wire: curve.wire, line: null }
+        : pathWire(resolveSketch(f.path as { sketch?: Sketch; sketchRef?: string }, state, index), drawn?.centre);
     let profile: { outer: Wire; holes: Wire[]; centre: Vec3; frame: SketchFrame };
     if (drawn) {
         profile = drawn;
@@ -1080,6 +1087,9 @@ function sweepTool(f: Extract<Feature, { op: 'sweep' }>, state: BuildState, inde
     const sweepOne = (wire: Wire): Shape3D => {
         if (helix) {
             return sweepWire(wire, helixWire(helix, profile.centre, before(state, index)), { frenet: true, keepNormal });
+        }
+        if (curve) {
+            return sweepAlongCurve(wire, curve, keepNormal);
         }
         if (f.twist) {
             if (!path!.line) {
@@ -1359,6 +1369,10 @@ function applyFeature(shape: Shape3D | null, f: Feature, state: BuildState): Sha
         case 'point':
             // Reference geometry builds nothing; later steps use it by id.
             return shape;
+        case 'helix':
+            // A curve builds nothing either; its settings are checked here, where its step shows the error.
+            helixStepShape(f, before(state), state.sketches);
+            return shape;
         case 'pattern':
             return pattern(shape, f, state);
         case 'combine':
@@ -1517,7 +1531,7 @@ export function buildPartial(part: PartSpec, print: PrintSettings, context?: Com
     const found = (): Record<string, Feature> => Object.fromEntries([...followed.values()].map((f) => [f.id, f]));
     const said = (): { notes?: string[] } => (state.notes.length ? { notes: [...state.notes] } : {});
     // Reference steps build nothing, so they do not count as a history for the default edge softening.
-    const history = features.some((f) => !f.suppressed && !['sketch', 'plane', 'axis', 'point'].includes(f.op));
+    const history = features.some((f) => !f.suppressed && !['sketch', 'plane', 'axis', 'point', 'helix'].includes(f.op));
     const state: BuildState = {
         print, features, index: 0, sketches: new Map(), threads: new Map(), ghosts: [], notes: [], context,
         stack: stack ?? (context ? [context.self] : []),

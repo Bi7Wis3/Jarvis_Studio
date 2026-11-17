@@ -20,7 +20,7 @@ function canonical(value: unknown): string {
 }
 
 /** Steps that later steps refer to by id, and that count even when suppressed. */
-const REFERENCED = new Set(['sketch', 'plane', 'axis', 'point']);
+const REFERENCED = new Set(['sketch', 'plane', 'axis', 'point', 'helix']);
 
 function geometryOf(features: Feature[] | undefined): unknown[] {
     // Names do not change geometry. Ids only do where later steps can refer to them (sketchRef, planeRef, axisRef,

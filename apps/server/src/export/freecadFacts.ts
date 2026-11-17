@@ -19,7 +19,7 @@ export interface Measure {
     box: [number, number, number, number, number, number];
 }
 
-const REFERENCE_OPS = new Set(['sketch', 'plane', 'axis', 'point']);
+const REFERENCE_OPS = new Set(['sketch', 'plane', 'axis', 'point', 'helix']);
 const EPS = 1e-3;
 
 function bounds(shape: Shape3D): [Vec3, Vec3] {

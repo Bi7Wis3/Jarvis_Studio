@@ -21,7 +21,9 @@ export function consumedSketches(feature: Feature): string[] {
         case 'loft':
             return feature.sections.flatMap(sourceRef);
         case 'sweep':
-            return [...sourceRef(feature.profile), ...('helix' in feature.path ? [] : sourceRef(feature.path))];
+            return [...sourceRef(feature.profile), ...('helix' in feature.path || 'curveRef' in feature.path ? [] : sourceRef(feature.path))];
+        case 'helix':
+            return sourceRef(feature);
         default:
             return [];
     }

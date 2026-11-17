@@ -45,11 +45,14 @@ export function sketchSources(feature: Feature): Source[] {
             return feature.sections.map((source, i) => ({ role: 'section', label: `Section ${i + 1}`, source }));
         case 'sweep': {
             const sources: Source[] = feature.profile ? [{ role: 'profile', label: 'Profile', source: feature.profile }] : [];
-            if (!('helix' in feature.path)) {
+            // A helix or spiral step it follows stays a step of its own, as in SolidWorks.
+            if (!('helix' in feature.path) && !('curveRef' in feature.path)) {
                 sources.push({ role: 'path', label: 'Path', source: feature.path });
             }
             return sources;
         }
+        case 'helix':
+            return [{ role: 'sketch', label: 'Sketch', source: feature }];
         default:
             return [];
     }

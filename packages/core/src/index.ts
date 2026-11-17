@@ -3,6 +3,7 @@
 import type { CadActivity } from './cadActivity';
 import type { ImportedMates, ImportStep } from './imported';
 import type { AssemblyMates } from './mates/types';
+import type { HelixOptions } from './helix';
 
 export type Vec3 = [number, number, number];
 
@@ -865,14 +866,15 @@ export type Feature = FeatureBase & (
     /** Construction point (builds nothing); with `definition`, taken from the model and found again at every rebuild. */
     | { op: 'point'; position: Vec3; definition?: PointDefinition }
     /**
-     * Sweeps a closed profile along a path: the open chain (or single closed profile) of another sketch, or a helix
-     * (springs, coils). `diameter` instead of `profile`: a circular profile, a round rod centred on the path start.
+     * Sweeps a closed profile along a path: the open chain (or single closed profile) of another sketch, a helix
+     * (springs, coils), or an earlier curve step by id (`curveRef`: a helix or spiral step; the profile keeps its angle
+     * to the curve's axis). `diameter` instead of `profile`: a circular profile, a round rod centred on the path start.
      * `regions` picks the profile's areas (one, holes allowed). orientation: followPath turns the profile with the
      * path (default), keepNormal keeps it parallel to its own plane. twist rotates the profile along a straight
      * path, in degrees.
      */
     | ({
-        op: 'sweep'; profile?: SketchSource; diameter?: number; path: SketchSource | { helix: HelixPath }; twist?: number;
+        op: 'sweep'; profile?: SketchSource; diameter?: number; path: SketchSource | { helix: HelixPath } | { curveRef: string }; twist?: number;
         orientation?: 'followPath' | 'keepNormal'; mode: 'add' | 'cut';
     } & RegionPicks)
     /**
@@ -944,6 +946,11 @@ export type Feature = FeatureBase & (
     }
     /** Bodies read from a STEP, STL or other CAD file (imported.ts). */
     | ImportStep
+    /**
+     * Helix or spiral curve (builds nothing) from the one circle of its sketch: the circle's centre and normal are the
+     * axis, its diameter the start diameter; sweeps use it as a path by `curveRef` (helix.ts).
+     */
+    | ({ op: 'helix' } & HelixOptions & SketchSource)
 );
 
 /** Settings for designing parts to be 3D printed (FDM by default). */

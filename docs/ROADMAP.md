@@ -25,7 +25,7 @@ Features tab
 - [ ] Boundary boss/base and boundary cut
 - [ ] Hole wizard (standard sizes, counterbore/countersink, positions from sketch points)
 - [ ] Rib, wrap, intersect
-- [ ] Curves (helix exists inside sweep; missing: projected, composite, through points, split line)
+- [ ] Curves (helix and spiral done as a step of their own; missing: projected, composite, through points, split line)
 
 Sketch tab
 - [x] Exit sketch, smart dimension (drag out of a line), line, rectangle, circle, 3-point arc, slot, polygon

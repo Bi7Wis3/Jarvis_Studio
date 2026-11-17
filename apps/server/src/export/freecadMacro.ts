@@ -414,6 +414,9 @@ class PartWriter {
             case 'add':
             case 'cut':
                 return this.asSolids(f, index, `${f.op === 'add' ? 'add' : 'cut'} a ${f.shape.kind} placed by position and rotation`);
+            case 'helix':
+                this.emit(`# ${name} is a helix or spiral curve: it builds nothing, and sweeps along it are carried over as solids.`);
+                return { name, op: f.op, how: 'left out', detail: 'a helix or spiral curve (builds nothing; sweeps along it are carried over as solids)' };
         }
         return this.asSolids(f, index, 'express this step');
     }
@@ -600,6 +603,9 @@ class PartWriter {
         }
         if ('helix' in f.path && f.path.helix) {
             return this.helixSweep(f, f.path.helix, index);
+        }
+        if ('curveRef' in f.path) {
+            return this.asSolids(f, index, 'sweep along a Jarvis Studio helix or spiral step');
         }
         if (!f.profile) {
             return this.asSolids(f, index, 'sweep a circular profile without a profile sketch');
