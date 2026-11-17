@@ -30,6 +30,7 @@ import { runItemAction } from './sketchItemActions';
 import { toggleDimensionLock } from './sketchDimTools';
 import { hiddenStepsNow } from './stepVisibility';
 import { clearPieces, onPickedPiece } from './sketchPieces';
+import { viewToolbarsMenu } from './FloatingToolbar';
 
 /** A right-click that moves further than this (screen pixels) is a pan, not a click. */
 const CLICK_SLOP_PX = 4;
@@ -311,6 +312,12 @@ function openFor(p: Press): void {
         items = sketchItems(p.x, p.y);
     } else if (studio.mode === 'select' && !studio.placingDecal) {
         items = viewMenu(p.best ?? { kind: 'empty' }, menuContext(), appActions, viewListActions);
+    }
+    // SolidWorks' View > Toolbars, on empty space: every toolbar and pulldown group of the mode, to float one.
+    const sk = useSketcher.getState();
+    const empty = sk.active ? sk.stage === 'draw' && sk.draft.length === 0 && sk.selection.length === 0 : !p.best || p.best.kind === 'empty';
+    if (items.length && empty) {
+        items = [...items, 'separator', viewToolbarsMenu()];
     }
     useViewMenu.setState({ menu: items.length ? { x: p.x, y: p.y, items } : null });
 }

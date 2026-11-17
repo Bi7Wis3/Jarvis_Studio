@@ -486,9 +486,23 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
 - [~] Customize toolbars (reference E5b): every toolbar of each mode can be shown or hidden (right-click on the
   toolbar); per toolbar its tools and order (add any tool of the mode, remove, drag or arrow to reorder), icon size
   small / medium / large, text under the icons, tooltips (name with what it does and its key, name only, none),
-  variants as one flyout or a button each, reset per toolbar and for all; kept in this browser (local storage). Not
-  there: moving, floating or locking toolbars (they share one band at the top), toolbars of the no-document state,
-  context toolbars, shortcut bars; tooltips with images.
+  variants as one flyout or a button each, reset per toolbar and for all; kept in the settings file (`toolbars`),
+  with this browser's local storage as a quick cache. Not there: moving or docking the main toolbars themselves
+  (they share one band at the top; see floating toolbars below), toolbars of the no-document state, context
+  toolbars, shortcut bars; tooltips with images.
+- [x] Floating toolbars (reference E5b): any toolbar, and any pulldown group of one (Add relation, Rectangle, Smart
+  dimension...), can also be opened as a toolbar of its own that floats over the view, its tools as plain buttons
+  that look and work as on the main toolbar (which keeps them). Opened from a right-click on the main toolbar
+  (Float as toolbar; on a pulldown, Float this group as a toolbar; Floating toolbars list), from View > Toolbars in
+  the view's right-click menu on empty space (every toolbar and group of the mode, floating ones ticked) and from
+  Options > Toolbars (Floating, per toolbar and group). A slim title bar to drag it anywhere in the window; × or a
+  double-click on the title docks it; a switch (and its right-click menu) turns it between a row and a column, its
+  top-left corner staying put. Kept inside the window as it changes size, measured from the nearest edges. Lock
+  toolbars (Options > Toolbars and both right-click menus): floating ones cannot be moved, turned or docked, docked
+  ones cannot be floated. Per mode (part, sketch, assembly): open or not, place and orientation, in the settings
+  file. Not there: docking a toolbar at the left, right or bottom window border, resizing a floating toolbar into
+  several rows or columns (not described in the help pages read), dragging a toolbar off the main toolbar to float
+  it.
 - [x] Number fields take any value: a field's step is only its spin increment (arrows and Up/Down keys; Ctrl ten
   times, Alt a tenth). Worked-out values (drags, picks, dimensions) are kept to 0.000001 mm; labels in the view
   show up to four decimals. Drag handles step finer as the view zooms in (Shift coarser, Alt to a pixel's worth).

@@ -1,5 +1,6 @@
 // Where the toolbar arrangement (toolbarLayout.ts) is kept: in this browser's local storage under one key, read once
 // at start and written on every change. loadArrangement and saveArrangement are the only places that touch storage.
+// The settings file keeps it too (toolbarSync.ts), and wins once it has loaded.
 
 import { create } from 'zustand';
 import type { ToolbarArrangement, ToolbarPrefs } from './toolbarLayout';

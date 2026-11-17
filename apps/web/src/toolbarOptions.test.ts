@@ -27,6 +27,6 @@ describe('Customize toolbars', () => {
         expect(text(renderToStaticMarkup(createElement(ToolbarOptions, { mode: 'part' }))))
             .toContain(' Sketch Features Reference geometry Pattern Material View Inspect History ');
         expect(text(renderToStaticMarkup(createElement(ToolbarOptions, { mode: 'assembly' }))))
-            .toContain(' Insert Transform Pattern Material View Export History ');
+            .toContain(' Insert Mates Transform Pattern Material View Export History ');
     });
 });

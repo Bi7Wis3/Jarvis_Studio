@@ -13,6 +13,8 @@ import {
     type ArrangedToolbar, type FamilyStyle, type IconSize, type TipStyle, type ToolbarMode,
 } from './toolbarLayout';
 import { resetArrangement, setToolbarPrefs, useToolbarArrangement } from './toolbarStore';
+import { FloatChoices, FloatMark, LockToolbars } from './floatingOptions';
+import { resetFloating, useFloatingToolbars } from './floatingToolbars';
 import './toolbarOptions.css';
 
 /** The toolbars of a mode, as toolDefs.tsx defines them. */
@@ -100,6 +102,7 @@ function ToolbarSection(props: { toolbar: ArrangedToolbar; defaults: string[]; g
                     <span>{toolbar.label}</span>
                 </label>
                 {toolbar.customised && <em className="tbo-changed" title="Changed from the default">changed</em>}
+                <FloatMark toolbar={toolbar} />
                 <button type="button" className="tbo-expand" onClick={onToggle} aria-expanded={open} aria-label={`${toolbar.label}: options`}>
                     <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 3.5l3 3 3-3" /></svg>
                 </button>
@@ -151,6 +154,7 @@ function ToolbarSection(props: { toolbar: ArrangedToolbar; defaults: string[]; g
                             </span>
                         </label>
                     )}
+                    <FloatChoices toolbar={toolbar} />
                     <div className="tb-field">
                         <span>Tools, in order</span>
                         <ul className="tbo-tools" aria-label={`${toolbar.label} tools`} onDragOver={(e) => dragging !== null && e.preventDefault()}
@@ -202,7 +206,8 @@ export function ToolbarOptions({ mode: initial }: { mode?: ToolbarMode }) {
     const toolbars = useMemo(() => arrangeToolbars(mode, groups, arrangement), [mode, groups, arrangement]);
     // Tools that can be put on a toolbar of this mode: every tool its toolbars have by default.
     const all = useMemo(() => modeTools(groups), [groups]);
-    const anyChanged = Object.keys(arrangement).length > 0;
+    const floatingChanged = useFloatingToolbars((s) => Object.keys(s.floating).length > 0 || s.locked);
+    const anyChanged = Object.keys(arrangement).length > 0 || floatingChanged;
     return (
         <div className="tbo">
             <div className="tbo-modes" role="tablist" aria-label="Toolbars of">
@@ -224,7 +229,7 @@ export function ToolbarOptions({ mode: initial }: { mode?: ToolbarMode }) {
             </div>
             <p className="tb-note tb-hint">
                 Tick the toolbars to show while {mode === 'sketch' ? 'sketching' : `in the ${mode} workspace`}; open one to choose its tools
-                ({all.length} to pick from), their order and its look.
+                ({all.length} to pick from), their order, its look and whether it or a pulldown group of it floats.
             </p>
             {toolbars.map((toolbar) => (
                 <ToolbarSection
@@ -236,8 +241,17 @@ export function ToolbarOptions({ mode: initial }: { mode?: ToolbarMode }) {
                     onToggle={() => setOpen((o) => (o === toolbar.key ? null : toolbar.key))}
                 />
             ))}
+            <LockToolbars />
             <div className="tbo-actions">
-                <button type="button" disabled={!anyChanged} onClick={resetArrangement} title="Every toolbar of every mode back to its defaults">
+                <button
+                    type="button"
+                    disabled={!anyChanged}
+                    onClick={() => {
+                        resetArrangement();
+                        resetFloating();
+                    }}
+                    title="Every toolbar of every mode back to its defaults, floating ones docked"
+                >
                     Reset all toolbars
                 </button>
             </div>

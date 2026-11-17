@@ -131,8 +131,9 @@ export function draftPatch(draft: Draft, saved: StudioSettingsView): OptionsPatc
     const { apiKeySet: _set, apiKeyMasked: _masked, ...savedAi } = saved.ai;
     const savedPlain: StudioSettings = { ...saved, ai: savedAi };
     for (const category of SETTINGS_CATEGORIES) {
-        // The file browser's folders are kept by the server as they change, never by this page.
-        if (category !== 'sketch' && category !== 'files' && !same(next[category], savedPlain[category])) {
+        // The file browser's folders are kept by the server as they change, never by this page; the toolbars by their
+        // own module as they change (toolbarSync.ts), also while this page is open.
+        if (category !== 'sketch' && category !== 'files' && category !== 'toolbars' && !same(next[category], savedPlain[category])) {
             patch[category] = next[category];
         }
     }

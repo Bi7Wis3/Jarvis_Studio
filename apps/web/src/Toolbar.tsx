@@ -31,6 +31,8 @@ import {
 import { setToolbarPrefs, useToolbarArrangement } from './toolbarStore';
 import { modeGroups, toolbarOptionsTool } from './toolbarOptions';
 import { useDisplayStyle } from './displayStyle';
+import { floatTargetOf, toolbarFloatEntries, type FloatTarget } from './floatingToolbars';
+import { FloatingToolbars } from './FloatingToolbar';
 
 const FAMILY_KEY = 'jarvis.toolbar.families';
 // Until the hidden copy of the toolbar has been measured (readWidths): its padding and switch, and the Tools menu.
@@ -323,7 +325,7 @@ export function Toolbar() {
     const arrangement = useToolbarArrangement((s) => s.arrangement);
     const toolbars = useMemo(() => arrangeToolbars(mode, modeGroups(mode), arrangement), [mode, arrangement]);
     const groups = useMemo(() => toolbars.filter((t) => !t.hidden && t.tools.length > 0), [toolbars]);
-    const [barMenu, setBarMenu] = useState<{ x: number; y: number } | null>(null);
+    const [barMenu, setBarMenu] = useState<{ x: number; y: number } & FloatTarget | null>(null);
     const [band, setBand] = useState(() => measureRoom());
     // The name of the part being edited sits at the end of the bar (see .tb-active).
     const activeNameWidth = workspace === 'part' && !sketchActive && ctx.part ? Math.min(140, ctx.part.name.length * 7) + 24 : 0;
@@ -844,14 +846,14 @@ export function Toolbar() {
                     // Right-click on the toolbars: show or hide them, or customise them (as on SolidWorks' window border).
                     event.preventDefault();
                     setMenu(null);
-                    setBarMenu({ x: event.clientX, y: event.clientY });
+                    setBarMenu({ x: event.clientX, y: event.clientY, ...floatTargetOf(event.target) });
                 }}
             >
                 <WorkspaceSwitch />
                 {layout.kind === 'all'
                     ? <div className="tb-group">{menuButton(null)}</div>
                     : groups.map((group) => (
-                        <div key={group.id} className={groupClass(group)} role="group" aria-label={group.label}>
+                        <div key={group.id} className={groupClass(group)} role="group" aria-label={group.label} data-toolbar={group.id}>
                             {toolbarContent(group)}
                         </div>
                     ))}
@@ -876,6 +878,7 @@ export function Toolbar() {
                 document.body,
             )}
             <SketchBar centre={band.centre} top={barBottom + 6} onFinish={() => openById(finishTool.id)} />
+            <FloatingToolbars toolbars={toolbars} button={(tool, toolbar) => button(tool, toolbar)} />
             {barMenu && (
                 <ContextMenu
                     x={barMenu.x}
@@ -889,6 +892,8 @@ export function Toolbar() {
                             onSelect: () => setToolbarPrefs(t.key, withOption(useToolbarArrangement.getState().arrangement[t.key], 'hidden', !t.hidden)),
                         })),
                         'separator',
+                        // Float the toolbar or pulldown right-clicked as a toolbar of its own, or any other (FloatingToolbar.tsx).
+                        ...toolbarFloatEntries(toolbars, barMenu),
                         {
                             label: 'Customize toolbars…', icon: 'toolbars', title: 'Tools, order, icon size and text of each toolbar, in the left panel',
                             onSelect: () => open(toolbarOptionsTool, anchorOf(bar.current)),
