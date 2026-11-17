@@ -14,6 +14,7 @@ import { explodeOffsets, type Part, type Project } from '@jarvis/core';
 import { buildGeometry, instanceTransforms } from '@jarvis/core/geometry';
 import type { LightingSettings } from '@jarvis/core/settings';
 import { directionalWorld, dragLighting, lightKey, panelWorld, pointWorld, targetWorld, type Grab, type V3 } from './lightMath';
+import { ErrorBoundary } from './ErrorBoundary';
 import { useKernelMesh } from './meshes';
 import { niceStep } from './numberText';
 import { partLook } from './partView';
@@ -94,9 +95,12 @@ export function LightOverview(props: OverviewProps) {
         <div className="op-overview">
             <div className="op-overview-view">
                 {ready && (
-                    <Canvas frameloop="demand" shadows dpr={[1, 2]} camera={{ fov: 40, near: 0.1, far: 100000, position: [300, 250, 300] }}>
-                        <OverviewScene {...props} fit={fit} />
-                    </Canvas>
+                    // Without WebGL (or after an error in it) only the overview stops, not the whole page.
+                    <ErrorBoundary>
+                        <Canvas frameloop="demand" shadows dpr={[1, 2]} camera={{ fov: 40, near: 0.1, far: 100000, position: [300, 250, 300] }}>
+                            <OverviewScene {...props} fit={fit} />
+                        </Canvas>
+                    </ErrorBoundary>
                 )}
                 <button type="button" className="sk-small op-overview-fit" onClick={() => fit.current?.()} title="Zoom to fit the model, the lights and the camera">
                     Fit
