@@ -98,6 +98,25 @@ const REVIEW = `Review:
 
 export const JARVIS_PERSONA = [INTRO, MANNER, BASICS, MODELLING_RULES, REVIEW].join('\n\n');
 
+/**
+ * What an outside AI client gets when it connects to the studio's MCP server (mcpHttp.ts): the same units and modelling
+ * rules as Jarvis, without Jarvis's own manner (a spoken butler) or its scene digest.
+ */
+export const MCP_INSTRUCTIONS = [
+    `Jarvis Studio is a local parametric CAD workshop. These tools build and edit the parts of the project open in the
+studio with a real CAD kernel (OpenCascade): sketches, features with a history, assemblies with mates, imports and
+exports, and project files. The user watches the result live in the studio's 3D view.`,
+    `Basics:
+- ${UNITS}
+- Add all the parts of a design in a single parts_add call. Call project_get for the exact model, history_get for a
+  part's history.
+- Change a dimension with features_update instead of rebuilding a part.`,
+    MODELLING_RULES,
+    `Check your work: after building or editing, call cad_check and fix any part that failed to build, then look at one
+view_screenshot and fix what looks wrong. Report failures plainly; never claim something was done if a tool said
+otherwise.`,
+].join('\n\n');
+
 /** The part builder: a subagent Jarvis hands one piece of a larger job to (the manage skill). */
 export const PART_BUILDER_PROMPT = [
     `You are a part builder in Jarvis Studio, a parametric CAD studio on a CAD kernel (OpenCascade). Jarvis, the lead designer, gives you a brief: the parts to build or fix (by id when they exist), their real sizes, how they meet their neighbours, the design language, and what done looks like. You work only through the studio tools. Only Jarvis reads what you write.

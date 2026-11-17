@@ -1,12 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { MCP_INSTRUCTIONS } from './jarvisRules.js';
 import { callTool, type AnyTool } from './tools.js';
 
 /** Exposes the studio tools to external MCP clients over stateless Streamable HTTP at /mcp. */
 export function registerMcpHttp(app: FastifyInstance, tools: AnyTool[]): void {
     app.post('/mcp', async (request, reply) => {
-        const server = new McpServer({ name: 'jarvis-studio', version: '0.1.0' });
+        // Outside AI clients get the modelling rules Jarvis works by (jarvisRules.ts).
+        const server = new McpServer({ name: 'jarvis-studio', version: '0.1.0' }, { instructions: MCP_INSTRUCTIONS });
         for (const t of tools) {
             server.registerTool(t.name, { description: t.description, inputSchema: t.schema }, (args: unknown) =>
                 callTool(t, args));

@@ -48,16 +48,26 @@ Design notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The order of w
 - **Options:** general, sketch, tool defaults, units, display (including mesh quality), lighting, AI assistant,
   toolbars and files. The lighting page shows the model with its lights and the view's camera in a small 3D overview,
   where directional, point and spot lights are placed by dragging.
-- **Jarvis:** type in the prompt bar, or hold **Talk** and speak. Jarvis uses the same tools as the UI.
+- **Jarvis:** type in the prompt bar, or hold **Talk** and speak. Jarvis uses the same tools as the UI. For a bigger
+  job with several independent pieces, such as the parts of an assembly, Jarvis can hand the pieces to part builders
+  working alongside it, then checks each result and fits them together; small requests it does itself. This comes
+  from its skills, which are listed with a switch each in Options > AI assistant; your own skills go in
+  `projects/.studio/skills/`.
 
 What each tool has and still lacks is in [docs/FEATURE_OPTIONS.md](docs/FEATURE_OPTIONS.md).
 
 ## Requirements
 
 - Node 22, Python 3 and ffmpeg.
-- For Jarvis, either of these, chosen in Options > AI:
+- For Jarvis, one of these, chosen in Options > AI assistant:
   - Claude Code installed and logged in on this machine (the default);
-  - an Anthropic API key, which stays on the server and is never shown in full.
+  - an Anthropic API key;
+  - an API key for another service with an OpenAI-compatible API (OpenAI, Google Gemini, Mistral, Groq, DeepSeek,
+    xAI, OpenRouter or any other address), or a model running on this machine in Ollama or LM Studio.
+
+  Keys stay on the server, are never shown in full, and are sent only to the service they were saved for. The page
+  fetches the list of models each service offers, Claude's with their effort levels, and has a Test connection
+  button. Part builders need Claude; with other services Jarvis follows its skills on its own.
 
 ## Setup and run
 
@@ -86,7 +96,8 @@ elsewhere cannot reach the studio's API or tools through your browser.
 ## Driving it from another AI client
 
 Every app action is an MCP tool, served over Streamable HTTP at `http://127.0.0.1:4720/mcp`: the same tools Jarvis
-uses, from sketches and features to mates, assembly folders and project files. With Claude Code:
+uses, from sketches and features to mates, assembly folders and project files. A client that connects also gets the
+modelling rules Jarvis works by (units, how to build real parts, how to check the result). With Claude Code:
 
 ```bash
 claude mcp add --transport http jarvis-studio http://127.0.0.1:4720/mcp
@@ -109,7 +120,7 @@ The macro's own README, next to it, has the details.
 | `JARVIS_STT_MODEL` | `base.en` | Whisper model |
 | `JARVIS_PROJECTS_DIR` | `./projects` | Where projects and exports are saved |
 
-The model and effort can also be set in Options > AI.
+The model and effort can also be set in Options > AI assistant.
 
 ## Checks
 
