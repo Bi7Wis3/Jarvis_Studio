@@ -5,6 +5,8 @@ import { createProject, deleteProject, openProject, renameProject, saveProjectAs
 import { confirmDeletes, openOptions } from './options';
 import { OptionsButton } from './OptionsPage';
 import { openImport } from './importTool';
+import { openFileForm, openSaveAs, saveProject } from './jarvisFileForms';
+import { useJarvisFile } from './jarvisFileState';
 import './browser.css';
 
 type View = 'menu' | 'open' | 'new' | 'saveAs' | 'print';
@@ -13,6 +15,8 @@ type View = 'menu' | 'open' | 'new' | 'saveAs' | 'print';
 export function FileMenu() {
     const name = useStudio((s) => s.history?.name ?? s.projects.find((p) => p.slug === s.current)?.name ?? 'Jarvis Studio');
     const error = useStudio((s) => s.error);
+    const fileNote = useJarvisFile((s) => s.note);
+    const file = useStudio((s) => s.history?.jarvisFile?.path);
     const [view, setView] = useState<View | null>(null);
     const [renaming, setRenaming] = useState<string | null>(null);
     const [renameError, setRenameError] = useState<string | null>(null);
@@ -53,16 +57,31 @@ export function FileMenu() {
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
-            if (!(event.ctrlKey || event.metaKey) || event.altKey || typingInField(event.target)) {
+            if (!(event.ctrlKey || event.metaKey) || event.altKey) {
                 return;
             }
             const key = event.key.toLowerCase();
-            const next: View | null = key === 'o' && !event.shiftKey ? 'open'
-                : key === 'n' && !event.shiftKey ? 'new'
-                    : key === 's' && event.shiftKey ? 'saveAs' : null;
-            if (next) {
+            // Save and Save As work from any field too (and the browser's own "Save page" never opens).
+            if (key === 's') {
                 event.preventDefault();
-                setView(next);
+                setView(null);
+                if (event.shiftKey) {
+                    openSaveAs();
+                } else {
+                    void saveProject();
+                }
+                return;
+            }
+            if (typingInField(event.target) || event.shiftKey) {
+                return;
+            }
+            if (key === 'o') {
+                event.preventDefault();
+                setView(null);
+                openFileForm();
+            } else if (key === 'n') {
+                event.preventDefault();
+                setView('new');
             }
         };
         window.addEventListener('keydown', onKey);
@@ -107,7 +126,7 @@ export function FileMenu() {
                         {name}
                     </button>
                 )}
-                <span className="fm-note">{note ?? 'Saved automatically'}</span>
+                <span className="fm-note" title={file ? `File > Save writes ${file}` : undefined}>{note ?? fileNote ?? 'Saved automatically'}</span>
             </div>
             {renameError && renaming !== null && <div className="fm-error">{renameError}</div>}
             {view && (
@@ -128,6 +147,17 @@ export function FileMenu() {
                                 close();
                                 openImport();
                             }}
+                            onFile={(action) => {
+                                close();
+                                if (action === 'open') {
+                                    openFileForm();
+                                } else if (action === 'saveAs') {
+                                    openSaveAs();
+                                } else {
+                                    void saveProject();
+                                }
+                            }}
+                            file={file}
                         />
                     )}
                     {view === 'open' && <OpenList onBack={() => setView('menu')} onDone={close} />}
@@ -145,14 +175,14 @@ export function FileMenu() {
                     )}
                     {view === 'saveAs' && (
                         <NameForm
-                            title="Save as copy"
+                            title="Copy project in the studio"
                             initial={`${name} copy`}
-                            action="Save copy"
+                            action="Copy and open"
                             onBack={() => setView('menu')}
                             onSubmit={(value) => {
                                 close();
                                 saveProjectAs(value);
-                                flash('Saved a copy and opened it');
+                                flash('Copied the project and opened the copy');
                             }}
                         />
                     )}
@@ -177,10 +207,13 @@ function MainMenu(props: {
     onRun: (label: string, tool: string, args?: Record<string, unknown>) => void;
     onOptions: () => void;
     onImport: () => void;
+    onFile: (action: 'open' | 'save' | 'saveAs') => void;
+    /** The .jarvis file Save writes. */
+    file?: string;
 }) {
-    const { onView, onRename, onRun, onOptions, onImport } = props;
-    const item = (label: string, onClick: () => void, hint?: string) => (
-        <button type="button" role="menuitem" onClick={onClick}>
+    const { onView, onRename, onRun, onOptions, onImport, onFile, file } = props;
+    const item = (label: string, onClick: () => void, hint?: string, title?: string) => (
+        <button type="button" role="menuitem" onClick={onClick} title={title}>
             <span>{label}</span>
             {hint && <span className="hint">{hint}</span>}
         </button>
@@ -188,9 +221,13 @@ function MainMenu(props: {
     return (
         <div className="fm-menu">
             {item('New project…', () => onView('new'), 'Ctrl+N')}
-            {item('Open…', () => onView('open'), 'Ctrl+O')}
+            {item('Open…', () => onFile('open'), 'Ctrl+O', 'A .jarvis file, as a project in the studio')}
+            {item('Studio projects…', () => onView('open'), undefined, 'The projects the studio keeps')}
             {item('Rename…', onRename)}
-            {item('Save as copy…', () => onView('saveAs'), 'Ctrl+Shift+S')}
+            <div className="ctx-sep" role="separator" />
+            {item('Save', () => onFile('save'), 'Ctrl+S', file ? `Writes ${file} again` : 'Not saved to a .jarvis file yet: opens Save As')}
+            {item('Save As…', () => onFile('saveAs'), 'Ctrl+Shift+S', 'The project and every file it uses, in one .jarvis file')}
+            {item('Copy project…', () => onView('saveAs'), undefined, 'A copy in the studio, opened')}
             <div className="ctx-sep" role="separator" />
             {item('Import…', onImport)}
             {item('Export STL (printed parts)', () => onRun('Exporting STL', 'export_stl'))}
@@ -221,7 +258,7 @@ function OpenList({ onBack, onDone }: { onBack: () => void; onDone: () => void }
     const [confirming, setConfirming] = useState<string | null>(null);
     return (
         <div className="fm-open">
-            <PopHead title="Open project" onBack={onBack} />
+            <PopHead title="Studio projects" onBack={onBack} />
             {projects.length === 0 && <p className="fm-empty">No saved projects.</p>}
             <ul>
                 {projects.map((entry) => (confirming === entry.slug ? (

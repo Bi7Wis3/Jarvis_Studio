@@ -8,6 +8,7 @@ import { folderTools } from './folders.js';
 import { componentFolderTools } from './componentFolders.js';
 import { importStepSchema } from './import/schema.js';
 import { checkHelixStep, curveNormalSchema, curvePointDefinitionSchemas, curvePointSchema, helixStepSchema } from './helixSchema.js';
+import { openProjectFile } from './jarvisFile.js';
 
 export interface StudioTool {
     name: string;
@@ -780,9 +781,22 @@ export function createTools(store: ProjectStore): StudioTool[] {
         },
         {
             name: 'project_open',
-            description: 'Opens a saved project by name.',
-            schema: { name: z.string() },
-            run: ({ name }) => (store.open(name) ? `Opened "${store.get().name}".` : `No project named "${name}".`),
+            description: 'Opens a saved project by name, or a .jarvis file by path (File > Open; home folder only): the file '
+                + 'becomes a new project in the studio under a free name, or, when a project came from that same file and '
+                + 'it has not changed since, the studio switches to that project.',
+            schema: {
+                name: z.string().optional().describe('A saved project'),
+                path: z.string().optional().describe('Absolute path of a .jarvis file (~ for the home folder)'),
+            },
+            run: ({ name, path }: { name?: string; path?: string }) => {
+                if (path !== undefined) {
+                    return openProjectFile(store, path, { checkPart: checkHistory }).text;
+                }
+                if (name === undefined) {
+                    return 'Give the name of a saved project or the path of a .jarvis file.';
+                }
+                return store.open(name) ? `Opened "${store.get().name}".` : `No project named "${name}".`;
+            },
         },
         {
             name: 'parts_add',

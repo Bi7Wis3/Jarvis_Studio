@@ -212,7 +212,7 @@ function handle(message: ServerMessage): void {
             break;
         case 'capture': {
             const { id } = message;
-            captureViewport(useStudio.getState().project?.view.explode ?? 0)
+            captureViewport(useStudio.getState().project?.view.explode ?? 0, { png: message.png === true })
                 .catch(() => null)
                 .then((image) => send({ type: 'capture', id, image }));
             break;

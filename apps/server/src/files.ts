@@ -1,12 +1,13 @@
-// The app's own file browser (File > Import; later File > Open and Save As): folder listings and the preview pictures
-// files carry, for the owner's home folder only and read only. Every path is resolved through its symlinks first and
-// refused when it ends up outside home.
+// The app's own file browser (File > Import, Open and Save As): folder listings and the preview pictures files carry,
+// for the owner's home folder only and read only (writing a .jarvis file is jarvisFile.ts, with the same rules). Every
+// path is resolved through its symlinks first and refused when it ends up outside home.
 
 import { promises as fs, realpathSync, statSync, type Dirent, type Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { readContainer } from './import/sldprt/container.js';
 import { importerFor } from './import/registry.js';
+import { EXTENSION as JARVIS_EXTENSION, thumbnailOf } from './jarvisFormat.js';
 
 export interface FileEntry {
     name: string;
@@ -44,8 +45,11 @@ export class FileAccessError extends Error {
 
 /** The largest folder listed: entries past it are counted in `skipped`. */
 export const MAX_ENTRIES = 50_000;
-/** Files of these types carry a preview picture (SolidWorks parts, assemblies and drawings: the PreviewPNG stream). */
-const PREVIEW_TYPES = new Set(['.sldprt', '.sldasm', '.slddrw']);
+/**
+ * Files of these types carry a preview picture (SolidWorks parts, assemblies and drawings: the PreviewPNG stream; the
+ * studio's own files: thumbnail.png).
+ */
+const PREVIEW_TYPES = new Set(['.sldprt', '.sldasm', '.slddrw', JARVIS_EXTENSION]);
 /** Larger files are not read for their preview. */
 const MAX_PREVIEW_FILE = 256 * 1024 * 1024;
 /**
@@ -119,7 +123,9 @@ export interface ListOptions {
     formatOf?: (name: string) => string | null;
 }
 
-const importFormat = (name: string): string | null => importerFor(name)?.format ?? null;
+/** A file the studio reads: one it imports (its format), or its own project file ('jarvis'). */
+const importFormat = (name: string): string | null => importerFor(name)?.format
+    ?? (name.toLowerCase().endsWith(JARVIS_EXTENSION) ? 'jarvis' : null);
 
 async function inBatches<T, R>(items: T[], run: (item: T) => R): Promise<R[]> {
     const out: R[] = [];
@@ -195,6 +201,9 @@ export async function listFolder(path: string, home: string, options: ListOption
 export function previewOf(name: string, bytes: Uint8Array): Uint8Array | null {
     if (!PREVIEW_TYPES.has(extname(name).toLowerCase())) {
         return null;
+    }
+    if (extname(name).toLowerCase() === JARVIS_EXTENSION) {
+        return thumbnailOf(bytes);
     }
     try {
         const png = readContainer(bytes, (stream) => stream === 'PreviewPNG').streams.get('PreviewPNG');

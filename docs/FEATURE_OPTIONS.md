@@ -444,13 +444,25 @@ Reference geometry
   entities are not found, kept raw with the project and listed in the report. Not yet: thin features, ribs,
   variable/face/full round fillets, vertex chamfers, up to body, starts from a surface, pattern of bodies, 3D sketches,
   sketch text, pipe tap and slot holes, guide curves, advanced and mechanical mates, mates to cones and spheres.
-- [~] File browser (the studio's own, in the Import form; as SolidWorks' Open dialog): Places (Home, Desktop,
-  Documents, Downloads, pinned folders, the last 10 folders imported from, kept in the settings), breadcrumb path, a
-  virtual list (folders first, natural order), filter by name, Quick filter buttons per type in any combination, Show
-  all files, hidden entries, the selected file's preview picture (SolidWorks files), size and date; arrows, Enter,
-  Backspace and double click. Opens at the last folder used. The server reads the picked file by its path (no
-  upload), home folder only. The system dialog stays as a link; files can still be dropped on the form. Not yet: the
-  save mode for File > Save As (name field, replace question), recent documents (only folders), Description.
+- [~] File browser (the studio's own, in the Import, Open and Save As forms; as SolidWorks' Open and Save As dialogs):
+  Places (Home, Desktop, Documents, Downloads, pinned folders, the last 10 folders imported from, saved to or opened
+  from, kept in the settings), breadcrumb path, a virtual list (folders first, natural order), filter by name, Quick
+  filter buttons per type in any combination, Show all files, hidden entries, the selected file's preview picture
+  (SolidWorks files, .jarvis thumbnails), size and date; arrows, Enter, Backspace and double click. Opens at the last
+  folder used. The server reads the picked file by its path (no upload), home folder only. The system dialog stays as
+  a link in Import; files can still be dropped on that form. Save mode (Save As): a File name field under the list,
+  Replace asked in the panel. Not yet: recent documents (only folders).
+- [x] Project files (.jarvis, docs/FILE_FORMAT.md; SolidWorks Save As, Save, Open and Pack and Go): File > Save As
+  (Ctrl+Shift+S) in the left panel with the browser in save mode, File name (".jarvis" added), Mode = Save as copy and
+  continue (default) | Save as copy and open, Description, "Replace the existing file?" asked in the panel; written
+  atomically, home folder only. File > Save (Ctrl+S) writes the file the project was last saved to or opened from, or
+  opens Save As. File > Open (Ctrl+O) with a Jarvis quick filter, the selected file's thumbnail, name, Description,
+  part count and date; opens it as a new project (assets shared by id), or switches to the project that came from the
+  same unchanged file; model files go to the Import form. One ZIP with a manifest (format, version, sizes and
+  SHA-256 of every entry), the design, every asset the project uses and a thumbnail of the view; reading checks the
+  version, every hash, entry names and size limits. Assistant: project_save_as, project_save, project_open with a
+  path. Not there (see SOLIDWORKS_REFERENCE.md, Save As): plain Save as as a third mode, Save as type, Save All,
+  previous versions, Pack and Go's prefix, suffix and folder options.
 - [~] IGES (.igs, .iges; IGES 5.3 ASCII), read by the studio's own reader (import/iges/): trimmed surfaces (144),
   bounded surfaces (143, 141), untrimmed surfaces and bounded planes as faces, knitted into solids (Knit surfaces,
   as for STEP), and manifold solid B-rep objects (186 with 502, 504, 508, 510, 514, void shells). Surfaces: B-spline

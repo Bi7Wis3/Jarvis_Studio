@@ -66,6 +66,7 @@ import { importTool } from './importTool';
 import { mateTool } from './mates/MateForm';
 import { matedUpdates } from './mates/mateAnalysis';
 import { curveStep, curveSteps, newestPath, sweepPathValue } from './helixForm';
+import { openFileTool, saveAsTool } from './jarvisFileForms';
 
 export type Values = Record<string, string | boolean | string[] | PickItem[]>;
 export type Result = { text: string; isError: boolean };
@@ -2672,6 +2673,8 @@ export const ALL_TOOLS: ToolDef[] = [
     ...drawCommandForms,
     normalToTool,
     importTool,
+    saveAsTool,
+    openFileTool,
 ];
 
 /** The editor for a history item: a feature tool by op, or a create tool by the base body's shape kind. */

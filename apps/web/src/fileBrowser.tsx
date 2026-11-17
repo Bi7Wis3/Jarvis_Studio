@@ -1,8 +1,8 @@
 // The app's own file browser, drawn in a left-panel form in place of the system's file dialog (which is slow to open
 // and not ours): places, a breadcrumb path, the folder's entries (a virtual list: only the rows in view are drawn),
 // a name filter and quick filters by type, and the selected file's preview picture, size and date. Folders and files
-// come from the local server, home folder only (apps/server/src/files.ts). Built for File > Import's open mode; a save
-// mode (File > Save As) would add a name field under the list and ask before replacing a file that exists.
+// come from the local server, home folder only (apps/server/src/files.ts). File > Import and Open use it to pick a file;
+// File > Save As (jarvisFileForms.tsx) puts a file name field under the list and asks before replacing a file.
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import {
@@ -29,6 +29,7 @@ const GLYPHS: Record<string, { color?: string; body: ReactNode }> = {
     part: { color: '#b9c7dc', body: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" {...FILL} /><path d="M4 7.5L12 12l8-4.5M12 12v9" /></> },
     exact: { color: '#6fd58a', body: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" {...FILL} /><path d="M4 7.5L12 12l8-4.5M12 12v9" /></> },
     mesh: { color: '#8fc7ff', body: <><path d="M3 19L12 4l9 15z" {...FILL} /><path d="M7.5 11.5h9M12 19l-4.5-7.5M12 19l4.5-7.5" /></> },
+    project: { color: '#35e0ff', body: <><path d="M4 7.5L12 3l8 4.5v9L12 21l-8-4.5z" {...FILL} /><path d="M8 9.5l4 2.3 4-2.3M12 11.8V16" /></> },
     file: { color: '#8a94a6', body: <><path d="M6 3h8l4 4v14H6z" /><path d="M14 3v4h4" /></> },
     up: { body: <path d="M12 19V5M6 11l6-6 6 6" /> },
     star: { body: <path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z" /> },
@@ -51,9 +52,11 @@ function Glyph({ name, size = 14 }: { name: string; size?: number }) {
 }
 
 const glyphOf = (entry: FileEntry): string => (entry.kind === 'folder' ? 'folder' : entry.format === 'sldprt' ? 'part'
-    : entry.format === 'stl' ? 'mesh' : entry.format ? 'exact' : 'file');
+    : entry.format === 'stl' ? 'mesh' : entry.format === 'jarvis' ? 'project' : entry.format ? 'exact' : 'file');
 
-const TYPE_NAMES: Record<string, string> = { step: 'STEP file', iges: 'IGES file', stl: 'STL mesh', sldprt: 'SolidWorks part' };
+const TYPE_NAMES: Record<string, string> = {
+    step: 'STEP file', iges: 'IGES file', stl: 'STL mesh', sldprt: 'SolidWorks part', jarvis: 'Jarvis Studio project',
+};
 
 /** A file's type in words: its format's, else its extension's. */
 export function typeName(entry: Pick<FileEntry, 'name' | 'kind' | 'format'>): string {

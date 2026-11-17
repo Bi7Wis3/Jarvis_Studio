@@ -41,7 +41,7 @@ let asked = false;
 /** When the report was made. */
 let reportAt = 0;
 
-function loadFormats(): void {
+export function loadFormats(): void {
     if (asked) {
         return;
     }
@@ -114,7 +114,8 @@ function ImportFile({ api, ctx }: { api: PopupApi; ctx: Ctx }) {
         }
         const format = formatOf(chosen.name);
         if (formats && !format) {
-            setRefused(`${chosen.name}: the studio cannot import this type of file.`);
+            setRefused(/\.jarvis$/i.test(chosen.name) ? `${chosen.name} is a Jarvis Studio project: open it with File > Open (Ctrl+O).`
+                : `${chosen.name}: the studio cannot import this type of file.`);
             useImport.setState({ picked: null });
             return false;
         }
@@ -123,6 +124,15 @@ function ImportFile({ api, ctx }: { api: PopupApi; ctx: Ctx }) {
         api.set({ file: chosen.name, mesh: format ? format.mesh : extension(chosen.name) === 'stl' });
         return true;
     };
+    // A model file picked in File > Open comes here selected, ready for OK.
+    useEffect(() => {
+        const handed = pending;
+        if (handed) {
+            pending = null;
+            select(handed);
+            useFileBrowser.setState({ selected: handed.name });
+        }
+    }, []);
     // Double click or Enter on a file: import it at once, with the options as they are (as Open in SolidWorks).
     const pickNow = (chosen: PickedFile) => {
         if (select(chosen)) {
@@ -361,4 +371,13 @@ export const importTool: ToolDef = {
 /** Opens the Import form in the left panel (File > Import). */
 export function openImport(): void {
     window.setTimeout(() => window.dispatchEvent(new CustomEvent('jarvis:open-tool', { detail: importTool.id })), 0);
+}
+
+/** A file picked in File > Open that is imported rather than opened, for the Import form to start with. */
+let pending: PickedFile | null = null;
+
+/** Opens the Import form with a file already picked (a model file chosen in File > Open). */
+export function openImportWith(file: PickedFile): void {
+    pending = file;
+    openImport();
 }

@@ -1,0 +1,77 @@
+/* File > Save As and Open forms (jarvisFileForms.tsx): the file browser (fileBrowser.css) with a file name or the
+   selected project's details under it, and the Replace question. */
+
+.jf-zone {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.jf-zone p {
+    margin: 0;
+}
+
+.jf-save {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.jf-where {
+    color: var(--muted);
+    font-size: 11.5px;
+    word-break: break-all;
+}
+
+.jf-replace {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 7px;
+    border-radius: 6px;
+    background: rgba(255, 80, 80, 0.1);
+    font-size: 12px;
+}
+
+.jf-replace span {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.jf-replace button {
+    padding: 2px 8px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.jf-replace .danger {
+    border-color: rgba(255, 107, 107, 0.6);
+    color: #ff8a8a;
+}
+
+.jf-info {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 8px;
+    margin: 0;
+    font-size: 11.5px;
+}
+
+.jf-info dt {
+    color: var(--muted);
+}
+
+.jf-info dd {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.jf-description {
+    white-space: pre-wrap;
+}

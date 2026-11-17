@@ -105,15 +105,28 @@ export class ProjectStore {
     /** Creates and opens an empty project. A name already in use gets a number, so no saved project is overwritten. */
     create(name: string): void {
         this.files();
-        const taken = new Set(this.list());
-        let unique = name.trim() || 'Untitled';
-        for (let n = 2; taken.has(slug(unique)); n++) {
-            unique = `${name.trim() || 'Untitled'} ${n}`;
-        }
-        name = unique;
+        name = this.freeName(name);
         this.undoStack = [];
         this.redoStack = [];
         this.commit({ name, parts: [], view: { ...DEFAULT_VIEW } });
+    }
+
+    /**
+     * Adds a project from elsewhere (a .jarvis file) under a free name, numbered as `create` numbers them, and opens
+     * it. It is read back like any saved project, so the same repairs apply. Returns the name it got.
+     */
+    add(project: Project): string {
+        this.files();
+        const name = this.freeName(project.name);
+        const file = join(PROJECTS_DIR, `${slug(name)}.json`);
+        writeFileSync(file, JSON.stringify({ ...project, name }, null, 2));
+        try {
+            this.open(name);
+        } catch (error) {
+            rmSync(file, { force: true });
+            throw error;
+        }
+        return this.project.name;
     }
 
     open(name: string): boolean {
@@ -149,7 +162,8 @@ export class ProjectStore {
     /** Saves a copy of the open project under a new (numbered if taken) name and opens it. */
     saveAs(name: string): void {
         this.files();
-        const copy: Project = JSON.parse(JSON.stringify(this.project));
+        // The copy has not been saved to a .jarvis file yet.
+        const { jarvisFile: _file, ...copy }: Project = JSON.parse(JSON.stringify(this.project));
         this.create(name);
         this.commit({ ...copy, name: this.project.name });
     }
@@ -186,6 +200,15 @@ export class ProjectStore {
         // Undo applies to the model only: the camera, explode and labels stay as they are now.
         const next: Project = JSON.parse(snapshot);
         next.view = { ...this.project.view };
+        // Nor do the description and the .jarvis file the project goes with: saving sets them, not undoably.
+        delete next.description;
+        delete next.jarvisFile;
+        if (this.project.description !== undefined) {
+            next.description = this.project.description;
+        }
+        if (this.project.jarvisFile) {
+            next.jarvisFile = this.project.jarvisFile;
+        }
         if (next.view.focus && !next.parts.some((p) => p.id === next.view.focus)) {
             next.view.focus = null;
         }
@@ -217,6 +240,17 @@ export class ProjectStore {
         }
         const file = join(PROJECTS_DIR, `${readFileSync(marker, 'utf8').trim()}.json`);
         return existsSync(file) ? this.read(file) : null;
+    }
+
+    /** The name, or the name with the first free number after it: no saved project is overwritten. */
+    private freeName(name: string): string {
+        const base = name.trim() || 'Untitled';
+        const taken = new Set(this.list());
+        let unique = base;
+        for (let n = 2; taken.has(slug(unique)); n++) {
+            unique = `${base} ${n}`;
+        }
+        return unique;
     }
 
     /** Project and history operations are not available on a scratch store. */

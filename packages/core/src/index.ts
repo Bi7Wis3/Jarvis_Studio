@@ -1083,6 +1083,13 @@ export interface Project {
     parts: Part[];
     view: ViewState;
     print?: PrintSettings;
+    /** Text kept with the project and its .jarvis file (File > Save As, Description), shown when the file is opened. */
+    description?: string;
+    /**
+     * The .jarvis file this project was last saved to or opened from (File > Save writes it again), with the SHA-256 of
+     * the file's bytes then. It belongs to this machine: it is never written into a file.
+     */
+    jarvisFile?: { path: string; sha256: string };
     /** Mates of imported SolidWorks assemblies, kept as exported until the studio has mates. */
     importedMates?: ImportedMates[];
     /** Mates between the parts, their folders and the fixed parts (@jarvis/core/mates). */
@@ -1134,7 +1141,8 @@ export type ServerMessage =
     | { type: 'activity'; entries: ActivityEntry[] }
     | { type: 'toolResult'; id: string; text: string; isError: boolean }
     | { type: 'info'; model: string; voice: string | null; ears: boolean; quality: 'fast' | 'best' }
-    | { type: 'capture'; id: string }
+    /** png: a PNG picture (a .jarvis file's thumbnail) instead of a JPEG. */
+    | { type: 'capture'; id: string; png?: boolean }
     | { type: 'projects'; projects: ProjectEntry[]; current: string }
     | { type: 'download'; url: string; filename: string }
     | { type: 'error'; message: string }

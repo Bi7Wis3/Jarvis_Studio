@@ -28,6 +28,7 @@ import { Voice } from './tts.js';
 import { registerImportRoutes } from './import/routes.js';
 import { MateService, mateTools, registerMateRoutes } from './mates.js';
 import { registerFileRoutes, rememberImportFolder } from './fileRoutes.js';
+import { jarvisFileTools, registerJarvisFileRoutes } from './jarvisFileRoutes.js';
 
 const PORT = Number(process.env.PORT ?? 4720);
 const MAX_CACHED_CLIPS = 100;
@@ -84,8 +85,8 @@ function broadcast(message: ServerMessage): void {
     }
 }
 
-/** Asks every connected browser for a picture of its viewport and takes the first one that has it. */
-function capture(): Promise<Buffer> {
+/** Asks every connected browser for a picture of its viewport (a JPEG, or a PNG) and takes the first one that has it. */
+function capture(options: { png?: boolean } = {}): Promise<Buffer> {
     if (sockets.size === 0) {
         return Promise.reject(new Error('No browser is showing the studio, so there is nothing to look at.'));
     }
@@ -109,7 +110,7 @@ function capture(): Promise<Buffer> {
                 finish(new Error('The browser could not capture the viewport (no WebGL canvas).'));
             }
         });
-        broadcast({ type: 'capture', id });
+        broadcast({ type: 'capture', id, ...(options.png ? { png: true } : {}) });
     });
 }
 
@@ -122,6 +123,7 @@ const tools = [
         kernel,
     }),
     ...mateTools(store, kernel),
+    ...jarvisFileTools(store, { thumbnail: () => capture({ png: true }) }),
 ];
 // Mates are solved again when the parts they join change behind them (a part's model, an undo).
 const mateService = new MateService(store, kernel);
@@ -496,6 +498,7 @@ registerSettingsRoutes(app, settings);
 registerImportRoutes(app, store, kernel, { importedPath: (path) => rememberImportFolder(settings, path) });
 registerMateRoutes(app, store, kernel);
 registerFileRoutes(app, settings);
+registerJarvisFileRoutes(app, store, settings, { stop: () => jarvis.stop() });
 
 await app.listen({ host: '127.0.0.1', port: PORT });
 console.log(`[server] Jarvis Studio listening on http://127.0.0.1:${PORT} (voice: ${voice.name ?? 'browser'})`);
