@@ -16,20 +16,38 @@ Design notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The order of w
 ## What it does
 
 - **Sketches:** lines, arcs, circles, slots, splines, text and more, with relations and dimensions. Model edges can be
-  turned into sketch items, and there is a trim tool (see [docs/SKETCH_TOOLS.md](docs/SKETCH_TOOLS.md)).
+  turned into sketch items, there is a trim tool, and points can snap to and be pierced by curves such as a helix
+  (see [docs/SKETCH_TOOLS.md](docs/SKETCH_TOOLS.md)).
 - **Features:**
   - from sketches: extrude, revolve, loft, sweep, hole and thread, each with the options a professional CAD program
-    gives it;
-  - applied to the body: fillet, chamfer, shell, draft, mirror and patterns.
+    gives it. A helix or spiral is a step of its own, defined by pitch, height or turns, with variable pitch and
+    taper, so a spring is a circle, a helix, a profile on a plane square to the helix, and a sweep;
+  - applied to the body: fillet, chamfer, shell, draft, mirror and patterns. Where the kernel's own fillet gives up,
+    the studio builds the round from its true sections, also round a hole's rim that runs across several faces.
+  - Threads can be shown fully modelled or as a light helix drawn on the hole or shaft while the model stays plain.
+- **Reference geometry:** planes (offset, at an angle, through points, or square to a curve at a point of it), axes
+  and points, including points on a helix or spaced along it.
 - **Feature tree:** sketches sit under the features that use them, folders group steps, the Solid Bodies folder
-  lists the bodies, and steps can be hidden, suppressed and reordered.
+  lists the bodies, and steps can be hidden, suppressed, rolled back and reordered.
 - **Tool forms:** open in the left panel in place of the tree, with see-through previews over the model.
-- **Parts and assemblies:** several parts in one project. Mates are in progress.
+- **Assemblies:** several parts in one project, joined by mates (coincident, parallel, perpendicular, tangent,
+  concentric, lock, distance and angle) between faces, edges, points, planes and axes. The assembly tree shows each
+  part as fixed or how free it still is, keeps the mates in their own folder, and lets you reorder parts by dragging
+  and group them in folders. Parts move within the freedom their mates leave.
+- **Project files:** File > Save and Save As write a `.jarvis` file wherever you like, holding the design with every
+  imported file and picture it uses and a preview picture; File > Open brings one back as a project. The format is in
+  [docs/FILE_FORMAT.md](docs/FILE_FORMAT.md). Inside the studio every change is saved as you work.
 - **Import:**
   - STEP, IGES, STL and .sldprt parts (read from the file's own Parasolid data);
-  - feature histories exported from another CAD program with the macro in `tools/`, rebuilt as features.
-- **Export:** STL, and a FreeCAD macro.
-- **Options:** general, sketch, tool defaults, units, display, lighting, AI model, toolbars and files.
+  - feature histories exported from another CAD program with the macro in `tools/`, rebuilt as features, with
+    assemblies keeping their placements and, where their faces are found again, their mates.
+- **Export:** STL, STEP and a FreeCAD macro.
+- **Toolbars:** each mode (part, sketch, assembly) has its own toolbars, which you can rearrange in Options. Any
+  toolbar, or any group from a pulldown such as the sketch relations, can float as a toolbar of its own anywhere on
+  the screen, as a row or a column, and comes back where you left it.
+- **Options:** general, sketch, tool defaults, units, display (including mesh quality), lighting, AI assistant,
+  toolbars and files. The lighting page shows the model with its lights and the view's camera in a small 3D overview,
+  where directional, point and spot lights are placed by dragging.
 - **Jarvis:** type in the prompt bar, or hold **Talk** and speak. Jarvis uses the same tools as the UI.
 
 What each tool has and still lacks is in [docs/FEATURE_OPTIONS.md](docs/FEATURE_OPTIONS.md).
@@ -53,7 +71,10 @@ npm run dev
 Open http://localhost:4719. Esc stops Jarvis. Without the voice or speech setup the app still works: it falls back to
 the browser's voice and hides the Talk button.
 
-## Ports (all bound to 127.0.0.1)
+## Ports
+
+Everything listens on 127.0.0.1 only, and the server answers only requests addressed to this computer, so a web page
+elsewhere cannot reach the studio's API or tools through your browser.
 
 | Port | What |
 |---|---|
@@ -64,7 +85,8 @@ the browser's voice and hides the Talk button.
 
 ## Driving it from another AI client
 
-Every app action is an MCP tool, served over Streamable HTTP at `http://127.0.0.1:4720/mcp`. With Claude Code:
+Every app action is an MCP tool, served over Streamable HTTP at `http://127.0.0.1:4720/mcp`: the same tools Jarvis
+uses, from sketches and features to mates, assembly folders and project files. With Claude Code:
 
 ```bash
 claude mcp add --transport http jarvis-studio http://127.0.0.1:4720/mcp
@@ -98,3 +120,7 @@ npx vitest run
 
 The test "makes a 10-turn spring along a helix, watertight and quickly" is timing-based and can fail on a busy machine;
 run its file alone before treating it as a failure.
+
+A few tests read real part files that are not in the repository. They look in `JARVIS_TEST_SAMPLES` (default
+`~/.local/share/jarvis-studio/test-samples`) and are skipped where the files are missing; the scans over a whole folder
+of designs run only when `JARVIS_DESIGNS` names one.
