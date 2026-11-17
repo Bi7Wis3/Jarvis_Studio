@@ -24,6 +24,7 @@ import { ProjectStore, slug } from './store.js';
 import { SettingsStore } from './settings.js';
 import { registerSettingsRoutes } from './settingsRoutes.js';
 import { Ears } from './stt.js';
+import { registerSttRoutes } from './sttRoutes.js';
 import { callTool, createTools } from './tools.js';
 import { Voice } from './tts.js';
 import { registerImportRoutes } from './import/routes.js';
@@ -34,7 +35,6 @@ import { jarvisFileTools, registerJarvisFileRoutes } from './jarvisFileRoutes.js
 const PORT = Number(process.env.PORT ?? 4720);
 const MAX_CACHED_CLIPS = 100;
 const CAPTURE_TIMEOUT_MS = 20000;
-const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 type Socket = { send: (data: string) => void };
 
@@ -47,7 +47,9 @@ const meshes = new MeshService(kernel, (status) => broadcast({ type: 'meshes', .
 // What the kernel is doing, for the busy display: the job and step running, jobs waiting, parts being rebuilt.
 const cad = new CadActivityFeed(kernel, meshes, () => store.get(), (activity) => broadcast({ type: 'cad', ...activity }));
 const voice = new Voice();
-const ears = new Ears();
+const ears = new Ears(settings.get().speech);
+// Options > Speech: the speech server restarts only when its engine, model or device changes.
+settings.subscribe((next) => ears.configure(next.speech));
 // Set before the slow start-up, so a restart in the middle of it still stops the voice and speech processes.
 const shutdown = () => {
     voice.close();
@@ -478,20 +480,7 @@ app.post('/api/blocks', async (request, reply) => {
     }
 });
 
-app.addContentTypeParser(/^audio\//,{ parseAs: 'buffer', bodyLimit: MAX_AUDIO_BYTES }, (_request, body, done) => {
-    done(null, body);
-});
-
-app.post('/api/stt', async (request, reply) => {
-    if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
-        return reply.code(400).send({ error: 'Expected an audio body.' });
-    }
-    const text = await ears.transcribe(request.body);
-    if (text === null) {
-        return reply.code(503).send({ error: 'Speech recognition is unavailable.' });
-    }
-    return { text };
-});
+registerSttRoutes(app, ears);
 
 app.get('/api/health', async () => ({
     ok: true,

@@ -83,4 +83,17 @@ describe('LocalService', () => {
         expect(started).toHaveLength(0);
         expect(error).toHaveBeenCalled();
     });
+
+    it('restarts: stops the process it started and brings up a new one, without warning about the old one', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const state = { up: false };
+        const { service, started } = setup(state);
+        expect(await service.call(async () => 'heard')).toBe('heard');
+        state.up = false;
+        service.restart();
+        expect(started[0].killed).toBe(true);
+        expect(await service.call(async () => 'again')).toBe('again');
+        expect(started).toHaveLength(2);
+        expect(warn).not.toHaveBeenCalled();
+    });
 });

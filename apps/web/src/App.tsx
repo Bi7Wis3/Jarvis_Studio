@@ -4,7 +4,7 @@ import { Labels } from './Labels';
 import { Activity } from './Activity';
 import { Orb } from './Orb';
 import { Scene } from './Scene';
-import { micSupported, startRecording, stopRecording } from './mic';
+import { MicError, micSupported, startRecording, stopRecording } from './mic';
 import { act, ask, setQuality, stop, useStudio } from './state';
 import type { ViewAction } from '@jarvis/core';
 import { imageFiles, readImage } from './attachments';
@@ -52,8 +52,11 @@ function StatusChip() {
     );
 }
 
-/** Push-to-talk: hold to record, release to send what was heard to Jarvis. */
-function MicButton() {
+/**
+ * Push-to-talk: hold to record, release to send what was heard to Jarvis. `onWords` gets the words heard so far while
+ * talking ('' at the start), and null when done.
+ */
+function MicButton({ onWords }: { onWords: (text: string | null) => void }) {
     const [phase, setPhase] = useState<'idle' | 'listening' | 'transcribing'>('idle');
 
     const note = (message: string) => {
@@ -66,8 +69,10 @@ function MicButton() {
         }
         stop();
         setPhase('listening');
-        startRecording().catch(() => {
+        onWords('');
+        startRecording(onWords).catch(() => {
             setPhase('idle');
+            onWords(null);
             note('The microphone is not available.');
         });
     };
@@ -81,9 +86,10 @@ function MicButton() {
             text = await stopRecording();
         } catch (e) {
             console.error('Could not transcribe recording', e);
-            note('Speech recognition is not answering, so nothing was sent to Jarvis.');
+            note(e instanceof MicError ? e.message : 'Speech recognition is not answering, so nothing was sent to Jarvis.');
         }
         setPhase('idle');
+        onWords(null);
         if (text) {
             ask(text);
         } else if (text === '') {
@@ -114,6 +120,8 @@ function PromptBar() {
     const [text, setText] = useState('');
     const [images, setImages] = useState<Attachment[]>([]);
     const [dragging, setDragging] = useState(false);
+    // The words heard so far while Talk is held (null: not talking).
+    const [heard, setHeard] = useState<string | null>(null);
     const draft = useStudio((s) => s.draft);
     const field = useRef<HTMLInputElement>(null);
 
@@ -198,13 +206,15 @@ function PromptBar() {
             <input
                 ref={field}
                 autoFocus
-                value={text}
+                value={heard ?? text}
+                readOnly={heard !== null}
+                className={heard !== null ? 'hearing' : undefined}
                 onChange={(event) => setText(event.target.value)}
-                placeholder={images.length ? 'What should Jarvis do with it? (Enter: "build this")'
+                placeholder={heard !== null ? 'Listening…' : images.length ? 'What should Jarvis do with it? (Enter: "build this")'
                     : 'Ask Jarvis · "build me a desk lamp" · paste a picture'}
                 aria-label="Ask Jarvis"
             />
-            {ears && micSupported() && <MicButton />}
+            {ears && micSupported() && <MicButton onWords={setHeard} />}
             {QUICK_ACTIONS.map(({ label, action }) => (
                 <button
                     key={label}

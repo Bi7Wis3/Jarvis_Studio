@@ -10,8 +10,8 @@
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @jarvis/server\" \"npm run dev -w @jarvis/web\"",
     "typecheck": "npm run typecheck -ws --if-present",
-    "setup:voice": "bash scripts/setup-voice.sh",
-    "setup:stt": "bash scripts/setup-stt.sh",
+    "setup:voice": "tsx scripts/setup.ts voice",
+    "setup:stt": "tsx scripts/setup.ts stt",
     "test": "vitest run"
   },
   "devDependencies": {

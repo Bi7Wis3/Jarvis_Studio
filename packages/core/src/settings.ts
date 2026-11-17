@@ -1,6 +1,10 @@
 // The studio's settings (the Options page), shared by the server, which keeps them in one local file, and the web,
 // which shows and applies them. `normaliseSettings` turns anything read or received into a complete, valid set.
 
+import { DEFAULT_SPEECH, normaliseSpeech, type SpeechSettings } from './speechSettings';
+
+export * from './speechSettings';
+
 /** How finely the server meshes parts for the view; exports are always meshed at fine. */
 export type MeshQuality = 'coarse' | 'normal' | 'fine';
 export const MESH_QUALITIES: MeshQuality[] = ['coarse', 'normal', 'fine'];
@@ -313,6 +317,8 @@ export interface StudioSettings {
     /** The toolbar settings, as the toolbar's own module defines them. */
     toolbars: Record<string, unknown>;
     files: FileSettings;
+    /** Speech input (Options > Speech): engine, model and device. */
+    speech: SpeechSettings;
 }
 
 /** The settings as the server sends them to the web. */
@@ -321,8 +327,8 @@ export interface StudioSettingsView extends Omit<StudioSettings, 'ai'> {
 }
 
 /** The Options page's categories; Reset to defaults works on one of them. */
-export type SettingsCategory = 'general' | 'sketch' | 'defaults' | 'units' | 'display' | 'lighting' | 'ai' | 'toolbars' | 'files';
-export const SETTINGS_CATEGORIES: SettingsCategory[] = ['general', 'sketch', 'defaults', 'units', 'display', 'lighting', 'ai', 'toolbars', 'files'];
+export type SettingsCategory = 'general' | 'sketch' | 'defaults' | 'units' | 'display' | 'lighting' | 'ai' | 'toolbars' | 'files' | 'speech';
+export const SETTINGS_CATEGORIES: SettingsCategory[] = ['general', 'sketch', 'defaults', 'units', 'display', 'lighting', 'ai', 'toolbars', 'files', 'speech'];
 
 // ---- Lighting presets ----------------------------------------------------------------------------------------
 
@@ -472,6 +478,7 @@ export const DEFAULT_SETTINGS: StudioSettings = {
     },
     toolbars: {},
     files: { lastFolder: '', recentFolders: [], favourites: [] },
+    speech: { ...DEFAULT_SPEECH },
 };
 
 export function defaultSettings(): StudioSettings {
@@ -770,6 +777,7 @@ export function normaliseSettings(raw: unknown, base: StudioSettings = DEFAULT_S
         },
         toolbars: plainData(r.toolbars),
         files: r.files === undefined ? clone(d.files) : fileSettings(r.files),
+        speech: normaliseSpeech(r.speech, d.speech),
     };
 }
 

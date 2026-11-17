@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { LocalService } from './localService.js';
-import { PIPER_PYTHON, VOICES_DIR } from './paths.js';
+import { VENV_PYTHON, VOICES_DIR } from './paths.js';
 
 const PIPER_PORT = Number(process.env.PIPER_PORT ?? 4721);
 const VOICE = process.env.JARVIS_VOICE ?? 'en_GB-alan-medium';
@@ -15,7 +15,7 @@ export class Voice {
 
     constructor() {
         const model = join(VOICES_DIR, `${VOICE}.onnx`);
-        if (!existsSync(PIPER_PYTHON) || !existsSync(model)) {
+        if (!existsSync(VENV_PYTHON) || !existsSync(model)) {
             console.warn('[voice] Piper or the voice model is missing; run "npm run setup:voice". Using browser speech.');
             this.name = null;
             return;
@@ -30,7 +30,7 @@ export class Voice {
                     return false;
                 }
             },
-            spawn: () => spawn(PIPER_PYTHON, [
+            spawn: () => spawn(VENV_PYTHON, [
                 '-m', 'piper.http_server', '-m', model, '--host', '127.0.0.1', '--port', String(PIPER_PORT),
                 '--length-scale', '1.05', '--sentence-silence', '0.15',
             ], { stdio: 'ignore' }),

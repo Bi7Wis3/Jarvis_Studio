@@ -46,9 +46,11 @@ Design notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The order of w
   toolbar, or any group from a pulldown such as the sketch relations, can float as a toolbar of its own anywhere on
   the screen, as a row or a column, and comes back where you left it.
 - **Options:** general, sketch, tool defaults, units, display (including mesh quality), lighting, AI assistant,
-  toolbars and files. The lighting page shows the model with its lights and the view's camera in a small 3D overview,
+  speech input, toolbars and files. The lighting page shows the model with its lights and the view's camera in a small 3D overview,
   where directional, point and spot lights are placed by dragging.
-- **Jarvis:** type in the prompt bar, or hold **Talk** and speak. Jarvis uses the same tools as the UI. For a bigger
+- **Jarvis:** type in the prompt bar, or hold **Talk** and speak: the words appear as you pause, and on release only
+  the last phrase is left to recognise, so the request goes off a fraction of a second later. Jarvis uses the same
+  tools as the UI. For a bigger
   job with several independent pieces, such as the parts of an assembly, Jarvis can hand the pieces to part builders
   working alongside it, then checks each result and fits them together; small requests it does itself. This comes
   from its skills, which are listed with a switch each in Options > AI assistant; your own skills go in
@@ -58,7 +60,7 @@ What each tool has and still lacks is in [docs/FEATURE_OPTIONS.md](docs/FEATURE_
 
 ## Requirements
 
-- Node 22, Python 3 and ffmpeg.
+- Node 22 and Python 3, on Linux, Windows or macOS.
 - For Jarvis, one of these, chosen in Options > AI assistant:
   - Claude Code installed and logged in on this machine (the default);
   - an Anthropic API key;
@@ -73,13 +75,29 @@ What each tool has and still lacks is in [docs/FEATURE_OPTIONS.md](docs/FEATURE_
 
 ```bash
 npm install
-npm run setup:voice   # Piper voice (speech out)
-npm run setup:stt     # faster-whisper model (speech in)
+npm run setup:voice                          # Piper voice (speech out)
+npm run setup:stt -- --moonshine             # speech in: Whisper, and Moonshine (the default, fastest on a CPU)
 npm run dev
 ```
 
+The setup scripts pick the right one for the OS: `scripts/setup-*.sh` (bash) on Linux and macOS,
+`scripts/setup-*.ps1` (PowerShell) on Windows. Both take the same options:
+
+| Option | What it adds |
+|---|---|
+| `--moonshine` | Moonshine (Useful Sensors), a recogniser made for fast English on CPUs, and its model |
+| `--gpu` | NVIDIA's cuBLAS for CUDA 12, so Whisper can run on an NVIDIA GPU (Linux and Windows; about 400 MB) |
+
+Engine, model and device (auto, CPU or GPU) are chosen in Options > Speech. Auto uses the GPU when it passes a test at
+start-up and falls back to the CPU otherwise, or when the GPU fails later (out of memory, for example). The GPU must be
+one CTranslate2 has kernels for: its current wheels need compute capability 5.3 or newer. Moonshine runs on the CPU.
+`.venv/bin/python scripts/stt_selfcheck.py` (Windows: `.venv\Scripts\python.exe scripts\stt_selfcheck.py`) checks every
+installed engine on every device and prints the timings.
+
 Open http://localhost:4719. Esc stops Jarvis. Without the voice or speech setup the app still works: it falls back to
-the browser's voice and hides the Talk button.
+the browser's voice and hides the Talk button. ffmpeg is not needed: browsers send raw audio, and the rare one without
+Web Audio sends a compressed clip that the speech server decodes with PyAV (installed with faster-whisper), or with the
+ffmpeg program when PyAV cannot.
 
 ## Ports
 
@@ -91,7 +109,7 @@ elsewhere cannot reach the studio's API or tools through your browser.
 | 4719 | Web app (Vite), proxies `/api`, `/ws` and `/mcp` to the server |
 | 4720 | Server: project store, CAD kernel, tools, Jarvis, MCP |
 | 4721 | Piper text-to-speech |
-| 4722 | Whisper speech-to-text |
+| 4722 | Speech-to-text (Whisper or Moonshine) |
 
 ## Driving it from another AI client
 
@@ -117,7 +135,8 @@ The macro's own README, next to it, has the details.
 | `JARVIS_MODEL` | `sonnet` | Claude model used for Jarvis in Fast mode |
 | `JARVIS_EFFORT` | `medium` | Thinking effort in Fast mode (`low` is faster, `high` designs more carefully) |
 | `JARVIS_QUALITY` | `fast` | Start in `best` mode (Opus, high effort); also switchable in the status chip |
-| `JARVIS_STT_MODEL` | `base.en` | Whisper model |
+| `JARVIS_STT_MODEL` | `base.en` | Whisper model `setup:stt` downloads (the one used is set in Options > Speech) |
+| `JARVIS_STT_MOONSHINE_MODEL` | `base` | Moonshine model `setup:stt -- --moonshine` downloads |
 | `JARVIS_PROJECTS_DIR` | `./projects` | Where projects and exports are saved |
 
 The model and effort can also be set in Options > AI assistant.

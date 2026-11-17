@@ -552,6 +552,10 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
   modelling rules, the part tools only, the Fast model) and checks their work; the activity list and status show how
   many builders work. With an OpenAI-compatible provider the skills' text goes into the system prompt instead (no
   subagents there).
+- [x] Speech input (Options > Speech; SolidWorks has no speech input, so the page is plain): engine (Moonshine or
+  Whisper), model, device (auto, CPU, GPU; only the devices an engine can use on this computer are offered, with the
+  reason for the others); the speech server restarts only when these change. Talk records raw 16 kHz audio and
+  recognises each phrase at a pause while Talk is held; the words so far show in the prompt bar.
 - [x] Lighting (SolidWorks: Lights folder): ambient light (on, colour, intensity); up to eight directional, point and
   spot lights together, each with on, keep light when a preset is chosen (SolidWorks: when scene changes), colour,
   ambient, brightness, cast shadows and lock to model (off: the light turns with the view, its position given as seen

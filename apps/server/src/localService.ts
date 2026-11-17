@@ -23,6 +23,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  */
 export class LocalService {
     private child: ChildProcess | null = null;
+    private generation = 0;
     private ready: Promise<boolean>;
 
     constructor(private options: LocalServiceOptions) {
@@ -57,10 +58,23 @@ export class LocalService {
         this.child?.kill();
     }
 
+    /** Brings the service up again, for example with other settings: the process this server started is stopped first. */
+    restart(): void {
+        this.generation++;
+        this.child?.kill();
+        this.child = null;
+        this.ready = this.bring();
+    }
+
     private async bring(): Promise<boolean> {
         const { up, spawn, attempts, failed, wait = sleep } = this.options;
+        const generation = this.generation;
         if (await up()) {
             return true;
+        }
+        if (generation !== this.generation) {
+            // A restart came meanwhile; it starts the process.
+            return false;
         }
         const child = spawn();
         this.child = child;
@@ -73,11 +87,15 @@ export class LocalService {
         };
         child.on('exit', gone);
         child.on('error', gone);
-        for (let attempt = 0; attempt < attempts && running; attempt++) {
+        for (let attempt = 0; attempt < attempts && running && generation === this.generation; attempt++) {
             await wait(500);
             if (await up()) {
                 return true;
             }
+        }
+        if (generation !== this.generation) {
+            // Replaced by a restart.
+            return false;
         }
         console.warn(`[${this.options.name}] ${failed}`);
         return false;

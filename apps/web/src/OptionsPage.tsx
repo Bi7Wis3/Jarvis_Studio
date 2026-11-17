@@ -11,6 +11,7 @@ import {
 } from './optionsPages';
 import { LightingPage } from './optionsLighting';
 import { AiPage } from './optionsAi';
+import { SpeechPage } from './optionsSpeech';
 import './options.css';
 
 interface TreeNode {
@@ -32,6 +33,7 @@ export const OPTIONS_TREE: TreeNode[] = [
     { page: 'display', label: 'Display' },
     { page: 'lighting', label: 'Lighting' },
     { page: 'ai', label: 'AI assistant' },
+    { page: 'speech', label: 'Speech' },
     { page: 'toolbars', label: 'Toolbars' },
 ];
 
@@ -133,7 +135,8 @@ export function OptionsPanel({ initial }: { initial: PageId }) {
                                 : page === 'display' ? <DisplayPage {...props} />
                                     : page === 'lighting' ? <LightingPage {...props} />
                                         : page === 'ai' ? <AiPage {...props} />
-                                            : <ToolbarsPage {...props} />;
+                                            : page === 'speech' ? <SpeechPage {...props} />
+                                                : <ToolbarsPage {...props} />;
     return (
         <div className="op-page" role="dialog" aria-modal="true" aria-label="Options">
             <div className="op-panel tb-popup">

@@ -343,6 +343,12 @@ footer {
     background: rgba(53, 224, 255, 0.18);
 }
 
+/* The words heard so far while Talk is held. */
+.prompt input.hearing {
+    font-style: italic;
+    opacity: 0.85;
+}
+
 .action.stop {
     border-color: rgba(255, 93, 93, 0.5);
     color: #ffb4b4;
