@@ -11,9 +11,9 @@ open as they were.
 - SolidWorks 2015 (or later) running in the Windows virtual machine.
 - The folder with your designs reachable from Windows. In the VM the host's Downloads folder is drive `Z:\`, so the
   designs in `~/Downloads/3D_Prints` on the host are `Z:\3D_Prints` in Windows.
-- To export designs from another host folder (for example `~/Desktop/3D Printer/3D_Designs`, which is not shared with
-  the VM), copy that folder into the host's Downloads folder first, for example to `~/Downloads/3D_Designs`; in Windows
-  it is then `Z:\3D_Designs`.
+- To export designs from another host folder (for example `~/Designs`, which is not shared with
+  the VM), copy that folder into the host's Downloads folder first, for example to `~/Downloads/Designs`; in Windows
+  it is then `Z:\Designs`.
 
 ## Run it
 

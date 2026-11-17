@@ -307,7 +307,10 @@ function summary(results: CaseResult[]): string {
 }
 
 async function driver(): Promise<void> {
-    const root = args.find((a, i) => !a.startsWith('--') && !(i > 0 && args[i - 1].startsWith('--'))) ?? '/home/bitwise/Desktop/3D Printer';
+    const root = args.find((a, i) => !a.startsWith('--') && !(i > 0 && args[i - 1].startsWith('--'))) ?? process.env.JARVIS_DESIGNS;
+    if (!root) {
+        throw new Error('Give the folder of SLDPRT files to scan, or set JARVIS_DESIGNS');
+    }
     const outFile = flag('--out') ?? join(fileURLToPath(new URL('.', import.meta.url)), 'blendCorpus.out.txt');
     const perBody = Number(flag('--edges') ?? 40);
     const limit = Number(flag('--limit') ?? 120_000);

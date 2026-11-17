@@ -1,5 +1,4 @@
 import { readFileSync } from 'node:fs';
-import { crc32, deflateRawSync } from 'node:zlib';
 import { beforeAll, describe, expect, it } from 'vitest';
 import opencascade from 'replicad-opencascadejs';
 import { setOC } from 'replicad';
@@ -13,29 +12,13 @@ import { isValidShape, shapeVolume, solidsFromBrep } from './occ.js';
 import { readSldprt } from './readSldprt.js';
 import { dist, nurbsEval, nurbsSegment, surfEval, type V3 } from './nurbs.js';
 import { boxNodes, cylinderNodes, writeXt, type TestNode } from './xtWriter.test-helper.js';
+import { archive } from './archive.test-helper.js';
+import { hasSamples, sample } from '../../testSamples.js';
 
 const SLOW = 120_000;
-const fixture = (name: string): Uint8Array => new Uint8Array(readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
-
-/** A 2015+ style archive: ZIP local headers with a disguised signature and nibble-swapped names. */
-function archive(entries: [string, Uint8Array][]): Uint8Array {
-    const sig = [0x0f, 0xba, 0x02, 0x64];
-    const parts: Buffer[] = [Buffer.from([0x09, 0x43, 0x24, 0x00, 0, 0, 0, 4])];
-    // A decoy with the same tail but another signature, as the real files have.
-    parts.push(Buffer.from([1, 2, 3, 4, 0x14, 0, 6, 0, 8, 0, 0, 0, 0, 0, 0xbc, 7, 0, 0, 0xef, 1, 0, 0, 0xde, 3, 0, 0, 3, 0, 0, 0, 0x05, 0x27, 0x56]));
-    for (const [name, data] of entries) {
-        const packed = deflateRawSync(data);
-        const nameBytes = Buffer.from(name, 'latin1').map((x) => ((x >> 4) | (x << 4)) & 0xff);
-        const h = Buffer.alloc(26);
-        h.set([0x14, 0, 6, 0, 8, 0], 0);
-        h.writeUInt32LE(crc32(data), 10);
-        h.writeUInt32LE(packed.length, 14);
-        h.writeUInt32LE(data.length, 18);
-        h.writeUInt16LE(nameBytes.length, 22);
-        parts.push(Buffer.from(sig), h, Buffer.from(nameBytes), packed);
-    }
-    return new Uint8Array(Buffer.concat(parts));
-}
+// Two of the owner's parts, kept outside the repository (testSamples.ts).
+const fixture = (name: string): Uint8Array => new Uint8Array(readFileSync(sample(name)!));
+const REAL = hasSamples('ring-ole.SLDPRT', 'button-2015.SLDPRT');
 
 describe('containers', () => {
     it('reads the 2015+ archive by its record structure', () => {
@@ -45,7 +28,7 @@ describe('containers', () => {
         expect([...c.streams.get('PreviewPNG')!]).toEqual(new Array(500).fill(7));
     });
 
-    it('reads both real container kinds', () => {
+    it.skipIf(!REAL)('reads both real container kinds', () => {
         const ole = readContainer(fixture('ring-ole.SLDPRT'));
         expect(ole.kind).toBe('ole');
         expect(ole.streams.has('Contents/Config-0-Partition')).toBe(true);
@@ -195,11 +178,11 @@ describe('geometry', () => {
     });
 });
 
-// The FuelGauge case parts (Case_Back, bigBatt.Case) failed on these: a fitted edge curve whose last two points
+// Real case parts failed on these: a fitted edge curve whose last two points
 // coincided (a knot repeated past the degree: OpenCascade's reader dropped that curve and shifted all later ones
 // onto the wrong edges), a spine on an offset of a swept surface reaching far past the section's end, and blend
 // faces reaching past the end of their spine.
-describe('robustness (FuelGauge case parts)', () => {
+describe('robustness (seen in real parts)', () => {
     it('fits a curve whose points coincide at its end without repeating a knot past the degree', () => {
         const pts = [0, 1, 2, 3, 3].map((x) => ({ p: [x, x * x * 0.1, 0] as V3, t: [1, 0, 0] as V3 }));
         const c = hermiteNurbs(pts);
@@ -260,7 +243,7 @@ describe('to OpenCascade', () => {
         }
     }, SLOW);
 
-    it('reads real parts from both container kinds as valid solids', () => {
+    it.skipIf(!REAL)('reads real parts from both container kinds as valid solids', () => {
         const ring = readSldprt(fixture('ring-ole.SLDPRT'));
         expect(ring.bodies).toHaveLength(1);
         expect(isValidShape(ring.bodies[0].shape.wrapped)).toBe(true);

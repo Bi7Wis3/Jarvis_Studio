@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -17,6 +17,7 @@ import { ProjectStore } from '../store.js';
 import { importIntoProject } from './project.js';
 import { importerFor } from './registry.js';
 import { meshPieces, parseStl, stlBytes } from './stl.js';
+import { DESIGNS } from '../testSamples.js';
 
 const SLOW = 240_000;
 
@@ -286,10 +287,11 @@ describe('import through the CAD worker', () => {
     }, SLOW);
 });
 
-const OWNER = '/home/bitwise/Desktop/3D Printer/3D_Designs';
+// The owner's design folder, when JARVIS_DESIGNS names it (testSamples.ts): nothing of it is in the repository.
+const OWNER = DESIGNS;
 
-describe.skipIf(!existsSync(OWNER))("the owner's STL files (read only)", () => {
-    const files = existsSync(OWNER) ? readdirSync(OWNER).filter((f) => /\.stl$/i.test(f)).map((f) => join(OWNER, f)) : [];
+describe.skipIf(!OWNER)("the owner's STL files (read only)", () => {
+    const files = OWNER ? readdirSync(OWNER).filter((f) => /\.stl$/i.test(f)).map((f) => join(OWNER, f)) : [];
 
     it('reads every one as a graphics body', async () => {
         for (const file of files) {

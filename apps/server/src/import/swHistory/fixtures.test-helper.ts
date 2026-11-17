@@ -263,68 +263,6 @@ export function ribbedDoc(sldprt: string, volumeMm3: number): SwDocument {
     return { ...plate, document: { ...plate.document, file: sldprt }, mass: { ...plate.mass!, volume: volumeMm3 * 1e-9 }, box: null, tessBox: null, features };
 }
 
-/** Area of an outline of corners and arcs (each arc a quarter circle between its corners, centre given). */
-function outlineArea(items: ({ at: [number, number] } | { arc: [number, number] })[]): number {
-    const corners = items.filter((i): i is { at: [number, number] } => 'at' in i).map((i) => i.at);
-    let area = 0;
-    for (let i = 0; i < corners.length; i++) {
-        const [x0, y0] = corners[i];
-        const [x1, y1] = corners[(i + 1) % corners.length];
-        area += (x0 * y1 - x1 * y0) / 2;
-    }
-    // Each arc adds its circular segment beyond the chord (all are convex quarter circles here).
-    for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        if (!('arc' in item)) continue;
-        const prev = items[i - 1] as { at: [number, number] };
-        const r = Math.hypot(prev.at[0] - item.arc[0], prev.at[1] - item.arc[1]);
-        area += (r * r / 2) * (Math.PI / 2 - 1);
-    }
-    return area;
-}
-
-/**
- * rpm.OLED.mount, one of the owner's parts, as its faces show it was made: an outline with rounded notches extruded
- * 1.2 mm up and 3 mm down from the Front plane, a 28.3 mm square pocket cut 3 mm into its back, and a cross-shaped
- * display window cut 1.2 mm through its front. SolidWorks' volume is that of the solid in the owner's SLDPRT.
- */
-export function oledMountDoc(): SwDocument {
-    const outline: ({ at: [number, number] } | { arc: [number, number] })[] = [
-        { at: [-5, -26] }, { at: [5, -26] }, { arc: [5, -22] }, { at: [9, -22] }, { at: [9, -20] }, { at: [11, -20] }, { arc: [11, -14] },
-        { at: [17, -14] }, { at: [17, 14] }, { arc: [11, 14] }, { at: [11, 20] }, { at: [9, 20] }, { at: [9, 22] }, { arc: [5, 22] },
-        { at: [5, 26] }, { at: [-5, 26] }, { arc: [-5, 22] }, { at: [-9, 22] }, { at: [-9, 20] }, { at: [-11, 20] }, { arc: [-11, 14] },
-        { at: [-17, 14] }, { at: [-17, -14] }, { arc: [-11, -14] }, { at: [-11, -20] }, { at: [-9, -20] }, { at: [-9, -22] }, { arc: [-5, -22] },
-    ];
-    const window: ({ at: [number, number] })[] = [
-        [6, -13.175], [6, -9.675], [13.8, -9.675], [13.8, 9.675], [6, 9.675], [6, 13.175], [-6, 13.175], [-6, 9.675],
-        [-13.8, 9.675], [-13.8, -9.675], [-6, -9.675], [-6, -13.175],
-    ].map((at) => ({ at: at as [number, number] }));
-    const s1 = new SketchBuilder();
-    s1.outline(outline);
-    const s2 = new SketchBuilder();
-    s2.rect(0, 0, 28.3, 28.3);
-    const s3 = new SketchBuilder();
-    s3.outline(window);
-    const v1 = outlineArea(outline) * 4.2;
-    const v2 = v1 - 28.3 * 28.3 * 3;
-    const v3 = v2 - outlineArea(window) * 1.2;
-    const feature = (name: string, sketch: string, id: number, data: Record<string, unknown>, volume: number): SwFeature => ({
-        name, type: 'ICE', baseType: data.IsBossFeature ? 'Extrusion' : 'Cut', id, suppressed: false, parents: [sketch],
-        subFeatures: [{ name: sketch, type: 'ProfileFeature' }], after: after(volume), data: data as never, errors: [],
-    });
-    return doc('rpm.OLED.mount.SLDPRT', [
-        sketchFeature('Sketch1', s1.sketch(FRONT), ['Front Plane'], 20),
-        feature('Boss-Extrude1', 'Sketch1', 21, extrudeData({ boss: true, end: 0, depth: 1.2, both: true, end2: 0, depth2: 3 }), v1),
-        sketchFeature('Sketch2', s2.sketch(FRONT), ['Front Plane'], 22),
-        feature('Cut-Extrude1', 'Sketch2', 23, extrudeData({ boss: false, end: 0, depth: 3 }), v2),
-        sketchFeature('Sketch3', s3.sketch(FRONT), ['Front Plane'], 24),
-        feature('Cut-Extrude2', 'Sketch3', 25, extrudeData({ boss: false, end: 0, depth: 1.2, reverse: true }), v3),
-    ], OLED_MOUNT_VOLUME, [[-17, -26, -3], [17, 26, 1.2]]);
-}
-
-/** The volume of the solid in the owner's rpm.OLED.mount.SLDPRT (read by the studio's SLDPRT reader), mm³. */
-export const OLED_MOUNT_VOLUME = 3287.3818355440144;
-
 /** An assembly of two plates (one turned 90 degrees about Y) and a tube on top of the first. */
 export function assemblyDoc(): SwDocument {
     const plate = 60 * 40 * 5 - 2 * Math.PI * 9 * 5 - 4 * 5 * (4 - Math.PI);
@@ -372,5 +310,4 @@ export const FIXTURES: Record<string, () => SwDocument> = {
     'bar.jarvis-sw.json': barDoc,
     'tray.jarvis-sw.json': trayDoc,
     'stand.jarvis-sw.json': assemblyDoc,
-    'rpm.OLED.mount.jarvis-sw.json': oledMountDoc,
 };

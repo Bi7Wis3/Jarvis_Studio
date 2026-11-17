@@ -17,6 +17,8 @@ const data = await vi.hoisted(async () => {
 
 import { readImportAsset } from './import/assets.js';
 import { importFileTool } from './import/hostTool.js';
+import { standInPart } from './import/sldprt/archive.test-helper.js';
+import { hasSamples, sample } from './testSamples.js';
 import { runImport } from './import/job.js';
 import { registerImportRoutes } from './import/routes.js';
 import { stlBytes } from './import/stl.js';
@@ -28,7 +30,8 @@ import { ProjectStore } from './store.js';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'jarvis-files-test-')));
 const home = join(root, 'home');
 const outside = join(root, 'elsewhere');
-const fixture = (name: string): Buffer => readFileSync(new URL(`./import/sldprt/fixtures/${name}`, import.meta.url));
+// Two of the owner's parts, kept outside the repository (testSamples.ts); the browser's own tests use stand-ins.
+const fixture = (name: string): Buffer => readFileSync(sample(name)!);
 
 /** One facet, as a binary STL. */
 const tinyStl = (): Uint8Array => stlBytes(new Float32Array([0, 0, 0, 10, 0, 0, 0, 10, 0]));
@@ -45,8 +48,8 @@ beforeAll(() => {
     writeFileSync(join(parts, 'bracket 10.STEP'), 'ISO-10303-21;');
     writeFileSync(join(parts, 'bracket 9.stp'), 'ISO-10303-21;');
     writeFileSync(join(parts, 'cube.stl'), tinyStl());
-    writeFileSync(join(parts, 'ring.SLDPRT'), fixture('ring-ole.SLDPRT'));
-    writeFileSync(join(parts, 'button.sldprt'), fixture('button-2015.SLDPRT'));
+    writeFileSync(join(parts, 'ring.SLDPRT'), standInPart(1500, 1));
+    writeFileSync(join(parts, 'button.sldprt'), standInPart(1200, 2));
     writeFileSync(join(parts, 'notes.txt'), 'not a model');
     writeFileSync(join(parts, '.hidden.step'), 'ISO-10303-21;');
     symlinkSync(outside, join(parts, 'link-out'));
@@ -142,12 +145,17 @@ describe('folder listing', () => {
 });
 
 describe('preview pictures', () => {
-    it('reads the PNG SolidWorks saves in both kinds of part file, and nothing from other files', () => {
+    it.skipIf(!hasSamples('ring-ole.SLDPRT', 'button-2015.SLDPRT'))('reads the PNG SolidWorks saves in both kinds of part file', () => {
         for (const name of ['ring-ole.SLDPRT', 'button-2015.SLDPRT']) {
             const png = previewOf(name, new Uint8Array(fixture(name)));
             expect(png, name).not.toBeNull();
             expect(Buffer.from(png!.subarray(1, 4)).toString('latin1')).toBe('PNG');
         }
+    });
+
+    it('reads the PNG of a part file, and nothing from other files', () => {
+        const png = previewOf('stand-in.sldprt', standInPart());
+        expect(Buffer.from(png!.subarray(1, 4)).toString('latin1')).toBe('PNG');
         expect(previewOf('cube.stl', tinyStl())).toBeNull();
         expect(previewOf('broken.sldprt', new Uint8Array(1000))).toBeNull();
     });

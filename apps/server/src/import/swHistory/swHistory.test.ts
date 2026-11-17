@@ -18,7 +18,8 @@ import { ProjectStore } from '../../store.js';
 import { importIntoProject } from '../project.js';
 import { parseSwDocument, type SwDocument } from './format.js';
 import { mapPart } from './features.js';
-import { assemblyDoc, FIXTURES, OLED_MOUNT_VOLUME, plateDoc, ribbedDoc, SketchBuilder, TOP, turnY } from './fixtures.test-helper.js';
+import { assemblyDoc, FIXTURES, plateDoc, ribbedDoc, SketchBuilder, TOP, turnY } from './fixtures.test-helper.js';
+import { hasSamples, sample } from '../../testSamples.js';
 import { placementOf } from './importHistory.js';
 import { conventionFromPlanes, rigidOf } from './math.js';
 import { mapSketch } from './sketch.js';
@@ -147,7 +148,7 @@ describe('import into the project (CAD kernel)', () => {
     });
 
     it('rebuilds each fixture part to the volume and box SolidWorks gives', async () => {
-        for (const name of ['plate.jarvis-sw.json', 'tube.jarvis-sw.json', 'bar.jarvis-sw.json', 'tray.jarvis-sw.json', 'rpm.OLED.mount.jarvis-sw.json']) {
+        for (const name of ['plate.jarvis-sw.json', 'tube.jarvis-sw.json', 'bar.jarvis-sw.json', 'tray.jarvis-sw.json']) {
             const store = scratch();
             const report = await importFixture(store, name);
             expect(report.text, name).toMatch(/Volume matches SolidWorks to 0.001 %/);
@@ -157,23 +158,23 @@ describe('import into the project (CAD kernel)', () => {
         }
     }, SLOW);
 
-    it('rebuilds the owner\'s rpm.OLED.mount to the solid in its SLDPRT', async () => {
-        const sldprt = '/home/bitwise/Desktop/3D Printer/3D_Designs/Lathe.Electronics.Box/rpm.OLED.mount.SLDPRT';
-        if (!existsSync(sldprt)) return;
+    // One of the owner's parts and its exported history, kept outside the repository (testSamples.ts).
+    it.skipIf(!hasSamples('rpm.OLED.mount.SLDPRT', 'rpm.OLED.mount.jarvis-sw.json'))('rebuilds a real part to the solid in its SLDPRT', async () => {
+        const sldprt = sample('rpm.OLED.mount.SLDPRT')!;
         const body = await kernel.importFile({ filename: 'rpm.OLED.mount.SLDPRT', bytes: new Uint8Array(readFileSync(sldprt)), options: { up: 'y' } });
-        expect(body.parts[0].volume).toBeCloseTo(OLED_MOUNT_VOLUME, 6);
         const store = scratch();
-        await importFixture(store, 'rpm.OLED.mount.jarvis-sw.json');
+        const history = await importFixture(store, 'rpm.OLED.mount.jarvis-sw.json', sample('rpm.OLED.mount.jarvis-sw.json')!);
+        expect(history.text).toMatch(/Volume matches SolidWorks to 0.001 %/);
         const props = await kernel.properties(store.get().parts[0], DEFAULT_PRINT);
         expect(Math.abs(props.props!.volume - body.parts[0].volume) / body.parts[0].volume).toBeLessThan(1e-7);
         expect(props.props!.bounds.min.map((v) => Math.round(v * 1e6) / 1e6)).toEqual(body.parts[0].box![0].map((v) => Math.round(v * 1e6) / 1e6));
         expect(props.props!.bounds.max.map((v) => Math.round(v * 1e6) / 1e6)).toEqual(body.parts[0].box![1].map((v) => Math.round(v * 1e6) / 1e6));
     }, SLOW);
 
-    it('continues from SolidWorks\' own body (the SLDPRT next to the JSON) where a feature cannot be rebuilt', async () => {
+    it.skipIf(!hasSamples('button-2015.SLDPRT'))('continues from SolidWorks\' own body (the SLDPRT next to the JSON) where a feature cannot be rebuilt', async () => {
         const folder = join(dir, 'ribbed');
         mkdirSync(folder, { recursive: true });
-        copyFileSync(new URL('../sldprt/fixtures/button-2015.SLDPRT', import.meta.url), join(folder, 'button-2015.SLDPRT'));
+        copyFileSync(sample('button-2015.SLDPRT')!, join(folder, 'button-2015.SLDPRT'));
         // SolidWorks' volume of the finished part is that of the body in the SLDPRT.
         const body = await kernel.importFile({ filename: 'button-2015.SLDPRT', bytes: new Uint8Array(readFileSync(join(folder, 'button-2015.SLDPRT'))), options: { up: 'y' } });
         const json = join(folder, 'button-2015.jarvis-sw.json');
