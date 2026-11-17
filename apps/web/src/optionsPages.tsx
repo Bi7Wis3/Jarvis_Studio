@@ -1,10 +1,8 @@
-// The pages of the Options panel (OptionsPage.tsx). Each edits the draft; nothing is saved until Apply or OK.
+// The pages of the Options panel (OptionsPage.tsx). Each edits the draft; nothing is saved until Apply or OK. The
+// Lighting page has a module of its own (optionsLighting.tsx).
 
 import { useEffect, useState, type ReactNode } from 'react';
-import {
-    EFFORTS, LIGHTING_PRESETS, MAX_LIGHTS, shownStyle, type DirectionalLight, type DisplayStyle, type Effort, type Lightformer,
-    type StudioSettings, type StudioSettingsView,
-} from '@jarvis/core/settings';
+import { EFFORTS, shownStyle, type DisplayStyle, type Effort, type StudioSettings, type StudioSettingsView } from '@jarvis/core/settings';
 import { DISPLAY_STYLES } from './displayStyle';
 import { testAiConnection, type AiTestResult } from './options';
 import { changeDefault, defaultsOf, DEFAULTS_TOOLS, shownDefaults } from './optionsDefaults';
@@ -25,9 +23,9 @@ export interface PageProps {
     onPage: (page: PageId) => void;
 }
 
-// ---- Rows ------------------------------------------------------------------------------------------------------
+// ---- Rows (also used by the Lighting page, optionsLighting.tsx) ---------------------------------------------------
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+export function Section({ title, children }: { title: string; children: ReactNode }) {
     return (
         <fieldset className="op-section">
             <legend>{title}</legend>
@@ -36,9 +34,9 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
     );
 }
 
-const Note = ({ children }: { children: ReactNode }) => <p className="tb-note op-note">{children}</p>;
+export const Note = ({ children }: { children: ReactNode }) => <p className="tb-note op-note">{children}</p>;
 
-function Check({ label, value, onChange, disabled }: { label: string; value: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
+export function Check({ label, value, onChange, disabled }: { label: string; value: boolean; onChange: (v: boolean) => void; disabled?: boolean }) {
     return (
         <label className="tb-check">
             <input type="checkbox" checked={value} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
@@ -47,7 +45,7 @@ function Check({ label, value, onChange, disabled }: { label: string; value: boo
     );
 }
 
-function Choice<T extends string>(props: { label: string; value: T; options: [T, string][]; onChange: (v: T) => void }) {
+export function Choice<T extends string>(props:{ label: string; value: T; options: [T, string][]; onChange: (v: T) => void }) {
     const { label, value, options, onChange } = props;
     return (
         <label className="tb-field">
@@ -62,7 +60,7 @@ function Choice<T extends string>(props: { label: string; value: T; options: [T,
 }
 
 /** A number typed freely (any precision); the setting changes once the text is a number in range. */
-function NumberRow(props: { label: string; value: number; unit?: string; min?: number; max?: number; onChange: (v: number) => void }) {
+export function NumberRow(props:{ label: string; value: number; unit?: string; min?: number; max?: number; onChange: (v: number) => void }) {
     const { label, value, unit, min, max, onChange } = props;
     const [text, setText] = useState(String(value));
     useEffect(() => {
@@ -94,7 +92,7 @@ function NumberRow(props: { label: string; value: number; unit?: string; min?: n
     );
 }
 
-function ColourRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+export function ColourRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
     const [text, setText] = useState(value);
     useEffect(() => setText(value), [value]);
     return (
@@ -127,7 +125,7 @@ function FormFields({ fields, values, change }: { fields: Field[]; values: Value
 }
 
 /** A draft with one settings category changed. */
-function withCategory<K extends keyof StudioSettings>(draft: Draft, key: K, value: StudioSettings[K]): Draft {
+export function withCategory<K extends keyof StudioSettings>(draft: Draft, key: K, value: StudioSettings[K]): Draft {
     return { ...draft, settings: { ...draft.settings, [key]: value } };
 }
 
@@ -280,7 +278,7 @@ export function DefaultsToolPage({ draft, setDraft, tool }: PageProps & { tool: 
     );
 }
 
-// ---- Units, display, lighting ------------------------------------------------------------------------------------
+// ---- Units and display ---------------------------------------------------------------------------------------------
 
 const DECIMALS: [string, string][] = Array.from({ length: 9 }, (_, i) => [String(i), String(i)]);
 
@@ -396,127 +394,6 @@ export function DisplayPage({ draft, setDraft, onPage }: PageProps) {
                     options={[['fast', 'Fast (plain drawing while a sketch is open)'], ['full', 'Full (as the 3D view)']]}
                     onChange={(sketchQuality) => set({ sketchQuality })}
                 />
-            </Section>
-        </>
-    );
-}
-
-const newId = (prefix: string, taken: { id: string }[]) => {
-    for (let n = 1; ; n++) {
-        if (!taken.some((t) => t.id === `${prefix}${n}`)) {
-            return `${prefix}${n}`;
-        }
-    }
-};
-
-function Card({ title, onDelete, children }: { title: string; onDelete: () => void; children: ReactNode }) {
-    return (
-        <div className="op-card">
-            <div className="op-card-head">
-                <span>{title}</span>
-                <button type="button" className="sk-small danger" onClick={onDelete}>Delete</button>
-            </div>
-            {children}
-        </div>
-    );
-}
-
-export function LightingPage({ draft, setDraft }: PageProps) {
-    const l = draft.settings.lighting;
-    const set = (patch: Partial<typeof l>) => setDraft(withCategory(draft, 'lighting', { ...l, ...patch }));
-    const setLight = (i: number, patch: Partial<DirectionalLight>) =>
-        set({ directional: l.directional.map((x, j) => (j === i ? { ...x, ...patch } : x)) });
-    const setFormer = (i: number, patch: Partial<Lightformer>) =>
-        set({ environment: { ...l.environment, formers: l.environment.formers.map((x, j) => (j === i ? { ...x, ...patch } : x)) } });
-    return (
-        <>
-            <Section title="Presets">
-                <div className="op-list">
-                    {(['studio', 'bright', 'dark'] as const).map((name) => (
-                        <button key={name} type="button" className="sk-small" onClick={() => set(JSON.parse(JSON.stringify(LIGHTING_PRESETS[name])))}>
-                            {name === 'studio' ? 'Studio' : name === 'bright' ? 'Bright' : 'Dark'}
-                        </button>
-                    ))}
-                </div>
-                <Note>Studio is the view's usual lighting. A preset replaces every light below.</Note>
-            </Section>
-            <Section title="Ambient light">
-                <Check label="On" value={l.ambient.on} onChange={(on) => set({ ambient: { ...l.ambient, on } })} />
-                <ColourRow label="Colour" value={l.ambient.color} onChange={(color) => set({ ambient: { ...l.ambient, color } })} />
-                <NumberRow label="Intensity" value={l.ambient.intensity} min={0} max={10} onChange={(intensity) => set({ ambient: { ...l.ambient, intensity } })} />
-            </Section>
-            <Section title="Directional lights">
-                {l.directional.map((light, i) => (
-                    <Card key={light.id} title={`Light ${i + 1}`} onDelete={() => set({ directional: l.directional.filter((_, j) => j !== i) })}>
-                        <Check label="On" value={light.on} onChange={(on) => setLight(i, { on })} />
-                        <ColourRow label="Colour" value={light.color} onChange={(color) => setLight(i, { color })} />
-                        <NumberRow label="Intensity" value={light.intensity} min={0} max={50} onChange={(intensity) => setLight(i, { intensity })} />
-                        <NumberRow label="Azimuth" unit="deg" value={light.azimuth} min={-360} max={360} onChange={(azimuth) => setLight(i, { azimuth })} />
-                        <NumberRow label="Elevation" unit="deg" value={light.elevation} min={-90} max={90} onChange={(elevation) => setLight(i, { elevation })} />
-                        <Check label="Cast shadows" value={light.shadow} onChange={(shadow) => setLight(i, { shadow })} />
-                    </Card>
-                ))}
-                <button
-                    type="button"
-                    className="sk-small"
-                    disabled={l.directional.length >= MAX_LIGHTS}
-                    onClick={() => set({
-                        directional: [...l.directional, {
-                            id: newId('light', l.directional), on: true, color: '#ffffff', intensity: 1, azimuth: 0, elevation: 45, shadow: false,
-                        }],
-                    })}
-                >
-                    Add directional light
-                </button>
-                <Note>Azimuth turns about the vertical from the front (towards the right is positive); elevation is the height above the ground.</Note>
-            </Section>
-            <Section title="Environment">
-                <Check label="Environment reflections" value={l.environment.on} onChange={(on) => set({ environment: { ...l.environment, on } })} />
-                <NumberRow
-                    label="Strength"
-                    value={l.environment.strength}
-                    min={0}
-                    max={10}
-                    onChange={(strength) => set({ environment: { ...l.environment, strength } })}
-                />
-                <Note>Glowing panels around the model that shiny parts reflect.</Note>
-                {l.environment.formers.map((f, i) => (
-                    <Card
-                        key={f.id}
-                        title={`Panel ${i + 1}`}
-                        onDelete={() => set({ environment: { ...l.environment, formers: l.environment.formers.filter((_, j) => j !== i) } })}
-                    >
-                        <Check label="On" value={f.on} onChange={(on) => setFormer(i, { on })} />
-                        <Choice
-                            label="Shape"
-                            value={f.form}
-                            options={[['rect', 'Rectangle'], ['ring', 'Ring'], ['circle', 'Disc']]}
-                            onChange={(form) => setFormer(i, { form })}
-                        />
-                        <ColourRow label="Colour" value={f.color} onChange={(color) => setFormer(i, { color })} />
-                        <NumberRow label="Intensity" value={f.intensity} min={0} max={100} onChange={(intensity) => setFormer(i, { intensity })} />
-                        <NumberRow label="Azimuth" unit="deg" value={f.azimuth} min={-360} max={360} onChange={(azimuth) => setFormer(i, { azimuth })} />
-                        <NumberRow label="Elevation" unit="deg" value={f.elevation} min={-90} max={90} onChange={(elevation) => setFormer(i, { elevation })} />
-                        <NumberRow label={f.form === 'rect' ? 'Width' : 'Size'} value={f.width} min={0.01} max={100} onChange={(width) => setFormer(i, { width })} />
-                        {f.form === 'rect' && <NumberRow label="Height" value={f.height} min={0.01} max={100} onChange={(height) => setFormer(i, { height })} />}
-                    </Card>
-                ))}
-                <button
-                    type="button"
-                    className="sk-small"
-                    disabled={l.environment.formers.length >= MAX_LIGHTS}
-                    onClick={() => set({
-                        environment: {
-                            ...l.environment,
-                            formers: [...l.environment.formers, {
-                                id: newId('panel', l.environment.formers), on: true, form: 'rect', color: '#ffffff', intensity: 2,
-                                azimuth: 0, elevation: 30, width: 8, height: 5, distance: 9,
-                            }],
-                        },
-                    })}
-                >
-                    Add panel
-                </button>
             </Section>
         </>
     );

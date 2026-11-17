@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_SETTINGS, defaultSettings, LIGHTING_PRESETS, type StudioSettings } from '@jarvis/core/settings';
+import { DEFAULT_SETTINGS, defaultSettings, LIGHTING_PRESETS, normaliseSettings, type StudioSettings } from '@jarvis/core/settings';
 import { angleText, formShownText, setShownPrecision, shownText } from './numberText';
 import {
     confirmDeletes, loadOptions, openOptions, saveOptions, savedToolDefaults, toolDefaultNumber, useOptions, viewOf, withSavedDefaults,
@@ -11,6 +11,7 @@ import { draftOf, draftPatch, resetPage } from './optionsDraft';
 import { applySettings, currentSketch, readSketchBlob, SKETCH_TOOL_DEFAULTS } from './optionsSync';
 import { OPTIONS_TREE, OptionsPanel } from './OptionsPage';
 import { AiPage } from './optionsPages';
+import { LightingPage } from './optionsLighting';
 import { loadSolver } from './solver';
 import { easeOnce, lightDirection, pixelRatioRange, SMOOTH_TIME, transitionTimes } from './sceneLook';
 import { finishDefaults, useSketcher } from './sketcher';
@@ -323,8 +324,22 @@ describe('the Options page', () => {
         expect(draw('toolbars')).toContain('Reset all toolbars');
         expect(draw('defaults:thread')).toContain('Pitch');
         expect(draw('lighting')).toContain('Add directional light');
+        expect(draw('lighting')).toContain('Add point light');
+        expect(draw('lighting')).toContain('Add spot light');
+        expect(draw('lighting')).toContain('The frustum is the view&#x27;s camera');
         openOptions('display');
         expect(useOptions.getState().open).toBe('display');
+    });
+
+    it('lists every kind of light, and says which turn with the view', () => {
+        const lighting = normaliseSettings({ lighting: { ...LIGHTING_PRESETS.studio, point: [{ id: 'lamp' }], spot: [{ id: 'beam', lockToModel: false }] } }).lighting;
+        const saved = viewOf({ ...defaultSettings(), lighting });
+        const html = renderToStaticMarkup(createElement(LightingPage, { draft: draftOf(saved), setDraft: () => {}, saved, page: 'lighting', onPage: () => {} }));
+        for (const row of ['Directional 1', 'Directional 2', 'Point 1', 'Spot 1', 'Panel 4', 'turns with the view']) {
+            expect(html).toContain(row);
+        }
+        // Nothing is picked yet: only the rows show, not their settings.
+        expect(html).not.toContain('Cone angle');
     });
 
     it('never shows the API key, only its mask', () => {

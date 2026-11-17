@@ -464,10 +464,20 @@ Not started unless marked; each item is described in `docs/SOLIDWORKS_REFERENCE.
   than 0.001 mm still count as one point.
 - [x] AI assistant settings: Claude Code login on this computer or an Anthropic API key (kept masked, owner-only
   file), model and effort for Fast and Best, Test connection; changes reach Jarvis's next request without a restart.
-- [x] Lighting (SolidWorks: Lights folder): ambient light (on, colour, intensity), up to eight directional lights
-  (on, colour, intensity, azimuth, elevation, cast shadows; add and delete), the environment (on, strength) and its
-  light panels (shape, colour, intensity, direction, size; add and delete); presets Studio, Bright, Dark. Not built:
-  point and spot lights, lights locked to the model or camera, specularity per light.
+- [x] Lighting (SolidWorks: Lights folder): ambient light (on, colour, intensity); up to eight directional, point and
+  spot lights together, each with on, keep light when a preset is chosen (SolidWorks: when scene changes), colour,
+  ambient, brightness, cast shadows and lock to model (off: the light turns with the view, its position given as seen
+  from the front view; switching keeps the light where it is). Directional: longitude, latitude. Point: spherical
+  (longitude, latitude, distance) or Cartesian (X, Y, Z). Spot: as point, plus target X, Y, Z and cone angle. The
+  environment (on, strength) and its light panels (shape, colour, intensity, longitude, latitude, size); presets
+  Studio, Bright, Dark; add and delete.
+- [x] Lighting overview (top of Options > Lighting): the model (or a ball when there is none), ground grid, axes, the
+  directional lights on a dome with arrows to the model, the light panels, point and spot lights (cone and target),
+  and the main view's camera as a frustum; drawn with the lighting being edited; turn, pan and zoom as the main view,
+  Fit; drag a light (over the dome, or in the plane facing the overview for point and spot lights and targets) and its
+  numbers follow, to 0.000001; click a light to pick its row, a picked row is marked in the overview. Not built:
+  specularity per light (three.js lights have one strength for diffuse light and highlight), Tab to flip a light
+  while dragging, the PhotoView 360 tab.
 - [~] Document properties: unit system (MKS, CGS, MMGS, IPS, custom), length units with decimals or fractions,
   angle units; dimension standard and precision; grid and snap (display grid, major spacing, minor lines per
   major, snap points per minor: done, in Sketch settings); image quality (tessellation deviation); material density.

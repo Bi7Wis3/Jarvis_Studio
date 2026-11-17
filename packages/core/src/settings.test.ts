@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-    applyPatch, DEFAULT_SETTINGS, defaultSettings, LIGHTING_PRESETS, maskKey, MAX_LIGHTS, MAX_RECENT_FOLDERS, normaliseSettings, plainData,
-    resetCategory, validModel,
+    applyPatch, DEFAULT_SETTINGS, defaultSettings, LIGHTING_PRESETS, lightCount, lightPoint, maskKey, MAX_LIGHTS, MAX_RECENT_FOLDERS,
+    normaliseSettings, placedLight, plainData, resetCategory, sphericalOf, sphericalPoint, validModel, withPreset,
 } from './settings';
 
 describe('normaliseSettings', () => {
@@ -49,6 +49,82 @@ describe('normaliseSettings', () => {
         for (const preset of Object.values(LIGHTING_PRESETS)) {
             expect(normaliseSettings({ lighting: preset }).lighting).toEqual(preset);
         }
+    });
+});
+
+describe('lights', () => {
+    // The lighting as a settings file kept it before point and spot lights, lock to model, ambient and keep.
+    const OLD_FILE = {
+        ambient: { on: true, color: '#ffeedd', intensity: 0.3 },
+        directional: [
+            { id: 'key', on: true, color: '#ffffff', intensity: 2.2, azimuth: 36.87, elevation: 50.19, shadow: true },
+            { id: 'fill', on: false, color: '#6aa8ff', intensity: 0.8, azimuth: -126.87, elevation: 21.8, shadow: false },
+        ],
+        environment: { on: true, strength: 1, formers: [{ id: 'top', on: true, form: 'rect', color: '#ffffff', intensity: 5, azimuth: 0, elevation: 75.96, width: 12, height: 6, distance: 8.25 }] },
+    };
+
+    it('loads an old settings file unchanged: its lights stay fixed to the model, with no extra ambient', () => {
+        const s = normaliseSettings({ lighting: OLD_FILE }).lighting;
+        expect(s.ambient).toEqual(OLD_FILE.ambient);
+        expect(s.environment).toEqual(OLD_FILE.environment);
+        expect(s.directional).toEqual(OLD_FILE.directional.map((l) => ({ ...l, ambient: 0, lockToModel: true, keep: false })));
+        expect(s.point).toEqual([]);
+        expect(s.spot).toEqual([]);
+        // Saved again and read back, nothing moves.
+        expect(normaliseSettings({ lighting: s }).lighting).toEqual(s);
+    });
+
+    it('keeps a point light as typed and works out the other way of giving its position', () => {
+        const [spherical] = normaliseSettings({ lighting: { point: [{ longitude: 30, latitude: 45, distance: 200 }] } }).lighting.point;
+        expect(spherical).toMatchObject({ id: 'point1', coordinates: 'spherical', longitude: 30, latitude: 45, distance: 200, lockToModel: true });
+        const [x, y, z] = sphericalPoint(30, 45, 200);
+        expect([spherical.x, spherical.y, spherical.z]).toEqual([x, y, z].map((v) => Math.round(v * 1e6) / 1e6));
+        expect(lightPoint(spherical)).toEqual([x, y, z]);
+        const [cartesian] = normaliseSettings({ lighting: { point: [{ coordinates: 'cartesian', x: 0.1234567, y: 100, z: -100, longitude: 99 }] } }).lighting.point;
+        expect(cartesian).toMatchObject({ x: 0.1234567, y: 100, z: -100, longitude: 179.929265, latitude: 44.999978, distance: 141.42141 });
+        expect(lightPoint(cartesian)).toEqual([0.1234567, 100, -100]);
+    });
+
+    it('gives a spot light its target and cone, within range', () => {
+        const [spot] = normaliseSettings({ lighting: { spot: [{ targetX: 5, targetY: 'x', coneAngle: 120, coordinates: 'polar', distance: -4 }] } }).lighting.spot;
+        expect(spot).toMatchObject({ id: 'spot1', targetX: 5, targetY: 0, targetZ: 0, coneAngle: 90, coordinates: 'spherical', distance: 0 });
+        expect(placedLight({ ...spot, coordinates: 'cartesian', x: 3, y: 4, z: 0 })).toMatchObject({ distance: 5, longitude: 90, latitude: 53.130102 });
+    });
+
+    it('counts directional, point and spot lights against one limit, with ids unique across them', () => {
+        const many = (n: number, id: string) => Array.from({ length: n }, () => ({ id }));
+        const s = normaliseSettings({ lighting: { directional: many(3, 'a'), point: many(4, 'a'), spot: many(4, 'a') } }).lighting;
+        expect([s.directional.length, s.point.length, s.spot.length]).toEqual([3, 4, 1]);
+        expect(lightCount(s)).toBe(MAX_LIGHTS);
+        const ids = [...s.directional, ...s.point, ...s.spot].map((l) => l.id);
+        expect(new Set(ids).size).toBe(MAX_LIGHTS);
+        expect(normaliseSettings({ lighting: { directional: many(9, 'd'), spot: many(2, 's') } }).lighting.spot).toEqual([]);
+    });
+
+    it('works out spherical positions both ways', () => {
+        for (const [lon, lat, d] of [[0, 0, 10], [90, 0, 3], [-135, 30, 250.5], [12.345678, -60, 0.001]]) {
+            const back = sphericalOf(...sphericalPoint(lon, lat, d));
+            expect(back.longitude).toBeCloseTo(lon, 9);
+            expect(back.latitude).toBeCloseTo(lat, 9);
+            expect(back.distance).toBeCloseTo(d, 9);
+        }
+        expect(sphericalOf(0, 5, 0)).toEqual({ longitude: 0, latitude: 90, distance: 5 });
+        expect(sphericalOf(0, 0, 0)).toEqual({ longitude: 0, latitude: 0, distance: 0 });
+    });
+
+    it('keeps the lights marked to be kept when a preset replaces the rest', () => {
+        const own = normaliseSettings({
+            lighting: {
+                directional: [{ id: 'key', keep: true, azimuth: 10 }, { id: 'other' }],
+                point: [{ id: 'lamp', keep: true }, { id: 'gone' }],
+            },
+        }).lighting;
+        const next = withPreset(own, LIGHTING_PRESETS.dark);
+        expect(next.ambient).toEqual(LIGHTING_PRESETS.dark.ambient);
+        expect(next.directional.map((l) => l.id)).toEqual(['key', 'rim', 'key-2']);
+        expect(next.directional[2]).toMatchObject({ azimuth: 10, keep: true });
+        expect(next.point.map((l) => l.id)).toEqual(['lamp']);
+        expect(withPreset(LIGHTING_PRESETS.studio, LIGHTING_PRESETS.bright)).toEqual(LIGHTING_PRESETS.bright);
     });
 });
 

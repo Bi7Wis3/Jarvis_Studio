@@ -47,16 +47,58 @@ export interface GeneralSettings {
     confirmDelete: boolean;
 }
 
-/** Light direction as SolidWorks gives it: azimuth (longitude, degrees from +Z towards +X) and elevation (latitude). */
-export interface DirectionalLight {
+/** What every light but the ambient one has (SolidWorks' Directional, Point and Spot Light PropertyManagers). */
+export interface LightCommon {
     id: string;
     on: boolean;
     color: string;
+    /** Brightness, in the view's light units. */
     intensity: number;
-    azimuth: number;
-    elevation: number;
+    /** Light of the light's colour falling evenly on every side (SolidWorks: Ambient, per light); 0 for none. */
+    ambient: number;
+    /**
+     * Kept in place relative to the model (SolidWorks: Lock to model). Off: the light turns with the view, its position
+     * being where it is as seen from the front view (camera towards -Z, up +Y).
+     */
+    lockToModel: boolean;
+    /** Kept when a preset replaces the lights (SolidWorks: Keep light when scene changes). */
+    keep: boolean;
     /** Casts shadows of the model onto itself and the others. */
     shadow: boolean;
+}
+
+/** Light direction as SolidWorks gives it: azimuth (longitude, degrees from +Z towards +X) and elevation (latitude). */
+export interface DirectionalLight extends LightCommon {
+    azimuth: number;
+    elevation: number;
+}
+
+/** How a point or spot light's position is given and edited (SolidWorks: Light position, Spherical or Cartesian). */
+export type LightCoordinates = 'spherical' | 'cartesian';
+
+/**
+ * A light at a position, shining every way. The position is kept both ways and in sync: `coordinates` says which way
+ * it was given (kept exactly as typed); the other way is worked out from it.
+ */
+export interface PointLight extends LightCommon {
+    coordinates: LightCoordinates;
+    /** Spherical, about the origin: degrees from +Z towards +X, degrees above the ground plane, and mm. */
+    longitude: number;
+    latitude: number;
+    distance: number;
+    /** Cartesian, mm. */
+    x: number;
+    y: number;
+    z: number;
+}
+
+/** A light at a position shining a cone at a target point. */
+export interface SpotLight extends PointLight {
+    targetX: number;
+    targetY: number;
+    targetZ: number;
+    /** From the cone's axis to its edge, degrees. */
+    coneAngle: number;
 }
 
 /** A glowing panel in the environment the model reflects. */
@@ -78,6 +120,8 @@ export interface Lightformer {
 export interface LightingSettings {
     ambient: { on: boolean; color: string; intensity: number };
     directional: DirectionalLight[];
+    point: PointLight[];
+    spot: SpotLight[];
     environment: { on: boolean; strength: number; formers: Lightformer[] };
 }
 
@@ -163,13 +207,20 @@ export const SETTINGS_CATEGORIES: SettingsCategory[] = ['general', 'sketch', 'de
 
 // ---- Lighting presets ----------------------------------------------------------------------------------------
 
+/** A directional light of a preset: fixed to the model, as the view's lights always were. */
+const sun = (id: string, color: string, intensity: number, azimuth: number, elevation: number): DirectionalLight => ({
+    id, on: true, color, intensity, ambient: 0, lockToModel: true, keep: false, shadow: false, azimuth, elevation,
+});
+
 /** Studio: the lights the view has always had. */
 const STUDIO: LightingSettings = {
     ambient: { on: true, color: '#ffffff', intensity: 0.25 },
     directional: [
-        { id: 'key', on: true, color: '#ffffff', intensity: 2.2, azimuth: 36.87, elevation: 50.19, shadow: false },
-        { id: 'fill', on: true, color: '#6aa8ff', intensity: 0.8, azimuth: -126.87, elevation: 21.8, shadow: false },
+        sun('key', '#ffffff', 2.2, 36.87, 50.19),
+        sun('fill', '#6aa8ff', 0.8, -126.87, 21.8),
     ],
+    point: [],
+    spot: [],
     environment: {
         on: true,
         strength: 1,
@@ -185,10 +236,12 @@ const STUDIO: LightingSettings = {
 const BRIGHT: LightingSettings = {
     ambient: { on: true, color: '#ffffff', intensity: 0.6 },
     directional: [
-        { id: 'key', on: true, color: '#ffffff', intensity: 3, azimuth: 36.87, elevation: 50.19, shadow: false },
-        { id: 'fill', on: true, color: '#ffffff', intensity: 1.5, azimuth: -126.87, elevation: 21.8, shadow: false },
-        { id: 'back', on: true, color: '#ffffff', intensity: 1, azimuth: 180, elevation: 35, shadow: false },
+        sun('key', '#ffffff', 3, 36.87, 50.19),
+        sun('fill', '#ffffff', 1.5, -126.87, 21.8),
+        sun('back', '#ffffff', 1, 180, 35),
     ],
+    point: [],
+    spot: [],
     environment: {
         on: true,
         strength: 1.5,
@@ -199,9 +252,11 @@ const BRIGHT: LightingSettings = {
 const DARK: LightingSettings = {
     ambient: { on: true, color: '#ffffff', intensity: 0.08 },
     directional: [
-        { id: 'key', on: true, color: '#ffffff', intensity: 1.6, azimuth: 36.87, elevation: 50.19, shadow: false },
-        { id: 'rim', on: true, color: '#6aa8ff', intensity: 1.2, azimuth: -150, elevation: 15, shadow: false },
+        sun('key', '#ffffff', 1.6, 36.87, 50.19),
+        sun('rim', '#6aa8ff', 1.2, -150, 15),
     ],
+    point: [],
+    spot: [],
     environment: {
         on: true,
         strength: 0.45,
@@ -211,8 +266,53 @@ const DARK: LightingSettings = {
 
 export const LIGHTING_PRESETS: Record<'studio' | 'bright' | 'dark', LightingSettings> = { studio: STUDIO, bright: BRIGHT, dark: DARK };
 
-/** Most lights one scene takes (SolidWorks: nine, the ambient light and eight others). */
+/**
+ * Most lights one scene takes besides the ambient one: directional, point and spot lights together (SolidWorks: nine,
+ * the ambient light and eight others). The environment's panels have a limit of their own, the same number.
+ */
 export const MAX_LIGHTS = 8;
+
+/** Farthest a point or spot light (or a spot's target) may stand from the origin, mm. */
+export const MAX_LIGHT_REACH = 1_000_000;
+
+/** The point at a longitude and latitude (degrees, as `DirectionalLight` has them) and distance from the origin. */
+export function sphericalPoint(longitude: number, latitude: number, distance: number): [number, number, number] {
+    const a = (longitude * Math.PI) / 180;
+    const e = (latitude * Math.PI) / 180;
+    return [distance * Math.sin(a) * Math.cos(e), distance * Math.sin(e), distance * Math.cos(a) * Math.cos(e)];
+}
+
+/** Longitude, latitude (degrees) and distance of a point from the origin; straight up or down has longitude 0. */
+export function sphericalOf(x: number, y: number, z: number): { longitude: number; latitude: number; distance: number } {
+    const distance = Math.hypot(x, y, z);
+    const flat = Math.hypot(x, z);
+    return {
+        longitude: flat > 1e-12 ? (Math.atan2(x, z) * 180) / Math.PI : 0,
+        latitude: distance > 0 ? (Math.atan2(y, flat) * 180) / Math.PI : 0,
+        distance,
+    };
+}
+
+/** A worked-out value: to 0.000001 (the app's precision for values it works out), never coarser. */
+const worked = (n: number): number => Math.round(n * 1e6) / 1e6 + 0;
+
+/** The light with its position the other way worked out from the way `coordinates` names. */
+export function placedLight<T extends PointLight>(light: T): T {
+    if (light.coordinates === 'spherical') {
+        const [x, y, z] = sphericalPoint(light.longitude, light.latitude, light.distance);
+        return { ...light, x: worked(x), y: worked(y), z: worked(z) };
+    }
+    const s = sphericalOf(light.x, light.y, light.z);
+    return { ...light, longitude: worked(s.longitude), latitude: worked(s.latitude), distance: worked(s.distance) };
+}
+
+/** Where a point or spot light stands (model frame, or the front view's frame when it is not locked to the model), mm. */
+export function lightPoint(light: PointLight): [number, number, number] {
+    return light.coordinates === 'spherical' ? sphericalPoint(light.longitude, light.latitude, light.distance) : [light.x, light.y, light.z];
+}
+
+/** How many lights there are besides the ambient one and the panels. */
+export const lightCount = (l: Pick<LightingSettings, 'directional' | 'point' | 'spot'>): number => l.directional.length + l.point.length + l.spot.length;
 
 // ---- Defaults --------------------------------------------------------------------------------------------------
 
@@ -296,17 +396,54 @@ export function plainData(value: unknown, maxBytes = 64 * 1024, depth = 6): Reco
     return JSON.stringify(out).length <= maxBytes ? out : {};
 }
 
+/** The fields every light has; a settings file from before they were added gets the view's old behaviour. */
+function lightCommon(r: Raw, id: string, intensity: number): LightCommon {
+    return {
+        id,
+        on: bool(r.on, true),
+        color: colour(r.color, '#ffffff'),
+        intensity: num(r.intensity, intensity, 0, 50),
+        ambient: num(r.ambient, 0, 0, 10),
+        lockToModel: bool(r.lockToModel, true),
+        keep: bool(r.keep, false),
+        shadow: bool(r.shadow, false),
+    };
+}
+
 function directional(v: unknown, i: number): DirectionalLight {
     const r = obj(v);
     const base = STUDIO.directional[i] ?? STUDIO.directional[0];
     return {
-        id: ident(r.id, `light${i + 1}`),
-        on: bool(r.on, true),
-        color: colour(r.color, '#ffffff'),
-        intensity: num(r.intensity, base.intensity, 0, 50),
+        ...lightCommon(r, ident(r.id, `light${i + 1}`), base.intensity),
         azimuth: num(r.azimuth, base.azimuth, -360, 360),
         elevation: num(r.elevation, base.elevation, -90, 90),
-        shadow: bool(r.shadow, false),
+    };
+}
+
+const reach = (v: unknown, fallback: number): number => num(v, fallback, -MAX_LIGHT_REACH, MAX_LIGHT_REACH);
+
+function pointLight(v: unknown, i: number, prefix = 'point'): PointLight {
+    const r = obj(v);
+    return placedLight({
+        ...lightCommon(r, ident(r.id, `${prefix}${i + 1}`), 1),
+        coordinates: pick(r.coordinates, ['spherical', 'cartesian'] as const, 'spherical'),
+        longitude: num(r.longitude, 0, -360, 360),
+        latitude: num(r.latitude, 45, -90, 90),
+        distance: num(r.distance, 300, 0, MAX_LIGHT_REACH),
+        x: reach(r.x, 0),
+        y: reach(r.y, 0),
+        z: reach(r.z, 0),
+    });
+}
+
+function spotLight(v: unknown, i: number): SpotLight {
+    const r = obj(v);
+    return {
+        ...pointLight(r, i, 'spot'),
+        targetX: reach(r.targetX, 0),
+        targetY: reach(r.targetY, 0),
+        targetZ: reach(r.targetZ, 0),
+        coneAngle: num(r.coneAngle, 30, 0, 90),
     };
 }
 
@@ -327,9 +464,8 @@ function former(v: unknown, i: number): Lightformer {
     };
 }
 
-/** Unique ids in a list (a duplicate gets a number). */
-function uniqueIds<T extends { id: string }>(list: T[]): T[] {
-    const seen = new Set<string>();
+/** Unique ids in a list, and against `seen` (a duplicate gets a number). */
+function uniqueIds<T extends { id: string }>(list: T[], seen = new Set<string>()): T[] {
     return list.map((item) => {
         let id = item.id;
         for (let n = 2; seen.has(id); n++) {
@@ -345,14 +481,22 @@ function lighting(v: unknown): LightingSettings {
     const ambient = obj(r.ambient);
     const env = obj(r.environment);
     const d = DEFAULT_SETTINGS.lighting;
+    // Directional, point and spot lights share the limit, in that order, and their ids are unique across them.
+    const ids = new Set<string>();
+    const directionals = uniqueIds(Array.isArray(r.directional) ? r.directional.slice(0, MAX_LIGHTS).map(directional) : clone(d.directional), ids);
+    let room = MAX_LIGHTS - directionals.length;
+    const points = uniqueIds(Array.isArray(r.point) ? r.point.slice(0, room).map((p, i) => pointLight(p, i)) : [], ids);
+    room -= points.length;
+    const spots = uniqueIds(Array.isArray(r.spot) ? r.spot.slice(0, room).map(spotLight) : [], ids);
     return {
         ambient: {
             on: bool(ambient.on, d.ambient.on),
             color: colour(ambient.color, d.ambient.color),
             intensity: num(ambient.intensity, d.ambient.intensity, 0, 10),
         },
-        directional: Array.isArray(r.directional)
-            ? uniqueIds(r.directional.slice(0, MAX_LIGHTS).map(directional)) : clone(d.directional),
+        directional: directionals,
+        point: points,
+        spot: spots,
         environment: {
             on: bool(env.on, d.environment.on),
             strength: num(env.strength, d.environment.strength, 0, 10),
@@ -360,6 +504,20 @@ function lighting(v: unknown): LightingSettings {
                 ? uniqueIds(env.formers.slice(0, MAX_LIGHTS).map(former)) : clone(d.environment.formers),
         },
     };
+}
+
+/**
+ * The lighting of a preset, with the current lights that have Keep light when scene changes on after the preset's own
+ * (as many as the limit leaves room for; one whose id the preset uses gets a number).
+ */
+export function withPreset(current: LightingSettings, preset: LightingSettings): LightingSettings {
+    const kept = <T extends LightCommon>(list: T[]): T[] => list.filter((l) => l.keep);
+    return lighting({
+        ...clone(preset),
+        directional: [...preset.directional, ...kept(current.directional)],
+        point: [...preset.point, ...kept(current.point)],
+        spot: [...preset.spot, ...kept(current.spot)],
+    });
 }
 
 function modelChoice(v: unknown, fallback: AiModelChoice): AiModelChoice {
