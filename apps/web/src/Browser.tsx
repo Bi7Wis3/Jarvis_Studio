@@ -317,6 +317,8 @@ function ComponentRow(props: {
     const hidden = useStudio((s) => s.history?.view.hidden?.includes(part.id) ?? false);
     const focused = useStudio((s) => s.history?.view.focus === part.id);
     const error = useStudio((s) => s.meshes.errors[part.id]);
+    // Rolled back in its own history: the steps below the bar are not built, so the view may show little or nothing.
+    const rolledTo = useStudio((s) => (s.history?.view.rollback?.partId === part.id ? s.history.view.rollback.count : null));
     // Its shown mesh is being rebuilt: the old one stays on screen until the new one lands (kernelActivity.ts).
     const rebuilding = usePartRebuilding(part.id);
 
@@ -382,6 +384,12 @@ function ComponentRow(props: {
                 ) : <span className="br-name">{part.name}</span>}
             </span>
             {part.instanceOf && <span className="br-tag" title="Another placement of the same design">instance</span>}
+            {rolledTo !== null && rolledTo < (part.features?.length ?? 0) && (
+                <span className="br-tag" title={`Its history is rolled back: ${rolledTo} of ${part.features?.length ?? 0} steps are built. `
+                    + 'Double-click the part and choose Roll to end under its tree.'}>
+                    rolled back
+                </span>
+            )}
             {part.repeat && <span className="br-count" title="Patterned">×{part.repeat.count}</span>}
             {error && <span className="br-warn" title={`Built only up to the failing step: ${error}`}>⚠</span>}
             {rebuilding && <span className="cad-busy" title="Being rebuilt" aria-label="Being rebuilt" />}
