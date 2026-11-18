@@ -15,6 +15,7 @@ import {
     type EllipseAxes, type SplineShape,
 } from '@jarvis/core/curves';
 import { knotMultiplicities, knotVector, nurbsAt, solveSpline } from '@jarvis/core/splines';
+import { profileRegionLoops } from '@jarvis/core';
 
 type SplineSegment = Extract<SketchSegment, { kind: 'spline' }>;
 
@@ -607,14 +608,34 @@ function inRegion(region: SketchRegion, point: P2, index: number): boolean {
  * pick point (its outline and holes as profiles). No picks, or a sketch without regions: the whole sketch.
  */
 export function selectedRegions(sketch: Sketch, picks?: P2[]): Sketch[] {
-    if (!picks?.length || !sketch?.regions?.length) {
+    if (!picks?.length || !sketch) {
         return [sketch];
     }
-    const chosen = sketch.regions.filter((region, i) => picks.some((p) => inRegion(region, p, i)));
+    const stored = !!sketch.regions?.length;
+    const regions = stored ? sketch.regions! : sketch.geometry ? [] : profileRegions(sketch.profiles);
+    if (!regions.length) {
+        return [sketch];
+    }
+    const chosen = regions.filter((region, i) => picks.some((p) => inRegion(region, p, i)));
     if (!chosen.length) {
+        if (!stored) {
+            return [sketch]; // picks on plain profiles were not used before they had regions: built whole, as then
+        }
         throw new Error('its selected sketch regions no longer exist; pick them again');
     }
     return chosen.map((region) => ({ plane: sketch.plane, offset: sketch.offset, profiles: region.loops }));
+}
+
+/** The regions of a sketch written as profiles alone (profileRegions.ts in core), as the view offers them for picking. */
+function profileRegions(profiles: SketchProfile[]): SketchRegion[] {
+    try {
+        return profileRegionLoops(profiles, (p) => outline(pieces(p))).map(({ outer, holes }) => ({
+            loops: [profiles[outer], ...holes.map((h) => profiles[h])],
+            at: [0, 0],
+        }));
+    } catch {
+        return []; // a broken profile: the build reports it
+    }
 }
 
 /**

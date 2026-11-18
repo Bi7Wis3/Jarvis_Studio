@@ -21,7 +21,8 @@ Design notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The order of w
 - **Features:**
   - from sketches: extrude, revolve, loft, sweep, hole and thread, each with the options a professional CAD program
     gives it. A helix or spiral is a step of its own, defined by pitch, height or turns, with variable pitch and
-    taper, so a spring is a circle, a helix, a profile on a plane square to the helix, and a sweep;
+    taper, so a spring is a circle, a helix, a profile on a plane square to the helix, and a sweep. A boss that only
+    touches the body, such as a thread profile drawn on a bore and swept along a helix, joins it as one body;
   - applied to the body: fillet, chamfer, shell, draft, mirror and patterns. Where the kernel's own fillet gives up,
     the studio builds the round from its true sections, also round a hole's rim that runs across several faces.
   - Threads can be shown fully modelled or as a light helix drawn on the hole or shaft while the model stays plain.
@@ -33,7 +34,8 @@ Design notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The order of w
 - **Assemblies:** several parts in one project, joined by mates (coincident, parallel, perpendicular, tangent,
   concentric, lock, distance and angle) between faces, edges, points, planes and axes. The assembly tree shows each
   part as fixed or how free it still is, keeps the mates in their own folder, and lets you reorder parts by dragging
-  and group them in folders. Parts move within the freedom their mates leave.
+  and group them in folders. Parts move within the freedom their mates leave. Hidden parts are left unbuilt until you
+  show them again, so a project opens on the parts you can see.
 - **Project files:** File > Save and Save As write a `.jarvis` file wherever you like, holding the design with every
   imported file and picture it uses and a preview picture; File > Open brings one back as a project. The format is in
   [docs/FILE_FORMAT.md](docs/FILE_FORMAT.md). Inside the studio every change is saved as you work. To see a whole

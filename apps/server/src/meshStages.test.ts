@@ -172,3 +172,22 @@ describe('draftPart', () => {
         expect(meshKey(draft, DEFAULT_PRINT)).toBe(previewed);
     });
 });
+
+describe('hidden parts', () => {
+    it('builds only the parts shown, and a hidden one once it is shown again', async () => {
+        const { kernel, service } = setup();
+        const base = project([fillet(2)]);
+        const other: Part = { ...base.parts[0], id: 'p2', name: 'Hidden', shape: { kind: 'box', size: [30, 30, 30], radius: 0 } };
+        const both = (hidden: string[]): Project => ({ ...base, parts: [base.parts[0], other], view: { ...base.view, hidden } });
+        service.update(both(['p2']));
+        expect(kernel.jobs).toHaveLength(1);
+        expect(service.current().keys.p2).toBeNull();
+        kernel.jobs[0].resolve(mesh());
+        await tick();
+        service.update(both([]));
+        expect(kernel.jobs).toHaveLength(2);
+        // Hidden again before its build starts: the queued build is dropped.
+        service.update(both(['p2']));
+        expect(kernel.jobs[1].options.stale!()).toBe(true);
+    });
+});

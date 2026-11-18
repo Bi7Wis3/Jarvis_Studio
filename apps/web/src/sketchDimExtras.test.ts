@@ -15,7 +15,7 @@ import {
     applyDimension, commitGeometry, dimensionAnchor, moveLabel, setDimText, setPathLengthTool, setSketchSettings, setTool, sketchClick, sketchMove, useSketcher,
 } from './sketcher';
 import {
-    reverseDimension, setRunningTool, setSmartOrdinateTool, setUnaligned, smartDimension, toggleDimensionLock,
+    previewDimensions, reverseDimension, setRunningTool, setSmartOrdinateTool, setUnaligned, smartDimension, toggleDimensionLock,
 } from './sketchDimTools';
 import { DEFAULT_FULLY_DEFINE, fullyDefineWith } from './sketchFullyDefine';
 import { chooseQuickSnap, quickSnapUsed, snapKindsInForce, useQuickSnap } from './sketchQuickSnaps';
@@ -542,5 +542,21 @@ describe('grid options', () => {
         expect(gridScale(1, 0.5)).toBe(10);
         expect(gridScale(1, 5)).toBe(100);
         expect(gridSegments(5, 0, 10, 0, 10)).toHaveLength(12);
+    });
+});
+
+describe('preview sketch dimension when selected', () => {
+    it('stays beside a short line at the gap asked for, not a fixed 4 mm away', () => {
+        const line = addLine(EMPTY_GEOMETRY, { at: [10, 0] }, { at: [10, 1.15] });
+        const shown = previewDimensions(line.g, [{ type: 'curve', id: line.id }], 0.3);
+        expect(shown).toHaveLength(1);
+        const [{ at, c }] = shown;
+        expect(c).toMatchObject({ kind: 'length', line: line.id });
+        expect(Math.abs(at[0] - 10)).toBeCloseTo(0.3, 6);
+        expect(at[1]).toBeCloseTo(0.575, 6);
+        // Without a gap: the default spot of a new dimension, a few mm off.
+        const plain = previewDimensions(line.g, [{ type: 'curve', id: line.id }]);
+        expect(Math.abs(plain[0].at[0] - 10)).toBeCloseTo(4, 6);
+        expect(dimensionAnchor(line.g, { id: 'x', kind: 'length', line: line.id, value: 1.15 } as SketchConstraint, 0.3)).toEqual(at);
     });
 });

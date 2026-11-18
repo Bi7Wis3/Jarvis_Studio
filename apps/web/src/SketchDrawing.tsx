@@ -672,8 +672,13 @@ export function Drawing() {
     const zone = useSketchMore((m) => m.zone);
     const camera = useThree((s) => s.camera) as PerspectiveCamera;
     const size = useThree((s) => s.size);
-    // A size that reads about 9 px on screen, for arrows and glyph offsets.
-    const unit = Math.max(0.2, pixelSizeAt(camera, ORIGIN_3D, size.height) * 9);
+    const gl = useThree((s) => s.gl);
+    // A size that reads about 9 px on screen, for arrows and glyph offsets, measured where the view meets the sketch
+    // plane (in perspective a sketch far from the origin is nearer than the origin). It follows the zoom all the way
+    // in: a part a millimetre across keeps arrows of a few pixels, not a fixed size that would fill the screen.
+    const rect = gl.domElement.getBoundingClientRect();
+    const looked = sketchPlaneAt(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const unit = Math.max(1e-6, pixelSizeAt(camera, looked ?? ORIGIN_3D, size.height) * 9);
     const picking = tool === 'dimension' || tool.startsWith('c:') || isEditTool(tool);
     const xformFrom = tool === 'xform' && xform?.picks.length === 1 && (xform.kind === 'move' || xform.kind === 'copy' || xform.kind === 'stretch') ? xform.picks[0] : null;
     const at = draft.map((d) => d.at);

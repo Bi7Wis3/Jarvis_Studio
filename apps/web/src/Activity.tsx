@@ -53,12 +53,13 @@ export function buildersNote(entry: ActivityEntry): string | null {
 
 /** Top right: what is happening in the background, and the commands sent to Jarvis. */
 export function Activity() {
-    const { status, detail, speaking, meshes, activity, connected } = useStudio();
+    const { status, detail, speaking, meshes, activity, connected, project } = useStudio();
     const [open, setOpen] = useState(true);
     const visible = useVisibleEntries(activity);
-    const keys = Object.values(meshes.keys);
+    // Only the parts shown count: hidden ones are not built until they are shown (the server's meshes.ts).
+    const keys = (project?.parts ?? []).map((p) => meshes.keys[p.id] ?? null);
     const building = keys.filter((k) => k === null).length;
-    const failed = Object.keys(meshes.errors).length;
+    const failed = (project?.parts ?? []).filter((p) => meshes.errors[p.id]).length;
     const jarvis = !connected ? 'offline' : status === 'working' && detail ? detail.replace(/_/g, ' ') : status;
     // While the kernel works: the part, step and i/n it is on, and the jobs waiting (kernelActivity.ts).
     const cad = useCadDisplay();

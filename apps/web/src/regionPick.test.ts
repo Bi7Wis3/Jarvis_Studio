@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { SketchGeometry, SketchProfile, SketchRegion } from '@jarvis/core';
 import { addCircle, addLine, addRect, EMPTY_GEOMETRY } from './sketchGeometry';
 import { area, inside, profilePoints, type Pt } from './sketchMath';
-import { clearRegionPick, pickedRegions, regionAt, regionsOf, startRegionPick, toggleRegion, useRegionPick } from './regionPick';
+import { clearRegionPick, pickedRegions, regionAt, regionsOf, startRegionPick, stepRegions, toggleRegion, useRegionPick } from './regionPick';
 import { interiorPoint } from './sketchRegions';
 
 const areaOf = (p: SketchProfile) => Math.abs(area(profilePoints(p)));
@@ -144,5 +144,25 @@ describe('region pick store', () => {
         expect(useRegionPick.getState().picked).toEqual([]);
         clearRegionPick();
         expect(useRegionPick.getState()).toEqual({ active: false, sketchKey: null, picked: [] });
+    });
+});
+
+describe('regions of a sketch written as profiles alone', () => {
+    it('offers each profile with the profiles directly inside it as holes: a disc and two rings for three circles', () => {
+        const circle = (radius: number): SketchProfile => ({ kind: 'circle', center: [-22, 18], radius });
+        const sketch = { plane: 'top' as const, profiles: [circle(4.4721), circle(8.9443), circle(41.2311)] };
+        const regions = stepRegions(sketch)!;
+        expect(regions).toHaveLength(3);
+        expect(regions.map((r) => r.loops.length)).toEqual([1, 2, 2]);
+        // Each region's own point lies in it, and a point in the middle ring picks that ring alone.
+        regions.forEach((r, i) => expect(regionAt(regions, r.at)).toBe(i));
+        expect(regionAt(regions, [-22 + 6, 18])).toBe(1);
+        expect(regionAt(regions, [-22 + 30, 18])).toBe(2);
+        expect(stepRegions(sketch)).toBe(regions);
+    });
+
+    it('keeps the regions a sketcher sketch stores', () => {
+        const stored: SketchRegion[] = [];
+        expect(stepRegions({ plane: 'top', profiles: [], regions: stored, geometry: EMPTY_GEOMETRY })).toBe(stored);
     });
 });

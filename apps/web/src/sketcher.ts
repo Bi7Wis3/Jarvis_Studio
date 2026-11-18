@@ -2159,8 +2159,11 @@ export function openDimensionForm(id: string): void {
     }
 }
 
-/** Default place for a dimension label: beside what it measures. */
-export function dimensionAnchor(g: SketchGeometry, c: SketchConstraint): Pt {
+/**
+ * Default place for a dimension label: beside what it measures. `gap`: how far off in mm (a size on screen, for a label
+ * shown at the zoom of the moment); otherwise a few mm, more beside a long line.
+ */
+export function dimensionAnchor(g: SketchGeometry, c: SketchConstraint, gap?: number): Pt {
     const more = moreDimensionAnchor(g, c);
     if (more) {
         return more;
@@ -2178,13 +2181,14 @@ export function dimensionAnchor(g: SketchGeometry, c: SketchConstraint): Pt {
             const a = p(line.a);
             const b = p(line.b);
             const l = dist(a, b) || 1;
-            const off = Math.max(4, l * 0.12);
+            const off = gap ?? Math.max(4, l * 0.12);
             return [(a[0] + b[0]) / 2 - ((b[1] - a[1]) / l) * off, (a[1] + b[1]) / 2 + ((b[0] - a[0]) / l) * off];
         }
         case 'distance': {
             const a = p(c.a);
             const b = pointOf(g, c.b) ? p(c.b) : c.b === AXIS_U ? [a[0], 0] as Pt : c.b === 'axis-v' ? [0, a[1]] as Pt : a;
-            return [(a[0] + b[0]) / 2 + 3, (a[1] + b[1]) / 2 + 3];
+            const off = gap ?? 3;
+            return [(a[0] + b[0]) / 2 + off, (a[1] + b[1]) / 2 + off];
         }
         case 'radius':
         case 'diameter': {
@@ -2203,7 +2207,8 @@ export function dimensionAnchor(g: SketchGeometry, c: SketchConstraint): Pt {
             });
             const u = ends.reduce((sum, q) => sum + q[0], 0) / ends.length;
             const v = ends.reduce((sum, q) => sum + q[1], 0) / ends.length;
-            return [u + 4, v + 4];
+            const off = gap ?? 4;
+            return [u + off, v + off];
         }
         default:
             return [0, 0];

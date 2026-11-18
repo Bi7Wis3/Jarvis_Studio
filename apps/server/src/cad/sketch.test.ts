@@ -499,10 +499,23 @@ describe('sketch regions', () => {
         expect(volume(await mesh(empty, steps))).toBeCloseTo(2000, 1);
         const cut = await mesh(empty, [...steps, { id: 'c', op: 'extrude', mode: 'cut', distance: 4, sketchRef: 's', regions: [[15, 5]] }]);
         expect(volume(cut)).toBeCloseTo(1600, 1);
-        // Picks on a sketch without regions: the whole sketch.
+        // Picks on a sketch of profiles alone (no stored regions): the profile they lie in.
         const plain = await mesh(empty, [{ id: 'e', op: 'extrude', mode: 'add', distance: 4,
             sketch: { plane: 'top', profiles: pair.profiles }, regions: [[2, 2]] }]);
         expect(volume(plain)).toBeCloseTo(800, 1);
+    }, SLOW);
+
+    it('picks the rings of nested profiles in a sketch written as profiles alone, as the view offers them', async () => {
+        const circle = (radius: number) => ({ kind: 'circle' as const, center: [0, 0] as [number, number], radius });
+        const rings: Sketch = { plane: 'top', profiles: [circle(4), circle(8), circle(20)] };
+        const extrude = async (regions: [number, number][]) => volume(await mesh(empty, [{ id: 'e', op: 'extrude', mode: 'add', distance: 4, sketch: rings, regions }]));
+        // Within 0.2 %: the circles are meshed as polygons.
+        const near = (got: number, want: number) => expect(Math.abs(got - want) / want).toBeLessThan(0.002);
+        near(await extrude([[6, 0]]), Math.PI * (64 - 16) * 4);
+        near(await extrude([[15, 0]]), Math.PI * (400 - 64) * 4);
+        near(await extrude([[0, 0], [15, 0]]), Math.PI * (400 - 64 + 16) * 4);
+        // A pick in none of them: the whole sketch, as before such sketches had regions.
+        near(await extrude([[50, 0]]), Math.PI * (400 - 64 + 16) * 4);
     }, SLOW);
 
     it('names the feature whose picks land in no region', async () => {

@@ -24,7 +24,7 @@ import { Catcher, Drawing, Label, v3 } from './SketchDrawing';
 import { sketchToEntities } from './sketchMath';
 import { useStudio } from './state';
 import { offerTarget } from './viewMenu';
-import { pickedRegions, toggleRegion, useRegionPick } from './regionPick';
+import { pickedRegions, stepRegions, toggleRegion, useRegionPick } from './regionPick';
 import { ModelPreview } from './sketchModelView';
 import { ShadedContours } from './sketchContoursDrawing';
 import { openSketchRegions, usePlaneFaces } from './sketchModelContours';
@@ -292,7 +292,7 @@ function SketchStep({ partId, id, sketch, used, before }: { partId: string; id: 
     // Picking regions of this step (Extrude, Cut, Revolve on part of a sketch): its regions become clickable fills.
     const picking = useRegionPick((s) => s.active && s.sketchKey === `${partId}/${id}`);
     const picks = useRegionPick((s) => s.picked);
-    const regions = sketch.regions;
+    const regions = useMemo(() => stepRegions(sketch), [sketch]);
     const chosen = useMemo(() => (picking && regions ? pickedRegions(regions, picks) : []), [picking, regions, picks]);
     // In an open sketch the pointer goes on to it: its tools pick this sketch's entities themselves (sketchModelPick.ts).
     const sketching = useSketchView();

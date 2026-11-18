@@ -170,7 +170,8 @@ function PreviewDims({ size }: { size: number }) {
     }
     return (
         <>
-            {previewDimensions(g, selection).map(({ c, at, key }) => {
+            {/* About 30 px beside the line at any zoom (`size` reads 9 px), not a fixed few mm: a short line keeps it close. */}
+            {previewDimensions(g, selection, size * 3.5).map(({ c, at, key }) => {
                 const value = measure(g, { ...c, id: 'preview' } as SketchConstraint) ?? 0;
                 const text = c.kind === 'diameter' ? `Ø${shownText(value)}` : c.kind === 'radius' ? `R${shownText(value)}` : shownText(value);
                 return (

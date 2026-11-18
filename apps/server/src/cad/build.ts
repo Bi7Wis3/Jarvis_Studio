@@ -949,7 +949,66 @@ function combine(shape: Shape3D | null, tool: Shape3D, mode: 'add' | 'cut', what
     if (mode === 'cut') {
         return cutChecked(needBody(shape), tool, `${what} cut`);
     }
-    return shape ? asSolid(shape.fuse(tool), what) : asSolid(tool, what);
+    if (!shape) {
+        return asSolid(tool, what);
+    }
+    const fused = asSolid(shape.fuse(tool), what);
+    const split = fused.solids.length > shape.solids.length;
+    // A fuse that comes out invalid from valid inputs is glued again too (the check takes some 50 ms on a large body).
+    const broken = !split && !isValid(fused) && isValid(shape) && isValid(tool);
+    return split || broken ? fuseTouching(shape, tool, fused, broken) : fused;
+}
+
+/** Gluing tolerances (mm) tried in turn for a tool that only touches the body. */
+const TOUCH_FUZZ = [1e-4, 1e-3];
+
+/**
+ * A tool that only touches the body, a face lying on one of its faces (a thread profile drawn on a bore and swept
+ * along a helix), stays a separate solid in a plain fuse, or joins it as an invalid solid: the swept face is a spline
+ * that lies on the bore only to within its approximation, so the two never quite share it. As SolidWorks merges such
+ * a boss, the fuse is tried again gluing faces that close within a small tolerance; it is kept when it leaves fewer
+ * solids (or, for an invalid fuse, as many), is valid and keeps the volume. Otherwise the plain result stands.
+ */
+function fuseTouching(shape: Shape3D, tool: Shape3D, fused: Shape3D, broken: boolean): Shape3D {
+    const reach = TOUCH_FUZZ[TOUCH_FUZZ.length - 1];
+    const a = shape.boundingBox;
+    const b = tool.boundingBox;
+    if ([0, 1, 2].some((i) => a.bounds[0][i] - b.bounds[1][i] > reach || b.bounds[0][i] - a.bounds[1][i] > reach)) {
+        return fused;
+    }
+    const volume = measureVolume(fused);
+    const oc = getOC();
+    for (const fuzzy of TOUCH_FUZZ) {
+        const [r, gc] = localGC();
+        try {
+            const args = r(new oc.NCollection_List_TopoDS_Shape());
+            args.Append(shape.wrapped);
+            const tools = r(new oc.NCollection_List_TopoDS_Shape());
+            tools.Append(tool.wrapped);
+            const op = r(new oc.BRepAlgoAPI_Fuse());
+            op.SetArguments(args);
+            op.SetTools(tools);
+            op.SetRunParallel(false);
+            op.SetNonDestructive(true);
+            op.SetFuzzyValue(fuzzy);
+            op.Build(r(new oc.Message_ProgressRange()));
+            if (!op.IsDone() || op.HasErrors()) {
+                continue;
+            }
+            const glued = cast(op.Shape()) as Shape3D;
+            const count = glued.solids.length;
+            const joined = count > 0 && (count < fused.solids.length || (broken && count === fused.solids.length));
+            // The volume as the plain fuse has it, to within what the quick measure gives on spline faces.
+            if (joined && Math.abs(measureVolume(glued) - volume) <= 1e-4 * Math.max(1, volume) && isValid(glued)) {
+                return normalizeSolid(glued, 'fuse');
+            }
+        } catch {
+            // this tolerance did not glue them: the next, or the plain result
+        } finally {
+            gc();
+        }
+    }
+    return fused;
 }
 
 const sub3 = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];

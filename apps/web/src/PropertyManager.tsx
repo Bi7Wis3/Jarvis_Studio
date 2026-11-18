@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import type { Part, SketchRegion } from '@jarvis/core';
 import { Icon } from './icons';
 import { nextFeatureName } from './featureNames';
-import { pickedRegions, regionAt, useRegionPick } from './regionPick';
+import { pickedRegions, regionAt, stepRegions, useRegionPick } from './regionPick';
 import { openSketchRegions, usePlaneFaces } from './sketchModelContours';
 import { useSketcher } from './sketcher';
 import { FieldInput, useToolForm } from './toolForm';
@@ -115,8 +115,8 @@ function SelectedContours({ tool, ctx, values }: { tool: ToolDef; ctx: Ctx; valu
     const step = sketcher ? undefined : sketchSteps(ctx.part).find((f) => f.id === values.sketch);
     const faces = usePlaneFaces((f) => f.known);
     const regions = useMemo<SketchRegion[] | undefined>(
-        () => (sketcher ? openSketchRegions(geometry) : step?.sketch.regions),
-        [sketcher, geometry, step?.sketch.regions, faces],
+        () => (sketcher ? openSketchRegions(geometry) : step && stepRegions(step.sketch)),
+        [sketcher, geometry, step?.sketch, faces],
     );
     const sketchName = sketcher ? finishNames(ctx, values).sketch : shortName(step?.name, String(values.sketch ?? 'Sketch'));
     const rows: { key: string; label: string; keep: (p: Pt) => boolean }[] = [];

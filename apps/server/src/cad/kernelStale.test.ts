@@ -54,3 +54,19 @@ describe('queued mesh jobs of a state edited again', () => {
         expect(quick).toHaveLength(0);
     }, SLOW);
 });
+
+describe('a worker that dies while starting', () => {
+    it('fails the jobs waiting for it instead of starting workers in a loop, and the next job starts a new one', async () => {
+        const fresh = CadKernel.start();
+        try {
+            const waiting = fresh.mesh(box(3), DEFAULT_PRINT);
+            await (fresh as unknown as { worker: { terminate(): Promise<number> } }).worker.terminate();
+            await expect(waiting).rejects.toThrow(/CAD worker/);
+            expect(fresh.activity().queue).toHaveLength(0);
+            const built = await fresh.mesh(box(4), DEFAULT_PRINT);
+            expect(built.indices.length).toBeGreaterThan(0);
+        } finally {
+            await fresh.close();
+        }
+    }, SLOW);
+});

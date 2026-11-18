@@ -320,12 +320,12 @@ export class CadKernel {
     }
 
     private spawn(): void {
-        // In dev and tests the kernel runs as TypeScript under tsx; the worker needs the same loader.
+        // In dev and tests the kernel runs as TypeScript under tsx; the worker registers the same loader (workerDev.mjs).
         const typescript = import.meta.url.endsWith('.ts');
-        const worker = new Worker(new URL(typescript ? './worker.ts' : './worker.js', import.meta.url), {
-            execArgv: typescript ? ['--import', 'tsx'] : [],
-            workerData: { progress: this.tracker.mailbox.buffer },
-        });
+        const progress = this.tracker.mailbox.buffer;
+        const worker = typescript
+            ? new Worker(new URL('./workerDev.mjs', import.meta.url), { workerData: { progress, entry: new URL('./worker.ts', import.meta.url).href } })
+            : new Worker(new URL('./worker.js', import.meta.url), { workerData: { progress } });
         this.worker = worker;
         this.ready = false;
         worker.on('message', (message: WorkerResponse) => this.onMessage(worker, message));
@@ -383,6 +383,8 @@ export class CadKernel {
         if (worker !== this.worker || this.closed) {
             return;
         }
+        const starting = !this.ready;
+        console.warn(`[cad] ${reason}${starting ? ' (while starting)' : ''}`);
         this.worker = null;
         this.ready = false;
         if (this.current) {
@@ -390,7 +392,11 @@ export class CadKernel {
             this.current.job.reject(new Error(reason));
             this.current = null;
         }
-        if (this.queue.length) {
+        if (starting) {
+            // A worker that dies before it is ready would die again: the jobs waiting fail with the reason rather than
+            // workers being started in a loop. The next job asked for starts a new one.
+            this.failAll(new Error(reason));
+        } else if (this.queue.length) {
             this.spawn();
         }
     }

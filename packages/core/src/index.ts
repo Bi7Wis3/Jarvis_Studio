@@ -1415,3 +1415,6 @@ export function effectivePart(part: Part, parts: Part[]): Part {
         purchased: source.purchased,
     };
 }
+
+// Regions of a sketch written as profiles alone (shared by the view's picking and the kernel's build of the picks).
+export { profileRegionLoops } from './profileRegions';

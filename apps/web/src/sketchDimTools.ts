@@ -583,9 +583,9 @@ export function autoInsertDimension(): boolean {
 
 /**
  * Preview sketch dimension when selected (System Options > Sketch): the sizes a selected line, circle or arc has no
- * dimension for yet, shown as previews to click (not path lengths).
+ * dimension for yet, shown as previews to click (not path lengths). `gap`: how far beside a line, in mm (a size on screen).
  */
-export function previewDimensions(g: SketchGeometry, selection: State['selection']): { c: NewConstraint; at: Pt; key: string }[] {
+export function previewDimensions(g: SketchGeometry, selection: State['selection'], gap?: number): { c: NewConstraint; at: Pt; key: string }[] {
     const out: { c: NewConstraint; at: Pt; key: string }[] = [];
     for (const item of selection) {
         const curve = item.type === 'curve' ? curveOf(g, item.id) : undefined;
@@ -600,7 +600,7 @@ export function previewDimensions(g: SketchGeometry, selection: State['selection
             : { kind: curve.kind === 'circle' ? 'diameter' : 'radius', curve: curve.id, value: 0 };
         const value = measure(g, { ...c, id: 'preview' } as SketchConstraint);
         if (value !== null) {
-            out.push({ c: { ...c, value } as NewConstraint, at: dimensionAnchor(g, { ...c, id: 'preview', value } as SketchConstraint), key: curve.id });
+            out.push({ c: { ...c, value } as NewConstraint, at: dimensionAnchor(g, { ...c, id: 'preview', value } as SketchConstraint, gap), key: curve.id });
         }
     }
     return out;

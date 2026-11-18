@@ -7,7 +7,7 @@ import type { Feature, Part, SketchGeometry, SketchPlane, SketchRegion, Vec3 } f
 import { resolveRevolveAxis } from '@jarvis/core/reference';
 import { niceStep, roundTo, valueText } from './numberText';
 import { planeAngleHandle, planeOffsetHandle, stepsBefore, type RefValues } from './referenceDefs';
-import { pickedRegions } from './regionPick';
+import { pickedRegions, stepRegions } from './regionPick';
 import { axisFromValue, revolveAxisKey } from './revolveAxis';
 import { planeFrame, profilePoints, type Pt } from './sketchMath';
 import type { Ctx, Values } from './toolDefs';
@@ -204,7 +204,7 @@ function stepPlace(values: Values, ctx: Ctx, env: HandleEnv): SketchPlace | null
     const edited = ctx.edit?.feature ? features.findIndex((f) => f.id === ctx.edit!.feature!.id) : -1;
     return {
         matrix: partMatrix(part), plane: sketch.plane, offset: sketch.offset ?? 0, before: features.slice(0, index),
-        centre: profileCentre(sketch.regions ?? [], picks, sketch.profiles.flatMap(profilePoints)),
+        centre: profileCentre(stepRegions(sketch) ?? [], picks, sketch.profiles.flatMap(profilePoints)),
         geometry: sketch.geometry, steps: edited >= 0 ? features.slice(0, edited) : features,
     };
 }

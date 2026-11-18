@@ -148,6 +148,7 @@ export class MeshService {
         const errors: MeshStatus['errors'] = {};
         const pending: { part: Part; context?: CombineContext; key: string; solid: string }[] = [];
         const shown = partsAtTimeline(project);
+        const hidden = new Set(project.view.hidden ?? []);
         this.wanted = new Map();
         // Instances build their source's design, so identical parts share one mesh. Combine steps key on the parts
         // they use (design and relative placement), so a change to those rebuilds the dependants too.
@@ -156,6 +157,17 @@ export class MeshService {
             const context = combineContext(original, shown);
             const solid = meshKey(part, print, context);
             const key = qualityKey(solid, this.quality);
+            if (hidden.has(original.id)) {
+                // A hidden part is built once it is shown again (checks and exports build it themselves: ready()).
+                // Until then it keeps the mesh it has, and a queued build of it is dropped.
+                const has = this.meshes.has(key);
+                keys[part.id] = has ? key : this.status.keys[part.id] ?? null;
+                const failure = has ? this.failed.get(key) : this.status.errors[part.id];
+                if (failure) {
+                    errors[part.id] = failure;
+                }
+                continue;
+            }
             this.wanted.set(part.id, key);
             if (this.meshes.has(key)) {
                 keys[part.id] = key;

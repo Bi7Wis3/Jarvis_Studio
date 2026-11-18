@@ -250,3 +250,27 @@ describe('a spring drawn on a plane perpendicular to its helix', () => {
         }
     }, SLOW);
 });
+
+describe('a thread swept onto a bore', () => {
+    it('joins the tube it only touches into one body, as a boss on a face does', () => {
+        // A tube with a 10.8 bore, and a triangle with its base on the bore swept along a helix of radius 10 inside it.
+        const tube: Feature[] = [
+            { id: 'rings', op: 'sketch', sketch: { plane: 'top', profiles: [
+                { kind: 'circle', center: [0, 0], radius: 10.8 }, { kind: 'circle', center: [0, 0], radius: 13.5 }] } },
+            { id: 'tube', op: 'extrude', mode: 'add', distance: 6, sketchRef: 'rings' },
+        ];
+        const thread: Feature[] = [
+            { id: 'circle', op: 'sketch', sketch: ring },
+            { id: 'helix', op: 'helix', sketchRef: 'circle', definedBy: 'heightPitch', height: 4, pitch: 1.4 },
+            { id: 'profile', op: 'sketch', sketch: { plane: 'front', profiles: [
+                { kind: 'polygon', points: [[10, 0], [10.8, 0.574], [10.8, -0.574]] }] } },
+            { id: 'thread', op: 'sweep', mode: 'add', profile: { sketchRef: 'profile' }, path: { curveRef: 'helix' }, orientation: 'followPath' },
+        ];
+        const volume = (features: Feature[]) => measureVolume(buildPartial({ shape: empty, features }, DEFAULT_PRINT).shape!);
+        const both = buildPartial({ shape: empty, features: [...tube, ...thread] }, DEFAULT_PRINT);
+        expect(both.error).toBeNull();
+        expect(both.shape!.solids.length).toBe(1);
+        expect(isValid(both.shape!)).toBe(true);
+        expect(measureVolume(both.shape!) / (volume(tube) + volume(thread))).toBeCloseTo(1, 5);
+    }, SLOW);
+});

@@ -3,9 +3,10 @@
 
 import { useEffect } from 'react';
 import { create } from 'zustand';
-import type { SketchGeometry, SketchRegion } from '@jarvis/core';
+import type { Sketch, SketchGeometry, SketchRegion } from '@jarvis/core';
+import { profileRegionLoops } from '@jarvis/core';
 import { geometryEntities } from './sketchGeometry';
-import { sketchRegions } from './sketchRegions';
+import { interiorPoint, sketchRegions } from './sketchRegions';
 import { curveEndIds } from './sketchCurves';
 import { inside, profilePoints, type Pt } from './sketchMath';
 
@@ -63,6 +64,29 @@ export function regionsOf(g: SketchGeometry): SketchRegion[] {
         }
     }
     return sketchRegions(geometryEntities(g, false), ends);
+}
+
+const derived = new WeakMap<Sketch, SketchRegion[]>();
+
+/**
+ * The regions a feature can pick in a sketch step: those it stores, or for a sketch written as profiles alone (e.g. by
+ * Jarvis, with no sketcher geometry), each profile with the profiles directly inside it as holes, as the kernel builds
+ * the picks (profileRegions.ts in core).
+ */
+export function stepRegions(sketch: Sketch): SketchRegion[] | undefined {
+    if (sketch.regions?.length || sketch.geometry) {
+        return sketch.regions;
+    }
+    let regions = derived.get(sketch);
+    if (!regions) {
+        const points = sketch.profiles.map(profilePoints);
+        regions = profileRegionLoops(sketch.profiles, (p) => points[sketch.profiles.indexOf(p)]).map(({ outer, holes }) => ({
+            loops: [sketch.profiles[outer], ...holes.map((h) => sketch.profiles[h])],
+            at: interiorPoint(points[outer], holes.map((h) => points[h])),
+        }));
+        derived.set(sketch, regions);
+    }
+    return regions;
 }
 
 /** A region's loops as points, with the outline's bounds; worked out once per region (regions are not changed). */
